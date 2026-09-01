@@ -233,6 +233,10 @@ class NpmClient {
    * the certificate in NPM and attach it to the host. Returns the domains of
    * the hosts that were updated.
    *
+   * A wildcard certificate (e.g. *.innotel.us) also covers one-level subdomain
+   * proxy hosts (e.g. cerulean.innotel.us) when NPM_WILDCARD_ATTACH is on, but
+   * never overrides a certificate a host already has.
+   *
    * Safe to call anytime — it is a no-op when NPM is not configured, the
    * certificate has no material yet, or no proxy host matches its domains.
    */
@@ -245,10 +249,19 @@ class NpmClient {
       return { attached: [] };
     }
     const domains: string[] = JSON.parse(cert.domains_json);
+    const exactDomains = domains.filter((d) => !d.startsWith("*."));
+    const wildcardDomains = domains.filter((d) => d.startsWith("*."));
     const hosts = await this.listProxyHosts();
-    const matches = hosts.filter((h) =>
-      (h.domain_names || []).some((dn) => domains.includes(dn)),
-    );
+
+    const matches = hosts.filter((h) => {
+      const hostDomain = (h.domain_names || [])[0];
+      if (!hostDomain) return false;
+      if (exactDomains.includes(hostDomain)) return true;
+      return (
+        config.npm.wildcardAttach &&
+        wildcardDomains.some((wc) => wildcardCovers(wc, hostDomain))
+      );
+    });
     if (matches.length === 0) {
       return { attached: [] };
     }
@@ -283,11 +296,28 @@ class NpmClient {
     const attached: string[] = [];
     for (const host of matches) {
       if (host.certificate_id === npmCertId && host.ssl_forced) continue;
+      const coveredExactly = exactDomains.some((d) =>
+        (host.domain_names || []).includes(d),
+      );
+      // A wildcard match never replaces a certificate already on the host.
+      if (!coveredExactly && host.certificate_id) continue;
       await this.updateProxyHost(host.id, host, npmCertId);
       attached.push((host.domain_names || []).join(", "));
     }
     return { attached };
   }
+}
+
+/**
+ * True when the wildcard domain `*.base` covers `hostDomain` — i.e. the host
+ * is a single-label subdomain of base (cerulean.innotel.us ← *.innotel.us),
+ * but not the apex itself and not a deeper subdomain (a.b.innotel.us).
+ */
+function wildcardCovers(wildcardDomain: string, hostDomain: string): boolean {
+  const base = wildcardDomain.replace(/^\*\./, "");
+  if (!base || !hostDomain.endsWith(`.${base}`)) return false;
+  const label = hostDomain.slice(0, -(base.length + 1));
+  return label.length > 0 && !label.includes(".");
 }
 
 export const npm = new NpmClient();
