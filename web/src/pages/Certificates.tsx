@@ -18,6 +18,7 @@ export default function Certificates() {
   // detail modal
   const [detail, setDetail] = useState<Certificate | null>(null);
   const [material, setMaterial] = useState<{ certificate: string; key: string } | null>(null);
+  const [health, setHealth] = useState<import("../types").CertHealth | null>(null);
 
   const flash = (msg: string) => {
     setToast(msg);
@@ -94,6 +95,12 @@ export default function Certificates() {
   const showDetail = async (c: Certificate) => {
     setDetail(c);
     setMaterial(null);
+    setHealth(null);
+    try {
+      setHealth(await api.certHealth(c.id));
+    } catch {
+      setHealth(null);
+    }
     if (c.hasMaterial) {
       try {
         setMaterial(await api.certMaterial(c.id));
@@ -116,6 +123,21 @@ export default function Certificates() {
     if (c.status === "issued") return <span className="badge green">issued</span>;
     if (c.status === "error") return <span className="badge red">error</span>;
     return <span className="badge amber">issuing…</span>;
+  };
+
+  const healthBadge = (c: Certificate) => {
+    const { grade, score } = c.health || { grade: "?", score: 0 };
+    const cls =
+      grade === "A" || grade === "B"
+        ? "badge green"
+        : grade === "C"
+          ? "badge amber"
+          : "badge red";
+    return (
+      <span className={cls}>
+        {grade} {score}
+      </span>
+    );
   };
 
   const expiryCell = (c: Certificate) => {
@@ -196,6 +218,7 @@ export default function Certificates() {
                 <th>Domains</th>
                 <th>Strategy</th>
                 <th>Status</th>
+                <th>Health</th>
                 <th>Expires</th>
                 <th />
               </tr>
@@ -211,6 +234,7 @@ export default function Certificates() {
                     <span className="badge gray">{c.strategy}</span>
                   </td>
                   <td>{statusBadge(c)}</td>
+                  <td>{c.status === "issued" ? healthBadge(c) : <span className="muted">—</span>}</td>
                   <td>{expiryCell(c)}</td>
                   <td>
                     <div className="actions">
@@ -266,6 +290,28 @@ export default function Certificates() {
               {detail.expiresAt ? new Date(detail.expiresAt).toLocaleString() : "—"} · Auto-renew:{" "}
               {detail.autoRenew ? "on" : "off"}
             </p>
+            {health && (
+              <div style={{ margin: "8px 0" }}>
+                <p className="panel-title" style={{ marginBottom: 6 }}>
+                  Health: {health.grade} ({health.score}/100)
+                </p>
+                <table>
+                  <tbody>
+                    {health.checks.map((c) => (
+                      <tr key={c.name}>
+                        <td style={{ width: 140 }}>
+                          <span
+                            className={`status-dot ${c.status === "ok" ? "ok" : c.status === "warn" ? "warn" : "err"}`}
+                          />
+                          {c.name}
+                        </td>
+                        <td className="muted">{c.detail}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
             {material ? (
               <>
                 <p className="panel-title" style={{ marginBottom: 6 }}>Fullchain (PEM)</p>

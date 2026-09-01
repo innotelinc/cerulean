@@ -47,7 +47,7 @@ export default function Dashboard({
   return (
     <div>
       <h1>Dashboard</h1>
-      <p className="subtitle">Cerulean — DNS &amp; certificate management for {status?.config.zone || "your zone"}</p>
+      <p className="subtitle">Cerulean — certificate &amp; DNS management for {status?.config.zone || "your zone"}</p>
 
       {error && <p className="error">{error}</p>}
 
@@ -102,6 +102,22 @@ export default function Dashboard({
                 </td>
                 <td className="muted">{status.npm.status}</td>
                 <td className="muted mono">{status.config.npmApiUrl}</td>
+              </tr>
+              <tr>
+                <td>
+                  <span className={`status-dot ${status.auth.oidcEnabled ? "ok" : "warn"}`} />
+                  Authentik (OIDC)
+                </td>
+                <td className="muted">{status.auth.oidcEnabled ? "configured" : "not-configured"}</td>
+                <td className="muted mono">{status.auth.issuerUrl}</td>
+              </tr>
+              <tr>
+                <td>
+                  <span className={`status-dot ${statusDot(status.vault.status)}`} />
+                  Secret vault
+                </td>
+                <td className="muted">{status.vault.status}</td>
+                <td className="muted mono">{status.vault.addr}</td>
               </tr>
             </tbody>
           </table>

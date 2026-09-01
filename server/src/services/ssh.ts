@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { Client } from "ssh2";
 import { config } from "../config";
+import { vault } from "./vault";
 
 export interface ExecResult {
   code: number | null;
@@ -12,24 +13,26 @@ export interface ExecResult {
  * Run a command on the BIND server over SSH and pipe `stdin` to the remote
  * process. Supports key auth (preferred) or password auth.
  */
-export function sshExec(
+export async function sshExec(
   command: string,
   stdin?: string,
   timeoutMs = 30_000,
 ): Promise<ExecResult> {
-  const { host, port, user, keyPath, password } = config.bind;
+  const { host, port, user, keyPath } = config.bind;
   if (!host) {
     return Promise.reject(
       new Error("BIND_SSH_HOST is not configured — set it in .env"),
     );
   }
-  if (!keyPath && !password) {
+  if (!keyPath && !config.bind.password) {
     return Promise.reject(
       new Error(
         "No BIND SSH credentials configured — set BIND_SSH_KEY_PATH or BIND_SSH_PASSWORD in .env",
       ),
     );
   }
+  // The password may be a vault:// reference resolved from the secret vault.
+  const password = await vault.resolveSecretValue(config.bind.password);
 
   return new Promise((resolve, reject) => {
     const conn = new Client();
