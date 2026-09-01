@@ -1,0 +1,30 @@
+services:
+  cerulean:
+    build: .
+    container_name: cerulean
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # The portal reaches acme-dns over the compose network
+      ACMEDNS_API_URL: http://acme-dns:4443
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - acme-dns
+
+  acme-dns:
+    image: joohoi/acme-dns:latest
+    container_name: cerulean-acme-dns
+    restart: unless-stopped
+    ports:
+      # DNS (must be reachable from the internet for Let's Encrypt validation)
+      - "53:53"
+      - "53:53/udp"
+      # acme-dns API (keep firewalled to your network; the portal talks to it
+      # internally over the compose network)
+      - "4443:4443"
+    volumes:
+      - ./acme-dns/config.cfg:/etc/acme-dns/config.cfg:ro
+      - ./acme-dns/data:/var/lib/acme-dns
