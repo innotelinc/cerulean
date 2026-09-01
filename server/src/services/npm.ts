@@ -1,4 +1,5 @@
 import { config } from "../config";
+import { db } from "../db";
 
 export interface NpmProxyHost {
   id: number;
@@ -6,11 +7,16 @@ export interface NpmProxyHost {
   forward_scheme: string;
   forward_host: string;
   forward_port: number;
-  certificate_id: number;
+  certificate_id: number | string;
   ssl_forced: boolean;
   http2_support: boolean;
   enabled: boolean;
   meta: Record<string, unknown>;
+  block_exploits?: boolean;
+  caching_enabled?: boolean;
+  allow_websocket_upgrade?: boolean;
+  access_list_id?: number;
+  advanced_config?: string;
 }
 
 export interface NpmCertificate {
@@ -172,6 +178,115 @@ class NpmClient {
         dns_challenge: false,
       },
     });
+  }
+
+  /** Refresh the material of an existing custom certificate (renewals). */
+  async updateCertificate(
+    id: number,
+    input: {
+      niceName: string;
+      domainNames: string[];
+      certificate: string;
+      key: string;
+    },
+  ): Promise<void> {
+    await this.request("PUT", `/nginx/certificates/${id}`, {
+      provider: "other",
+      nice_name: input.niceName,
+      domain_names: input.domainNames,
+      meta: {
+        certificate: input.certificate,
+        certificate_key: input.key,
+      },
+    });
+  }
+
+  /**
+   * Update a proxy host in place — used to attach a certificate. Preserves the
+   * host's routing and options; only the SSL certificate changes.
+   */
+  async updateProxyHost(
+    id: number,
+    host: NpmProxyHost,
+    certificateId: number | string,
+  ): Promise<NpmProxyHost> {
+    return this.request<NpmProxyHost>("PUT", `/nginx/proxy-hosts/${id}`, {
+      domain_names: host.domain_names,
+      forward_scheme: host.forward_scheme,
+      forward_host: host.forward_host,
+      forward_port: host.forward_port,
+      certificate_id: certificateId,
+      ssl_forced: true,
+      http2_support: host.http2_support,
+      block_exploits: host.block_exploits ?? true,
+      caching_enabled: host.caching_enabled ?? false,
+      allow_websocket_upgrade: host.allow_websocket_upgrade ?? true,
+      access_list_id: host.access_list_id ?? 0,
+      advanced_config: host.advanced_config ?? "",
+      meta: host.meta ?? { letsencrypt_agree: false, dns_challenge: false },
+    });
+  }
+
+  /**
+   * After a certificate is issued or renewed, keep NPM in sync: for every
+   * proxy host whose domain is covered by the certificate, import (or refresh)
+   * the certificate in NPM and attach it to the host. Returns the domains of
+   * the hosts that were updated.
+   *
+   * Safe to call anytime — it is a no-op when NPM is not configured, the
+   * certificate has no material yet, or no proxy host matches its domains.
+   */
+  async syncCertificateToNpm(certId: number): Promise<{ attached: string[] }> {
+    if (!config.npm.apiUrl || !config.npm.email || !config.npm.password) {
+      return { attached: [] };
+    }
+    const cert = db.getCertificate(certId);
+    if (!cert || !cert.certificate || !cert.key) {
+      return { attached: [] };
+    }
+    const domains: string[] = JSON.parse(cert.domains_json);
+    const hosts = await this.listProxyHosts();
+    const matches = hosts.filter((h) =>
+      (h.domain_names || []).some((dn) => domains.includes(dn)),
+    );
+    if (matches.length === 0) {
+      return { attached: [] };
+    }
+
+    // Reuse an existing NPM custom certificate with the same domains so
+    // renewals refresh in place instead of piling up duplicates.
+    const sameDomains = (names?: string[]) =>
+      !!names &&
+      names.length === domains.length &&
+      domains.every((d) => names.includes(d));
+    const existing = (await this.listCertificates()).find(
+      (c) => c.provider === "other" && sameDomains(c.domain_names),
+    );
+    let npmCertId: number;
+    if (existing) {
+      await this.updateCertificate(existing.id, {
+        niceName: existing.nice_name,
+        domainNames: domains,
+        certificate: cert.certificate,
+        key: cert.key,
+      });
+      npmCertId = existing.id;
+    } else {
+      npmCertId = await this.importCertificate({
+        niceName: `cerulean-${cert.domain}${cert.wildcard ? "-wildcard" : ""}`,
+        domainNames: domains,
+        certificate: cert.certificate,
+        key: cert.key,
+      });
+    }
+
+    const attached: string[] = [];
+    for (const host of matches) {
+      if (host.certificate_id === npmCertId && host.ssl_forced) continue;
+      await this.updateProxyHost(host.id, host, npmCertId);
+      attached.push((host.domain_names || []).join(", "));
+    }
+    return { attached };
   }
 }
 

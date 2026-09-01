@@ -1,5 +1,28 @@
 import { db } from "./db";
 import { issueCertificate, renewCertificate } from "./services/acme";
+import { npm } from "./services/npm";
+
+/**
+ * Best-effort: attach an issued/renewed certificate to every NPM proxy host
+ * that matches its domains. Failures are logged as activities, never thrown.
+ */
+async function syncCertToNpmQuietly(certId: number, domain: string): Promise<void> {
+  try {
+    const result = await npm.syncCertificateToNpm(certId);
+    if (result.attached.length) {
+      db.addActivity(
+        "npm-cert-attach",
+        `Attached certificate for ${domain} to NPM proxy host(s): ${result.attached.join(", ")}`,
+      );
+    }
+  } catch (err) {
+    db.addActivity(
+      "npm-sync-error",
+      `Could not sync certificate for ${domain} to nginx proxy manager`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}
 
 /** Run a single issue job, persisting status transitions to the DB. */
 export async function runIssueJob(certId: number): Promise<void> {
@@ -23,6 +46,7 @@ export async function runIssueJob(certId: number): Promise<void> {
       `Certificate issued for ${cert.domain}${cert.wildcard ? " (+ wildcard)" : ""}`,
       `strategy=${cert.strategy}, expires=${result.expiresAt}`,
     );
+    await syncCertToNpmQuietly(certId, cert.domain);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     db.updateCertificateStatus(certId, "error", message);
@@ -39,6 +63,7 @@ export async function renewalSweep(days = 30): Promise<void> {
   for (const cert of expiring) {
     try {
       await renewCertificate(cert.id);
+      await syncCertToNpmQuietly(cert.id, cert.domain);
     } catch (err) {
       db.updateCertificateStatus(
         cert.id,
