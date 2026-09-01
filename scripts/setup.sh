@@ -13,6 +13,7 @@
 #                  manually in that case)
 #   3. Installs all dependencies and builds the portal
 #   4. Starts the stack (docker compose; acme-dns only when selected)
+#   5. Provisions nginx proxy manager proxy hosts via ./npm-proxy-hosts.py
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -168,6 +169,23 @@ else
     warn "docker not found — start the portal manually with:"
     echo "    cd ${CERULEAN_ROOT} && npm start"
   fi
+fi
+
+# ── 6. Provision nginx proxy manager proxy hosts ────────────────────────────
+if npm_configured; then
+  if command -v python3 >/dev/null 2>&1; then
+    log "Provisioning nginx proxy manager proxy hosts (${NPM_API_URL})…"
+    if python3 "${SCRIPT_DIR}/npm-proxy-hosts.py"; then
+      ok "nginx proxy manager proxy hosts are up to date"
+    else
+      warn "NPM proxy host provisioning did not complete — check NPM_API_URL/NPM_EMAIL/NPM_PASSWORD"
+      warn "and NPM_FORWARD_HOST in .env, then re-run: python3 scripts/npm-proxy-hosts.py"
+    fi
+  else
+    warn "python3 not found — skipping automatic NPM proxy host provisioning"
+  fi
+else
+  log "NPM not configured in .env — skipping proxy host provisioning"
 fi
 
 echo

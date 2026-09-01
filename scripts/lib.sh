@@ -54,6 +54,12 @@ env_load() {
   CERULEAN_ADMIN_PASSWORD="$(env_get CERULEAN_ADMIN_PASSWORD)"
   ACMEDNS_DOMAIN="$(env_get ACMEDNS_DOMAIN auth.innotel.us)"
   ACMEDNS_PUBLIC_IP="$(env_get ACMEDNS_PUBLIC_IP)"
+  NPM_API_URL="$(env_get NPM_API_URL)"
+  NPM_EMAIL="$(env_get NPM_EMAIL)"
+  NPM_PASSWORD="$(env_get NPM_PASSWORD)"
+  NPM_FORWARD_HOST="$(env_get NPM_FORWARD_HOST)"
+  NPM_BASE_DOMAIN="$(env_get NPM_BASE_DOMAIN)"
+  NPM_PROXY_SSL="$(env_get NPM_PROXY_SSL 0)"
 }
 
 # ── SSH to the BIND server ──────────────────────────────────────────────────
@@ -86,6 +92,10 @@ ssh_run() {
 
 bind_configured() {
   [ -n "$BIND_SSH_HOST" ] && { [ -n "$BIND_SSH_KEY_PATH" ] || [ -n "$BIND_SSH_PASSWORD" ]; }
+}
+
+npm_configured() {
+  [ -n "$NPM_API_URL" ] && [ -n "$NPM_EMAIL" ] && [ -n "$NPM_PASSWORD" ] && [ "$NPM_PASSWORD" != "change-me" ]
 }
 
 # ── misc ────────────────────────────────────────────────────────────────────

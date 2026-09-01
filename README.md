@@ -1,9 +1,14 @@
 # Cerulean ◆ DNS Management Portal
 
-Cerulean is a self-hosted DNS management dashboard that runs an **acme-dns**
-server, issues **Let's Encrypt certificates (regular and wildcard)** via DNS-01
-challenges, manages **DNS records on remote BIND servers** through `nsupdate`
-over SSH, and **exports certificates to nginx proxy manager** with one click.
+*Point DNS at it once — never touch a zone file again.*
+
+Cerulean is your self-hosted command center for DNS and certificates. It runs
+an **acme-dns** server, issues **Let's Encrypt certificates (regular and
+wildcard)** via DNS-01 challenges, manages **DNS records on remote BIND
+servers** through `nsupdate` over SSH, and **exports certificates to nginx
+proxy manager** with one click. On a fresh host it even **provisions every
+nginx proxy host automatically** — the stack is wired up before you open a
+browser.
 
 It was built for the Innotel stack: BIND on `192.168.1.80`, nginx proxy
 manager on `192.168.1.71`, and the `innotel.us` domain — but every endpoint,
@@ -46,6 +51,10 @@ credential, and zone is configurable.
 - **One-click nginx proxy manager export** — import a Cerulean-issued
   certificate into NPM as a custom certificate and/or create a proxy host
   (domain → upstream host:port) with SSL, HTTP/2, and forced SSL.
+- **Automatic nginx proxy manager provisioning** — `scripts/npm-proxy-hosts.py`
+  (hooked into `setup.sh`) creates or updates every proxy host on your NPM
+  instance via its API, so a fresh host comes up fully routed. Idempotent:
+  create what's missing, update what drifted, never touch the rest.
 - **REST API** — every dashboard action is also available as a JSON endpoint
   (see below), so you can script issuance or exports.
 - **Audit log** — every domain, record, issuance, and export is recorded.
@@ -55,16 +64,18 @@ credential, and zone is configurable.
 ```bash
 # One-shot setup: choose your strategy (bind or acmedns), it generates the
 # admin password + TSIG key, configures BIND (and optionally acme-dns),
-# installs all dependencies, builds, and starts the stack.
+# installs all dependencies, builds, starts the stack, and provisions every
+# nginx proxy manager proxy host (if NPM_* is configured in .env).
 ./scripts/setup.sh --strategy bind
 
 # Or with acme-dns (delegated DNS-01):
 ./scripts/setup.sh --strategy acmedns
 ```
 
-The dashboard is then at `http://<host>:3000`. The generated admin password
-is printed at the end of setup (and stored in `CERULEAN_ADMIN_PASSWORD` in
-`.env`).
+The dashboard is then at `http://<host>:3000` (or `https://cerulean.innotel.us`
+once the proxy host is provisioned and a certificate is attached). The
+generated admin password is printed at the end of setup (and stored in
+`CERULEAN_ADMIN_PASSWORD` in `.env`).
 
 ## First-time setup
 
@@ -115,11 +126,38 @@ first time it issues a certificate for a domain. See
 
 ### 3. nginx proxy manager
 
-Set `NPM_API_URL`, `NPM_EMAIL`, and `NPM_PASSWORD` in `.env`. Cerulean
-authenticates against NPM's `/api/tokens` endpoint and can then:
+Set `NPM_API_URL`, `NPM_EMAIL`, and `NPM_PASSWORD` in `.env`, plus
+`NPM_FORWARD_HOST` (the portal host's LAN IP, as seen from NPM — auto-detected
+if blank). Cerulean authenticates against NPM's `/api/tokens` endpoint and can
+then:
 
 - import any Cerulean certificate as a **custom certificate**, and
 - create **proxy hosts** that use it.
+
+`./scripts/setup.sh` runs `./scripts/npm-proxy-hosts.py` automatically when
+NPM is configured, so a fresh host comes up with every proxy host already
+created.
+
+### 4. nginx proxy manager proxy hosts (the map)
+
+One subdomain per service. `scripts/npm-proxy-hosts.py` creates any missing
+host and updates any that drifted (an already-attached certificate is always
+preserved):
+
+| Proxy host (subdomain) | Upstream scheme | Upstream host | Upstream port | Purpose |
+| --- | --- | --- | --- | --- |
+| `cerulean.innotel.us` | `http` | `NPM_FORWARD_HOST` (portal LAN IP) | **3000** | Cerulean dashboard + REST API |
+
+To add another service, append an entry to `PROXY_HOSTS` in
+`scripts/npm-proxy-hosts.py` and re-run it. Two ports are deliberately *not*
+proxied: acme-dns **53** (UDP/TCP — must stay directly reachable from the
+internet for Let's Encrypt validation) and acme-dns **4443** (API — internal
+only, keep it firewalled).
+
+By default hosts are created without SSL (`certificate_id: 0`). After issuing
+a certificate for `cerulean.innotel.us` in the portal, attach it to the proxy
+host from the *nginx proxy manager* page (one click), or set `NPM_PROXY_SSL=1`
+in `.env` to let NPM request its own Let's Encrypt certificate via HTTP-01.
 
 ## Using Cerulean
 
@@ -174,7 +212,7 @@ curl -s -X POST localhost:3000/api/npm/export-cert \
 server/          Express + TypeScript API (ACME, BIND/nsupdate, acme-dns, NPM)
 web/             React + Vite dashboard
 acme-dns/        acme-dns server configuration
-scripts/         setup helpers (BIND TSIG key generation)
+scripts/         setup helpers (BIND TSIG key generation, NPM proxy provisioning)
 docs/            deeper setup guides
 data/            runtime data (SQLite DB, gitignored)
 ```
@@ -183,6 +221,8 @@ data/            runtime data (SQLite DB, gitignored)
 
 - Real credentials live only in `.env`, which is **gitignored** — never commit
   them. `.env.example` holds placeholders.
+- `scripts/npm-proxy-hosts.py` reads `NPM_*` from `.env` and talks to NPM's API
+  with a short-lived token; it never writes credentials anywhere.
 - The acme-dns API port (4443) should be firewalled to your network; only
   UDP/TCP **53** needs to be public.
 - Change the NPM and BIND passwords if they have ever been shared in chat or
