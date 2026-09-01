@@ -68,7 +68,7 @@ Run `./scripts/setup-bind.sh` to generate a TSIG key. It prints the three
 things you must add to `/etc/bind/named.conf`:
 
 ```named
-key "cerulean." {
+key "cerulean" {
     algorithm hmac-sha256;
     secret "<generated>";
 };
