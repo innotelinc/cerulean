@@ -55,6 +55,10 @@ credential, and zone is configurable.
   (hooked into `setup.sh`) creates or updates every proxy host on your NPM
   instance via its API, so a fresh host comes up fully routed. Idempotent:
   create what's missing, update what drifted, never touch the rest.
+- **Automatic certificate attach** — the moment a certificate is issued or
+  renewed for a provisioned proxy host's domain, Cerulean imports the fresh
+  material into NPM and attaches it to the matching host (SSL + HTTP/2 on),
+  refreshing in place on renewal — no clicks, ever.
 - **REST API** — every dashboard action is also available as a JSON endpoint
   (see below), so you can script issuance or exports.
 - **Audit log** — every domain, record, issuance, and export is recorded.
@@ -154,10 +158,12 @@ proxied: acme-dns **53** (UDP/TCP — must stay directly reachable from the
 internet for Let's Encrypt validation) and acme-dns **4443** (API — internal
 only, keep it firewalled).
 
-By default hosts are created without SSL (`certificate_id: 0`). After issuing
-a certificate for `cerulean.innotel.us` in the portal, attach it to the proxy
-host from the *nginx proxy manager* page (one click), or set `NPM_PROXY_SSL=1`
-in `.env` to let NPM request its own Let's Encrypt certificate via HTTP-01.
+By default hosts are created without SSL (`certificate_id: 0`). The moment you
+issue a certificate for `cerulean.innotel.us` (or any provisioned host's
+domain), Cerulean **automatically imports it into NPM and attaches it to the
+matching proxy host** — renewals refresh the same NPM certificate in place. If
+you'd rather have NPM request its own Let's Encrypt certificate via HTTP-01,
+set `NPM_PROXY_SSL=1` in `.env` instead.
 
 ## Using Cerulean
 
@@ -166,8 +172,10 @@ in `.env` to let NPM request its own Let's Encrypt certificate via HTTP-01.
 2. **Certificates** — pick a domain, tick *Wildcard* for a
    `*.innotel.us` certificate, choose the strategy, and hit *Issue*. Status is
    shown live; expiry is tracked and certificates auto-renew.
-3. **nginx proxy manager** — click *Export to NPM* on any issued certificate,
-   or create a proxy host and select the certificate (Cerulean auto-exports it).
+3. **nginx proxy manager** — proxies are provisioned automatically by
+   `setup.sh`; once a certificate is issued for a host's domain it is attached
+   to the host automatically. The *Export to NPM* button is still there for
+   manual exports (e.g. wildcard certificates without a matching host).
 
 ## REST API
 
