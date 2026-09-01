@@ -4,27 +4,30 @@ services:
     container_name: cerulean
     restart: unless-stopped
     env_file: .env
-    environment:
-      # The portal reaches acme-dns over the compose network
-      ACMEDNS_API_URL: http://acme-dns:4443
     ports:
       - "3000:3000"
     volumes:
       - ./data:/app/data
-    depends_on:
-      - acme-dns
 
+  # acme-dns is OPT-IN: only started when you choose the 'acmedns' strategy.
+  #   docker compose --profile acmedns up -d
+  # The 'bind' strategy (default) does not need it at all.
   acme-dns:
     image: joohoi/acme-dns:latest
     container_name: cerulean-acme-dns
     restart: unless-stopped
+    profiles: ["acmedns"]
     ports:
-      # DNS (must be reachable from the internet for Let's Encrypt validation)
+      # DNS — must be reachable from the internet (UDP+TCP) for Let's Encrypt
+      # validation. Forward 53 from your router to THIS host.
       - "53:53"
       - "53:53/udp"
-      # acme-dns API (keep firewalled to your network; the portal talks to it
-      # internally over the compose network)
+      # acme-dns API — used by the portal over the compose network; keep this
+      # port firewalled to your network.
       - "4443:4443"
+    environment:
+      # The portal reaches acme-dns by name over the compose network
+      ACMEDNS_API_URL: http://acme-dns:4443
     volumes:
       - ./acme-dns/config.cfg:/etc/acme-dns/config.cfg:ro
       - ./acme-dns/data:/var/lib/acme-dns

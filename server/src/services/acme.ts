@@ -64,9 +64,41 @@ async function getAccountKey(): Promise<string> {
 
 interface DnsChallengeState {
   strategy: ChallengeStrategy;
+  zone: string;
   domainRow?: DomainRow;
   records: { name: string; value: string }[];
   cnameEnsured: Set<string>;
+}
+
+/**
+ * Point `owner` (_acme-challenge.<domain>) at the acme-dns fulldomain via
+ * CNAME. With BIND configured this is done automatically; without BIND we
+ * verify the CNAME already exists in the domain's public DNS.
+ */
+async function ensureCnameAuto(
+  zone: string,
+  owner: string,
+  fulldomain: string,
+): Promise<void> {
+  const hasBind = Boolean(
+    config.bind.host && (config.bind.keyPath || config.bind.password),
+  );
+  if (hasBind) {
+    await bind.ensureCname(zone, owner, fulldomain);
+    return;
+  }
+  const { resolveCname } = await import("node:dns/promises");
+  try {
+    const targets = await resolveCname(owner);
+    if (targets.some((t) => stripDot(t) === stripDot(fulldomain))) return;
+  } catch {
+    // fall through to the helpful error below
+  }
+  throw new Error(
+    `No BIND server configured and the CNAME ${owner} → ${fulldomain} is missing. ` +
+      `Add this CNAME in your DNS provider, or configure BIND_SSH_* in .env ` +
+      `so Cerulean can create it automatically.`,
+  );
 }
 
 async function setChallengeRecord(
@@ -74,7 +106,6 @@ async function setChallengeRecord(
   name: string,
   value: string,
 ): Promise<void> {
-  const zone = config.zone;
   if (state.strategy === "acme-dns") {
     if (!state.domainRow) {
       throw new Error("Missing domain row for acme-dns strategy");
@@ -83,7 +114,7 @@ async function setChallengeRecord(
     // One-time CNAME delegation: _acme-challenge.<domain> → <sub>.auth.<domain>
     const owner = stripDot(name);
     if (!state.cnameEnsured.has(owner)) {
-      await bind.ensureCname(zone, owner, fulldomain);
+      await ensureCnameAuto(state.zone, owner, fulldomain);
       state.cnameEnsured.add(owner);
     }
     await acmedns.updateTxt(
@@ -96,7 +127,7 @@ async function setChallengeRecord(
     // record is live immediately. A short buffer avoids TOCTOU races at LE.
     await sleep(Math.min(config.propagationBufferSeconds, 5) * 1000);
   } else {
-    await bind.setTxtRecord(zone, name, value, 60);
+    await bind.setTxtRecord(state.zone, name, value, 60);
     // Poll the authoritative BIND server until the TXT is served.
     await waitForTxt(config.bind.host, name, value);
   }
@@ -116,7 +147,7 @@ async function removeChallengeRecord(
       "",
     );
   } else {
-    await bind.clearTxtRecord(config.zone, name, value);
+    await bind.clearTxtRecord(state.zone, name, value);
   }
 }
 
@@ -188,6 +219,7 @@ export async function issueCertificate(input: IssueInput): Promise<{
 
   const state: DnsChallengeState = {
     strategy,
+    zone: domain,
     domainRow,
     records: [],
     cnameEnsured: new Set(),
