@@ -1,0 +1,23 @@
+{
+  "name": "cerulean",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cerulean — DNS management portal: acme-dns, Let's Encrypt certificates (regular + wildcard), BIND record management, and one-click export to nginx proxy manager.",
+  "workspaces": [
+    "server",
+    "web"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,web -c blue,green \"npm run dev -w server\" \"npm run dev -w web\"",
+    "build": "npm run build -w server && npm run build -w web",
+    "typecheck": "npm run typecheck -w server && npm run typecheck -w web",
+    "test": "npm run test -w server",
+    "start": "npm run start -w server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,40 @@
+# Cerulean acme-dns configuration
+# Copy this file to acme-dns/config.cfg and replace <PUBLIC_IP> with the
+# public IP of the host running the acme-dns container (port 53 must be
+# forwarded to it from your router).
+
+[general]
+# DNS listener. Port 53 must be free on the host running the container.
+listen = "0.0.0.0:53"
+protocol = "both"
+# The domain acme-dns is authoritative for. Must be delegated from your
+# public DNS (see docs/acme-dns-setup.md).
+domain = "auth.innotel.us"
+nsname = "auth.innotel.us"
+nsadmin = "admin.innotel.us"
+# A + NS records acme-dns serves for itself. Set the A record to your public IP.
+records = [
+    "auth.innotel.us. A <PUBLIC_IP>",
+    "auth.innotel.us. NS auth.innotel.us.",
+]
+debug = false
+
+[database]
+engine = "sqlite3"
+connection = "/var/lib/acme-dns/acme-dns.db"
+
+[api]
+ip = "0.0.0.0"
+disable_registration = false
+port = "4443"
+tls = "none"
+corsorigins = [
+    "*"
+]
+use_header = false
+header_name = "X-Forwarded-For"
+
+[logconfig]
+loglevel = "info"
+logtype = "stdout"
+logformat = "text"
