@@ -12,6 +12,25 @@ export function clearToken(): void {
   localStorage.removeItem(TOKEN_KEY);
 }
 
+function readCookie(name: string): string | null {
+  const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+/**
+ * After an Authentik sign-in the OIDC callback leaves the session token in a
+ * cookie. Adopt it into localStorage (where a local login stores it) and clear
+ * the cookie so the two mechanisms stay in sync.
+ */
+export function adoptCookieToken(): void {
+  if (getToken()) return;
+  const cookie = readCookie(TOKEN_KEY);
+  if (cookie) {
+    setToken(cookie);
+    document.cookie = `${TOKEN_KEY}=; Path=/; Max-Age=0`;
+  }
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const token = getToken();
   const res = await fetch(`/api${path}`, {
@@ -50,8 +69,35 @@ export const api = {
   login: (password: string) =>
     request<{ token: string }>("POST", "/auth/login", { password }),
   logout: () => request<{ ok: boolean }>("POST", "/auth/logout"),
+  authConfig: () => request<import("./types").AuthConfig>("GET", "/auth/config"),
+  me: () =>
+    request<{ user: import("./types").SessionUser | null }>("GET", "/auth/me"),
   status: () => request<import("./types").StatusResponse>("GET", "/status"),
   activities: () => request<import("./types").Activity[]>("GET", "/activities"),
+
+  vaultSync: () => request<{ ok: boolean; written: string[] }>("POST", "/vault/sync"),
+
+  listDiscovered: () =>
+    request<import("./types").DiscoveredCertificate[]>("GET", "/discovery/certificates"),
+  scanDiscovery: () =>
+    request<{ ok: boolean; added: number; updated: number; sources: { npm: number; file: number } }>(
+      "POST",
+      "/discovery/scan",
+    ),
+  deleteDiscovered: (id: number) =>
+    request<{ ok: boolean }>("DELETE", `/discovery/certificates/${id}`),
+
+  auditDns: (domain?: string) =>
+    request<import("./types").DnsAudit[]>(
+      "GET",
+      `/audit/dns${domain ? `?domain=${encodeURIComponent(domain)}` : ""}`,
+    ),
+  auditHistory: () =>
+    request<
+      { id: number; domain: string; runAt: string; score: number; checks: import("./types").HealthCheck[] }[]
+    >("GET", "/audit/dns/history"),
+  certHealth: (id: number) =>
+    request<import("./types").CertHealth>("GET", `/certificates/${id}/health`),
 
   listDomains: () => request<import("./types").Domain[]>("GET", "/domains"),
   createDomain: (input: { name: string; strategy: string }) =>

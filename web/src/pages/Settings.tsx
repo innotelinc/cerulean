@@ -74,6 +74,16 @@ export default function Settings() {
                   <td className="mono">{status.npm.status}</td>
                   <td className="muted mono">{status.config.npmApiUrl}</td>
                 </tr>
+                <tr>
+                  <td>{dot(status.auth.oidcEnabled ? "ok" : "warn")} Authentik (OIDC)</td>
+                  <td className="mono">{status.auth.oidcEnabled ? "configured" : "not-configured"}</td>
+                  <td className="muted mono">{status.auth.issuerUrl || "set AUTHENTIK_* in .env"}</td>
+                </tr>
+                <tr>
+                  <td>{dot(status.vault.status)} Secret vault (HashiCorp Vault)</td>
+                  <td className="mono">{status.vault.status}</td>
+                  <td className="muted mono">{status.vault.addr || "set VAULT_ADDR/VAULT_TOKEN in .env"}</td>
+                </tr>
               </tbody>
             </table>
           </div>
@@ -115,6 +125,10 @@ export default function Settings() {
                 <tr>
                   <td>acme-dns public IP (port 53)</td>
                   <td className="mono">{status.config.acmednsPublicIp || "not set — BIND strategy only"}</td>
+                </tr>
+                <tr>
+                  <td>Certificate discovery dirs</td>
+                  <td className="mono">{status.discovery.dirs.length ? status.discovery.dirs.join(", ") : "none (NPM only)"}</td>
                 </tr>
               </tbody>
             </table>

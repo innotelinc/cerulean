@@ -1,5 +1,6 @@
 import { config } from "../config";
 import { db } from "../db";
+import { vault } from "./vault";
 
 export interface NpmProxyHost {
   id: number;
@@ -47,12 +48,14 @@ class NpmClient {
     if (this.token && Date.now() < this.tokenExpires - 60_000) {
       return this.token;
     }
+    // The password may be a vault:// reference resolved from the secret vault.
+    const secret = await vault.resolveSecretValue(config.npm.password);
     const res = await fetch(`${this.baseUrl}/api/tokens`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         identity: config.npm.email,
-        secret: config.npm.password,
+        secret,
       }),
     });
     if (!res.ok) {
@@ -118,6 +121,11 @@ class NpmClient {
 
   listCertificates(): Promise<NpmCertificate[]> {
     return this.request<NpmCertificate[]>("GET", "/nginx/certificates");
+  }
+
+  /** Fetch a single certificate (includes `meta` with the PEM material). */
+  getCertificate(id: number): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>("GET", `/nginx/certificates/${id}`);
   }
 
   /**

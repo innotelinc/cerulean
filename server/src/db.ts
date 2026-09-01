@@ -47,6 +47,31 @@ export interface AcmeAccountRow {
   created_at: string;
 }
 
+export interface DiscoveredCertRow {
+  id: number;
+  source: string; // "npm" | "file"
+  source_id: string | null;
+  name: string;
+  domains_json: string;
+  issuer: string | null;
+  serial: string | null;
+  fingerprint: string | null;
+  certificate: string | null;
+  key: string | null;
+  expires_at: string | null;
+  issued_at: string | null;
+  first_seen: string;
+  last_seen: string;
+}
+
+export interface DnsAuditRow {
+  id: number;
+  domain: string;
+  run_at: string;
+  score: number;
+  checks_json: string;
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -106,6 +131,31 @@ class Database {
         created_at TEXT NOT NULL,
         UNIQUE(directory_url, email)
       );
+      CREATE TABLE IF NOT EXISTS discovered_certificates (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source TEXT NOT NULL,
+        source_id TEXT,
+        name TEXT NOT NULL,
+        domains_json TEXT NOT NULL DEFAULT '[]',
+        issuer TEXT,
+        serial TEXT,
+        fingerprint TEXT,
+        certificate TEXT,
+        key TEXT,
+        expires_at TEXT,
+        issued_at TEXT,
+        first_seen TEXT NOT NULL,
+        last_seen TEXT NOT NULL,
+        UNIQUE(source, source_id)
+      );
+      CREATE TABLE IF NOT EXISTS dns_audits (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        domain TEXT NOT NULL,
+        run_at TEXT NOT NULL,
+        score INTEGER NOT NULL,
+        checks_json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_dns_audits_domain ON dns_audits (domain);
     `);
   }
 
@@ -266,6 +316,110 @@ class Database {
          VALUES (?, ?, ?, ?)`,
       )
       .run(directoryUrl, email, key, nowIso());
+  }
+
+  listAcmeAccounts(): AcmeAccountRow[] {
+    return this.db
+      .prepare("SELECT * FROM acme_accounts")
+      .all() as unknown as AcmeAccountRow[];
+  }
+
+  // ── Discovered certificates ────────────────────────────────────────────
+  upsertDiscoveredCert(input: {
+    source: string;
+    sourceId: string | null;
+    name: string;
+    domains: string[];
+    issuer?: string | null;
+    serial?: string | null;
+    fingerprint?: string | null;
+    certificate?: string | null;
+    key?: string | null;
+    expiresAt?: string | null;
+    issuedAt?: string | null;
+  }): boolean {
+    const existing = this.db
+      .prepare(
+        "SELECT id FROM discovered_certificates WHERE source = ? AND source_id = ?",
+      )
+      .get(input.source, input.sourceId) as { id: number } | undefined;
+    if (existing) {
+      this.db
+        .prepare(
+          `UPDATE discovered_certificates SET
+             name = ?, domains_json = ?, issuer = ?, serial = ?, fingerprint = ?,
+             certificate = ?, key = ?, expires_at = ?, issued_at = ?, last_seen = ?
+           WHERE id = ?`,
+        )
+        .run(
+          input.name,
+          JSON.stringify(input.domains),
+          input.issuer ?? null,
+          input.serial ?? null,
+          input.fingerprint ?? null,
+          input.certificate ?? null,
+          input.key ?? null,
+          input.expiresAt ?? null,
+          input.issuedAt ?? null,
+          nowIso(),
+          existing.id,
+        );
+      return false;
+    }
+    this.db
+      .prepare(
+        `INSERT INTO discovered_certificates
+           (source, source_id, name, domains_json, issuer, serial, fingerprint,
+            certificate, key, expires_at, issued_at, first_seen, last_seen)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        input.source,
+        input.sourceId,
+        input.name,
+        JSON.stringify(input.domains),
+        input.issuer ?? null,
+        input.serial ?? null,
+        input.fingerprint ?? null,
+        input.certificate ?? null,
+        input.key ?? null,
+        input.expiresAt ?? null,
+        input.issuedAt ?? null,
+        nowIso(),
+        nowIso(),
+      );
+    return true;
+  }
+
+  listDiscoveredCerts(): DiscoveredCertRow[] {
+    return this.db
+      .prepare("SELECT * FROM discovered_certificates ORDER BY expires_at IS NULL, expires_at ASC")
+      .all() as unknown as DiscoveredCertRow[];
+  }
+
+  deleteDiscoveredCert(id: number): void {
+    this.db.prepare("DELETE FROM discovered_certificates WHERE id = ?").run(id);
+  }
+
+  // ── DNS audits ─────────────────────────────────────────────────────────
+  saveDnsAudit(domain: string, score: number, checks: unknown[]): void {
+    this.db
+      .prepare("INSERT INTO dns_audits (domain, run_at, score, checks_json) VALUES (?, ?, ?, ?)")
+      .run(domain.toLowerCase(), nowIso(), Math.round(score), JSON.stringify(checks));
+  }
+
+  listDnsAudits(limit = 50): DnsAuditRow[] {
+    return this.db
+      .prepare("SELECT * FROM dns_audits ORDER BY id DESC LIMIT ?")
+      .all(limit) as unknown as DnsAuditRow[];
+  }
+
+  latestDnsAudit(domain: string): DnsAuditRow | undefined {
+    return this.db
+      .prepare(
+        "SELECT * FROM dns_audits WHERE domain = ? ORDER BY id DESC LIMIT 1",
+      )
+      .get(domain.toLowerCase()) as DnsAuditRow | undefined;
   }
 
   // ── Activities ─────────────────────────────────────────────────────────

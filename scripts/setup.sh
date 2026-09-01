@@ -21,11 +21,13 @@ source "${SCRIPT_DIR}/lib.sh"
 
 STRATEGY=""
 NO_START=0
+WITH_AUTHENTIK=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --strategy) STRATEGY="${2:-}"; shift 2 ;;
     --no-start) NO_START=1; shift ;;
-    *) fail "Unknown option: $1 (usage: ./scripts/setup.sh [--strategy bind|acmedns] [--no-start])" ;;
+    --with-authentik) WITH_AUTHENTIK=1; shift ;;
+    *) fail "Unknown option: $1 (usage: ./scripts/setup.sh [--strategy bind|acmedns] [--no-start] [--with-authentik])" ;;
   esac
 done
 
@@ -188,6 +190,50 @@ else
   log "NPM not configured in .env — skipping proxy host provisioning"
 fi
 
+# ── 7. Authentik (optional: --with-authentik or when AUTHENTIK_ISSUER_URL set) ─
+AUTHENTIK_ISSUER_URL="$(env_get AUTHENTIK_ISSUER_URL)"
+if [ "$WITH_AUTHENTIK" = "1" ] || [ -n "$AUTHENTIK_ISSUER_URL" ]; then
+  log "Configuring Authentik OIDC…"
+  if [ -z "$AUTHENTIK_ISSUER_URL" ]; then
+    NPM_BASE_DOMAIN="$(env_get NPM_BASE_DOMAIN "$(env_get CERULEAN_ZONE innotel.us)")"
+    AUTHENTIK_ISSUER_URL="http://auth.${NPM_BASE_DOMAIN}"
+    env_set AUTHENTIK_ISSUER_URL "$AUTHENTIK_ISSUER_URL"
+  fi
+  CLIENT_ID="$(env_get AUTHENTIK_CLIENT_ID)"
+  if [ -z "$CLIENT_ID" ]; then
+    CLIENT_ID="cerulean"
+    env_set AUTHENTIK_CLIENT_ID "$CLIENT_ID"
+  fi
+  CLIENT_SECRET="$(env_get AUTHENTIK_CLIENT_SECRET)"
+  if [ -z "$CLIENT_SECRET" ]; then
+    CLIENT_SECRET="$(openssl rand -base64 32 | tr -d '/+=' | head -c 48)"
+    env_set AUTHENTIK_CLIENT_SECRET "$CLIENT_SECRET"
+    ok "Generated OIDC client secret for Authentik"
+  fi
+  REDIRECT_URI="$(env_get AUTHENTIK_REDIRECT_URI)"
+  if [ -z "$REDIRECT_URI" ]; then
+    REDIRECT_URI="http://cerulean.$(env_get NPM_BASE_DOMAIN "$(env_get CERULEAN_ZONE innotel.us)")/api/auth/oidc/callback"
+    env_set AUTHENTIK_REDIRECT_URI "$REDIRECT_URI"
+  fi
+  if [ -z "$(env_get AUTHENTIK_ADMIN_PASSWORD)" ]; then
+    warn "AUTHENTIK_ADMIN_PASSWORD is not set in .env — set it (the Authentik admin password) "
+    warn "or provision the provider manually in the Authentik UI (Applications → Create)."
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    if python3 "${SCRIPT_DIR}/authentik-setup.py"; then
+      ok "Authentik OIDC provider is configured"
+    else
+      warn "Authentik provisioning did not complete — check AUTHENTIK_ADMIN_PASSWORD and that"
+      warn "the stack is up (docker compose --profile authentik up -d), then re-run:"
+      warn "python3 scripts/authentik-setup.py"
+    fi
+  fi
+  echo "  First login: create the Authentik admin with:"
+  echo "      docker compose --profile authentik exec authentik-server ak createsuperuser"
+  echo "  (or set AUTHENTIK_BOOTSTRAP_PASSWORD in .env before the first start)."
+  echo "  OIDC: ${AUTHENTIK_ISSUER_URL}  ·  redirect: ${REDIRECT_URI}"
+fi
+
 echo
 echo "──────────────────────────────────────────────────────────"
 echo "  Cerulean is ready!"
@@ -195,4 +241,6 @@ echo "  Strategy:    ${STRATEGY}"
 echo "  Dashboard:   http://<this-host>:3000"
 echo "  Admin login: admin  (password below)"
 echo "  Admin pass:  ${ADMIN}"
+echo "  Authentik:   $(env_get AUTHENTIK_ISSUER_URL '(not configured)')  — add --with-authentik to enable SSO"
+echo "  Vault:       $(env_get VAULT_ADDR '(not configured)')  — set VAULT_ADDR/VAULT_TOKEN to enable"
 echo "──────────────────────────────────────────────────────────"

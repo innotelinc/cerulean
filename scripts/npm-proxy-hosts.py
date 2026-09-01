@@ -38,6 +38,12 @@ import urllib.request
 #   subdomain          upstream                 port   purpose
 #   ─────────────────  ───────────────────────  ─────  ─────────────────────────
 #   cerulean.<base>    http://<forward_host>    3000   Cerulean dashboard + API
+#   app.<base>         http://<forward_host>    3000   Cerulean application
+#   api.<base>         http://<forward_host>    3000   Cerulean REST API
+#   auth.<base>        http://<forward_host>    9000   Authentik (SSO / users)
+#   dns.<base>         http://<forward_host>    3000   DNS management
+#   certs.<base>       http://<forward_host>    3000   Certificate management
+#   admin.<base>       http://<forward_host>    3000   Administration
 #
 # acme-dns is deliberately NOT in this list: its port 53 (UDP/TCP) must stay
 # directly reachable from the internet for Let's Encrypt validation, and its
@@ -50,6 +56,48 @@ PROXY_HOSTS = [
         "scheme": "http",
         "websocket": True,
         "purpose": "Cerulean dashboard + REST API",
+    },
+    {
+        "name": "app",
+        "port": 3000,
+        "scheme": "http",
+        "websocket": True,
+        "purpose": "Cerulean application",
+    },
+    {
+        "name": "api",
+        "port": 3000,
+        "scheme": "http",
+        "websocket": False,
+        "purpose": "Cerulean REST API",
+    },
+    {
+        "name": "auth",
+        "port": 9000,
+        "scheme": "http",
+        "websocket": True,
+        "purpose": "Authentik — SSO and user management",
+    },
+    {
+        "name": "dns",
+        "port": 3000,
+        "scheme": "http",
+        "websocket": True,
+        "purpose": "DNS management",
+    },
+    {
+        "name": "certs",
+        "port": 3000,
+        "scheme": "http",
+        "websocket": True,
+        "purpose": "Certificate management",
+    },
+    {
+        "name": "admin",
+        "port": 3000,
+        "scheme": "http",
+        "websocket": True,
+        "purpose": "Administration",
     },
 ]
 
@@ -148,6 +196,57 @@ class Npm:
         return self._request("PUT", f"/nginx/proxy-hosts/{host_id}", payload)
 
 
+# ── BIND A-record provisioning ──────────────────────────────────────────────
+# When NPM_HOST_IP (the nginx proxy manager host's LAN IP) and the BIND_SSH_*
+# values are set, each subdomain below gets an A record pointing at NPM so the
+# proxy hosts actually resolve. Uses the TSIG key installed by setup-bind.sh
+# (/etc/bind/cerulean.keys) via nsupdate over SSH.
+
+def _ssh_command(cmd):
+    """Build the ssh invocation; returns argv or None if not configured."""
+    key = os.environ.get("BIND_SSH_KEY_PATH", "")
+    pw = os.environ.get("BIND_SSH_PASSWORD", "")
+    user = os.environ.get("BIND_SSH_USER", "root")
+    host = os.environ.get("BIND_SSH_HOST", "")
+    port = os.environ.get("BIND_SSH_PORT", "22")
+    if not host or not (key or pw):
+        return None
+    argv = [
+        "ssh", "-p", port,
+        "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "ConnectTimeout=15",
+    ]
+    if key:
+        argv += ["-i", key]
+    else:
+        argv = ["sshpass", "-p", pw] + argv
+    argv += [f"{user}@{host}", cmd]
+    return argv
+
+
+def ensure_a_record(domain, ip, zone):
+    """Create/update an A record for `domain` pointing at `ip` on BIND."""
+    key_name = os.environ.get("BIND_TSIG_NAME", "cerulean").rstrip(".")
+    secret = os.environ.get("BIND_TSIG_SECRET", "")
+    if not secret:
+        return False
+    cmd = (
+        f"printf '%s\\n' 'key \"{key_name}\" {{ algorithm hmac-sha256; "
+        f"secret \"{secret}\"; }};' > /tmp/cerulean-tsig.key && "
+        f"printf 'server 127.0.0.1\\nzone {zone}.\\nupdate delete {domain}. A\\n"
+        f"update add {domain}. 300 A {ip}\\nsend\\n' | nsupdate -k /tmp/cerulean-tsig.key "
+        f"; rc=$?; rm -f /tmp/cerulean-tsig.key; exit $rc"
+    )
+    argv = _ssh_command(cmd)
+    if argv is None:
+        return False
+    try:
+        subprocess.run(argv, check=True, capture_output=True, timeout=60)
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def host_payload(entry, base_domain, forward_host, ssl_via_npm, letsencrypt_email):
     domain = f"{entry['name']}.{base_domain}"
     payload = {
@@ -206,6 +305,16 @@ def main():
 
     ssl_via_npm = env("NPM_PROXY_SSL", "0").lower() in ("1", "true", "yes")
     letsencrypt_email = env("ACME_EMAIL", email)
+    npm_host_ip = env("NPM_HOST_IP")
+    bind_zone = env("BIND_ZONES", env("CERULEAN_ZONE", base_domain)).split(",")[0].strip()
+
+    # Optionally point the subdomains at NPM in BIND (requires BIND_SSH_* +
+    # BIND_TSIG_SECRET; skips silently when not configured).
+    if npm_host_ip:
+        print(f"DNS: ensuring A records for {len(PROXY_HOSTS)} subdomains → {npm_host_ip} (BIND zone {bind_zone})")
+    else:
+        print("DNS: NPM_HOST_IP not set — skipping A-record creation (add A records")
+        print("     pointing at the NPM host, or create them in Cerulean → Domains → Records).")
 
     npm = Npm(api_url, email, password)
     existing = npm.list_hosts()
@@ -216,6 +325,9 @@ def main():
 
     for entry in PROXY_HOSTS:
         payload, domain = host_payload(entry, base_domain, forward_host, ssl_via_npm, letsencrypt_email)
+        if npm_host_ip and base_domain in domain:
+            ok = ensure_a_record(domain, npm_host_ip, bind_zone)
+            print(f"  DNS {'✓' if ok else '✗'} A {domain} → {npm_host_ip}")
         found = next(
             (h for h in existing if domain in (h.get("domain_names") or [])),
             None,
