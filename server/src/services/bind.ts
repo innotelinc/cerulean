@@ -39,7 +39,9 @@ function ensureDot(name: string): string {
 }
 
 function tsigFileCommand(): string {
-  const name = ensureDot(config.bind.tsigName);
+  // The key name must match named.conf EXACTLY (no normalization) — nsupdate
+  // rejects keys whose name differs from the server's by even a trailing dot.
+  const name = config.bind.tsigName;
   const secret = config.bind.tsigSecret;
   return `key "${name}" { algorithm hmac-sha256; secret "${secret}"; };`;
 }
