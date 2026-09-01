@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 // ── Mocked certificate row (npm.ts only reads db.getCertificate) ───────────
-let mockCert: {
+interface MockCertRow {
   id: number;
   name: string;
   domain: string;
@@ -16,23 +16,39 @@ let mockCert: {
   issued_at: string | null;
   auto_renew: number;
   created_at: string;
-} = {
-  id: 1,
-  name: "cerulean.innotel.us",
-  domain: "cerulean.innotel.us",
-  wildcard: 0,
-  strategy: "bind",
-  status: "issued",
-  error: null,
-  domains_json: JSON.stringify(["cerulean.innotel.us"]),
-  certificate:
-    "-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----",
-  key: "-----BEGIN PRIVATE KEY-----\nTEST\n-----END PRIVATE KEY-----",
-  expires_at: "2030-01-01T00:00:00.000Z",
-  issued_at: "2026-01-01T00:00:00.000Z",
-  auto_renew: 1,
-  created_at: "2026-01-01T00:00:00.000Z",
-};
+}
+
+function defaultCert(): MockCertRow {
+  return {
+    id: 1,
+    name: "cerulean.innotel.us",
+    domain: "cerulean.innotel.us",
+    wildcard: 0,
+    strategy: "bind",
+    status: "issued",
+    error: null,
+    domains_json: JSON.stringify(["cerulean.innotel.us"]),
+    certificate:
+      "-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----",
+    key: "-----BEGIN PRIVATE KEY-----\nTEST\n-----END PRIVATE KEY-----",
+    expires_at: "2030-01-01T00:00:00.000Z",
+    issued_at: "2026-01-01T00:00:00.000Z",
+    auto_renew: 1,
+    created_at: "2026-01-01T00:00:00.000Z",
+  };
+}
+
+function wildcardCert(): MockCertRow {
+  return {
+    ...defaultCert(),
+    name: "innotel.us",
+    domain: "innotel.us",
+    wildcard: 1,
+    domains_json: JSON.stringify(["innotel.us", "*.innotel.us"]),
+  };
+}
+
+let mockCert: MockCertRow = defaultCert();
 
 vi.mock("../src/db", () => ({
   db: {
@@ -40,6 +56,7 @@ vi.mock("../src/db", () => ({
   },
 }));
 
+import { config } from "../src/config";
 import { npm } from "../src/services/npm";
 
 // ── Stubbed NPM API ─────────────────────────────────────────────────────────
@@ -122,7 +139,8 @@ describe("npm.syncCertificateToNpm", () => {
     mockHosts = [];
     mockCerts = [];
     requests.length = 0;
-    mockCert = { ...mockCert, certificate: "-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----", key: "-----BEGIN PRIVATE KEY-----\nTEST\n-----END PRIVATE KEY-----" };
+    mockCert = defaultCert();
+    config.npm.wildcardAttach = true;
   });
 
   it("is a no-op when no proxy host matches the certificate's domains", async () => {
@@ -218,11 +236,76 @@ describe("npm.syncCertificateToNpm", () => {
   it("is a no-op when the certificate has no material yet", async () => {
     installMockFetch();
     mockHosts = [makeHost()];
-    mockCert = { ...mockCert, certificate: null, key: null };
+    mockCert = { ...defaultCert(), certificate: null, key: null };
 
     const result = await npm.syncCertificateToNpm(1);
 
     expect(result.attached).toEqual([]);
     expect(callCount("/api/nginx/certificates", "POST")).toBe(0);
+  });
+
+  it("attaches a wildcard cert to a matching subdomain proxy host", async () => {
+    installMockFetch();
+    mockCert = wildcardCert();
+    mockHosts = [makeHost()]; // cerulean.innotel.us, no certificate yet
+
+    const result = await npm.syncCertificateToNpm(1);
+
+    expect(result.attached).toEqual(["cerulean.innotel.us"]);
+    const created = bodyOf("/api/nginx/certificates", "POST") as {
+      domain_names: string[];
+      nice_name: string;
+    };
+    expect(created.domain_names).toEqual(["innotel.us", "*.innotel.us"]);
+    expect(created.nice_name).toBe("cerulean-innotel.us-wildcard");
+    const updated = bodyOf("/api/nginx/proxy-hosts/7", "PUT") as {
+      certificate_id: number;
+      ssl_forced: boolean;
+    };
+    expect(updated.certificate_id).toBe(99);
+    expect(updated.ssl_forced).toBe(true);
+  });
+
+  it("never replaces an existing certificate with a wildcard", async () => {
+    installMockFetch();
+    mockCert = wildcardCert();
+    mockHosts = [makeHost({ certificate_id: 5, ssl_forced: true })];
+
+    const result = await npm.syncCertificateToNpm(1);
+
+    expect(result.attached).toEqual([]);
+    expect(callCount("/api/nginx/proxy-hosts/", "PUT")).toBe(0);
+    // the wildcard is still imported so future hosts without a cert can use it
+    expect(callCount("/api/nginx/certificates", "POST")).toBe(1);
+  });
+
+  it("does not wildcard-match deeper subdomains; the apex matches exactly", async () => {
+    installMockFetch();
+    mockCert = wildcardCert(); // SANs: innotel.us + *.innotel.us
+    mockHosts = [
+      makeHost({ id: 1, domain_names: ["a.b.innotel.us"] }),
+      makeHost({ id: 2, domain_names: ["innotel.us"] }),
+    ];
+
+    const result = await npm.syncCertificateToNpm(1);
+
+    // a.b.innotel.us is not covered by *.innotel.us (only one level deep);
+    // the apex innotel.us matches the cert's exact SAN.
+    expect(result.attached).toEqual(["innotel.us"]);
+    expect(callCount("/api/nginx/proxy-hosts/1", "PUT")).toBe(0);
+    expect(callCount("/api/nginx/proxy-hosts/2", "PUT")).toBe(1);
+  });
+
+  it("respects NPM_WILDCARD_ATTACH=0", async () => {
+    installMockFetch();
+    config.npm.wildcardAttach = false;
+    mockCert = wildcardCert();
+    mockHosts = [makeHost()];
+
+    const result = await npm.syncCertificateToNpm(1);
+
+    expect(result.attached).toEqual([]);
+    expect(callCount("/api/nginx/certificates", "POST")).toBe(0);
+    expect(callCount("/api/nginx/proxy-hosts/", "PUT")).toBe(0);
   });
 });
