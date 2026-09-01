@@ -62,6 +62,20 @@ dig @<public-ip> <uuid>.auth.innotel.us TXT
 # → should return the challenge value while issuance is in progress
 ```
 
+## Already have BIND publicly reachable on port 53? Skip all of this
+
+If your authoritative BIND server is already reachable from the internet on
+port 53 (e.g. your router forwards 53 to it), you **don't need acme-dns at
+all**. BIND's `nsupdate` + TSIG is itself a full DNS automation API, and
+Let's Encrypt can validate against it directly — that's the `bind` strategy
+in Cerulean.
+
+Just make sure `.env` has `CERULEAN_ZONE=innotel.us` and the `BIND_TSIG_*`
+values set, add the domain with the `bind` strategy, and issue. A separate
+acme-dns server can't even share your single public port-53 ingress with
+BIND (a DNS delegation must resolve to an IP that answers on 53 — that IP
+is BIND's), so there's nothing to gain by adding it.
+
 ## Troubleshooting
 
 | Symptom | Likely cause |

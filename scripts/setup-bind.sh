@@ -8,7 +8,8 @@
 # Usage: ./scripts/setup-bind.sh [key-name]
 set -euo pipefail
 
-KEY_NAME="${1:-cerulean.}"
+# Key name must match named.conf exactly. Default matches 'tsig-keygen cerulean'.
+KEY_NAME="${1:-cerulean}"
 SECRET="$(openssl rand -base64 32)"
 
 echo "──────────────────────────────────────────────────────────────────"
