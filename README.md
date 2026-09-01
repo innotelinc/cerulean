@@ -34,11 +34,13 @@ credential, and zone is configurable.
 - **Let's Encrypt certificates** — regular and **wildcard** (SAN), issued
   in-process with the ACME v2 protocol, stored with their private keys, and
   **auto-renewed** 30 days before expiry.
-- **Two DNS-01 strategies**:
-  - `acme-dns` — challenge TXT records served by the acme-dns server (one-time
-    CNAME delegation per domain).
-  - `bind` — challenge TXT records written straight to BIND via `nsupdate`
-    with a TSIG key.
+- **Two DNS-01 strategies** (pick one at setup time via `./scripts/setup.sh`):
+  - `bind` *(default)* — challenge TXT records written straight to BIND via
+    `nsupdate` with an auto-generated TSIG key. Requires BIND to be publicly
+    reachable on port 53 (which it is, if it serves your zone).
+  - `acme-dns` — challenge TXT records served by the acme-dns container
+    (`--profile acmedns`), delegated from a subdomain of your zone. Use this
+    when your authoritative DNS has no write API or isn't publicly reachable.
 - **BIND record management** — create, list, and delete `A`, `AAAA`, `CNAME`,
   `TXT`, `MX`, `NS`, and `SRV` records on any zone you control, live over SSH.
 - **One-click nginx proxy manager export** — import a Cerulean-issued
@@ -51,41 +53,45 @@ credential, and zone is configurable.
 ## Quick start
 
 ```bash
-cp .env.example .env          # then fill in your values
-cp acme-dns/config.cfg.example acme-dns/config.cfg
-./scripts/setup-bind.sh       # generates the BIND TSIG key + snippets
-docker compose up -d --build
+# One-shot setup: choose your strategy (bind or acmedns), it generates the
+# admin password + TSIG key, configures BIND (and optionally acme-dns),
+# installs all dependencies, builds, and starts the stack.
+./scripts/setup.sh --strategy bind
+
+# Or with acme-dns (delegated DNS-01):
+./scripts/setup.sh --strategy acmedns
 ```
 
-The dashboard is then at `http://<host>:3000` (login with
-`CERULEAN_ADMIN_PASSWORD` from `.env`).
+The dashboard is then at `http://<host>:3000`. The generated admin password
+is printed at the end of setup (and stored in `CERULEAN_ADMIN_PASSWORD` in
+`.env`).
 
 ## First-time setup
 
 ### 1. BIND (SSH + nsupdate)
 
-Run `./scripts/setup-bind.sh` to generate a TSIG key. It prints the three
-things you must add to `/etc/bind/named.conf`:
+`./scripts/setup.sh` runs `./scripts/setup-bind.sh` for you. It SSHs to the
+BIND server and **automatically**: generates a TSIG key, installs it
+(`/etc/bind/cerulean.keys` + an `include` in `named.conf`), and patches each
+zone in `BIND_ZONES` with `allow-update` and `allow-transfer` — with a
+backup of your config before editing and a `named-checkconf` rollback if
+anything is invalid, then reloads BIND and writes the key into `.env`.
+
+What it needs from you: `.env` with `BIND_SSH_HOST`, `BIND_SSH_USER` and
+(`BIND_SSH_KEY_PATH` or `BIND_SSH_PASSWORD`), plus the ability for the portal
+host to reach BIND over SSH. If you'd rather configure BIND by hand, the
+three things it adds are:
 
 ```named
-key "cerulean" {
-    algorithm hmac-sha256;
-    secret "<generated>";
-};
+key "cerulean" { algorithm hmac-sha256; secret "<generated>"; };
 ```
-
-and, in each zone block Cerulean manages:
 
 ```named
-allow-update { key "cerulean."; };        # dynamic updates (nsupdate)
-allow-transfer { <portal-ip>; };          # so Cerulean can list records (AXFR)
+allow-update { key "cerulean"; };        /* in each managed zone */
+allow-transfer { <portal-ip>; };          /* so Cerulean can list records (AXFR) */
 ```
 
-Then put `BIND_TSIG_NAME` / `BIND_TSIG_SECRET` in `.env` and restart `named`.
-The BIND server must be reachable from Cerulean over SSH (the default config
-uses `root` + password; a key via `BIND_SSH_KEY_PATH` is preferred).
-
-### 2. acme-dns (for the `acme-dns` strategy)
+### 2. acme-dns (only for the `acme-dns` strategy)
 
 `acme-dns/config.cfg` controls the acme-dns server. Set the `A` record in its
 `records` list to your **public IP** — the acme-dns container must be
