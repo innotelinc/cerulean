@@ -1,0 +1,25 @@
+# Secrets — never commit real credentials
+.env
+.env.local
+*.env
+!*.env.example
+
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Data (SQLite databases, acme-dns data, certs)
+data/
+acme-dns/data/
+*.db
+*.db-journal
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
