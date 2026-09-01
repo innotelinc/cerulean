@@ -14,6 +14,21 @@ export interface DnsRecord {
   value: string;
 }
 
+export interface HealthSummary {
+  score: number;
+  grade: string;
+}
+
+export interface HealthCheck {
+  name: string;
+  status: "ok" | "warn" | "fail";
+  detail: string;
+}
+
+export interface CertHealth extends HealthSummary {
+  checks: HealthCheck[];
+}
+
 export interface Certificate {
   id: number;
   name: string;
@@ -28,6 +43,31 @@ export interface Certificate {
   autoRenew: boolean;
   createdAt: string;
   hasMaterial: boolean;
+  health: HealthSummary;
+}
+
+export interface DiscoveredCertificate {
+  id: number;
+  source: string;
+  sourceId: string | null;
+  name: string;
+  domains: string[];
+  issuer: string | null;
+  fingerprint: string | null;
+  expiresAt: string | null;
+  issuedAt: string | null;
+  firstSeen: string;
+  lastSeen: string;
+  hasMaterial: boolean;
+  health: HealthSummary;
+}
+
+export interface DnsAudit {
+  domain: string;
+  runAt: string;
+  score: number;
+  grade: string;
+  checks: HealthCheck[];
 }
 
 export interface Activity {
@@ -58,10 +98,42 @@ export interface NpmCertificate {
   expires_on: string | null;
 }
 
+export interface AuthConfig {
+  localEnabled: boolean;
+  oidc: {
+    enabled: boolean;
+    issuerUrl: string;
+    redirectUri: string;
+  };
+}
+
+export interface SessionUser {
+  sub: string;
+  email: string;
+  name: string;
+  groups: string[];
+  provider: "local" | "authentik";
+}
+
 export interface StatusResponse {
   bind: { status: string; detail: string };
   acmedns: { status: string };
   npm: { status: string };
+  auth: {
+    oidcEnabled: boolean;
+    localEnabled: boolean;
+    issuerUrl: string;
+    redirectUri: string;
+  };
+  vault: {
+    enabled: boolean;
+    status: string;
+    addr: string;
+  };
+  discovery: {
+    dirs: string[];
+    count: number;
+  };
   config: {
     zone: string;
     acmeDirectoryUrl: string;

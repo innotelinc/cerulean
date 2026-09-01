@@ -1,12 +1,27 @@
 import { Router } from "express";
 import { config } from "./config";
 import { db, type CertificateRow } from "./db";
-import { login, logout, requireAuth } from "./auth";
+import {
+  clearSessionCookie,
+  extractToken,
+  getSession,
+  login,
+  loginWithOidc,
+  logout,
+  oidcConfigured,
+  requireAuth,
+  setSessionCookie,
+} from "./auth";
 import { runIssueJob, renewalSweep } from "./jobs";
 import * as bind from "./services/bind";
 import { acmedns } from "./services/acmedns";
 import { npm } from "./services/npm";
 import { ensureAcmeDnsCreds } from "./services/acme";
+import { oidc } from "./services/oidc";
+import { scoreCertificate } from "./services/health";
+import { runDiscovery } from "./services/discovery";
+import { auditDomain } from "./services/audit";
+import { vault } from "./services/vault";
 
 const router = Router();
 
@@ -23,6 +38,15 @@ function asyncHandler(
 }
 
 function certToJson(c: CertificateRow) {
+  const domains = JSON.parse(c.domains_json) as string[];
+  const health = scoreCertificate({
+    expiresAt: c.expires_at,
+    issuedAt: c.issued_at,
+    domains,
+    hasMaterial: Boolean(c.certificate && c.key),
+    certificate: c.certificate,
+    key: c.key,
+  });
   return {
     id: c.id,
     name: c.name,
@@ -31,12 +55,13 @@ function certToJson(c: CertificateRow) {
     strategy: c.strategy,
     status: c.status,
     error: c.error,
-    domains: JSON.parse(c.domains_json),
+    domains,
     expiresAt: c.expires_at,
     issuedAt: c.issued_at,
     autoRenew: c.auto_renew === 1,
     createdAt: c.created_at,
     hasMaterial: Boolean(c.certificate && c.key),
+    health: { score: health.score, grade: health.grade },
   };
 }
 
@@ -52,10 +77,71 @@ router.post("/auth/login", (req, res) => {
 });
 
 router.post("/auth/logout", requireAuth, (req, res) => {
-  const header = req.headers.authorization || "";
-  logout(header.startsWith("Bearer ") ? header.slice(7) : "");
+  logout(extractToken(req) || "");
+  clearSessionCookie(res);
   res.json({ ok: true });
 });
+
+/** Public — tells the login page how to offer sign-in. */
+router.get("/auth/config", (_req, res) => {
+  res.json({
+    localEnabled: config.auth.localEnabled,
+    oidc: {
+      enabled: oidcConfigured(),
+      issuerUrl: config.auth.issuerUrl,
+      redirectUri: config.auth.redirectUri,
+    },
+  });
+});
+
+/** Who is the current session? */
+router.get("/auth/me", requireAuth, (req, res) => {
+  const session = getSession(extractToken(req));
+  res.json({ user: session?.user ?? null });
+});
+
+/** Start an Authentik OIDC authorization-code + PKCE flow. */
+router.get(
+  "/auth/oidc/authorize",
+  asyncHandler(async (req, res) => {
+    if (!oidcConfigured()) {
+      res.status(404).json({ error: "Authentik OIDC is not configured (see AUTHENTIK_* in .env)" });
+      return;
+    }
+    const redirectTo =
+      typeof req.query.redirect === "string" && req.query.redirect.startsWith("/")
+        ? req.query.redirect
+        : "/";
+    const { url } = await oidc.authorizeUrl(redirectTo);
+    res.redirect(url);
+  }),
+);
+
+/** Authentik redirects back here with an authorization code. */
+router.get(
+  "/auth/oidc/callback",
+  asyncHandler(async (req, res) => {
+    const state = typeof req.query.state === "string" ? req.query.state : "";
+    const code = typeof req.query.code === "string" ? req.query.code : "";
+    if (req.query.error) {
+      res.redirect(`/?auth_error=${encodeURIComponent(String(req.query.error))}`);
+      return;
+    }
+    const pending = oidc.consumeState(state);
+    if (!pending || !code) {
+      res.status(400).json({ error: "Invalid or expired OIDC state" });
+      return;
+    }
+    const user = await oidc.exchangeCode(code, pending.verifier);
+    const token = loginWithOidc(user);
+    setSessionCookie(res, token);
+    db.addActivity(
+      "auth-login",
+      `Signed in via Authentik: ${user.email || user.name}`,
+    );
+    res.redirect(pending.redirectTo);
+  }),
+);
 
 // ── Status ──────────────────────────────────────────────────────────────
 router.get(
@@ -78,11 +164,27 @@ router.get(
     }
     const acmednsStatus = await acmedns.test();
     const npmStatus = await npm.test();
+    const vaultStatus = await vault.test();
 
     res.json({
       bind: { status: bindStatus, detail: bindDetail },
       acmedns: { status: acmednsStatus },
       npm: { status: npmStatus },
+      auth: {
+        oidcEnabled: oidcConfigured(),
+        localEnabled: config.auth.localEnabled,
+        issuerUrl: config.auth.issuerUrl,
+        redirectUri: config.auth.redirectUri,
+      },
+      vault: {
+        enabled: vault.isEnabled(),
+        status: vaultStatus,
+        addr: config.vault.addr,
+      },
+      discovery: {
+        dirs: config.discovery.dirs,
+        count: db.listDiscoveredCerts().length,
+      },
       config: {
         zone: config.zone,
         acmeDirectoryUrl: config.acmeDirectoryUrl,
@@ -389,6 +491,150 @@ router.post(
 router.get("/activities", requireAuth, (_req, res) => {
   res.json(db.listActivities(200));
 });
+
+// ── Certificate health ──────────────────────────────────────────────────
+router.get(
+  "/certificates/:id/health",
+  requireAuth,
+  (req, res) => {
+    const cert = db.getCertificate(Number(req.params.id));
+    if (!cert) {
+      res.status(404).json({ error: "Certificate not found" });
+      return;
+    }
+    const health = scoreCertificate({
+      expiresAt: cert.expires_at,
+      issuedAt: cert.issued_at,
+      domains: JSON.parse(cert.domains_json),
+      hasMaterial: Boolean(cert.certificate && cert.key),
+      certificate: cert.certificate,
+      key: cert.key,
+    });
+    res.json(health);
+  },
+);
+
+// ── Certificate discovery ───────────────────────────────────────────────
+router.get("/discovery/certificates", requireAuth, (_req, res) => {
+  res.json(
+    db.listDiscoveredCerts().map((c) => {
+      const domains = JSON.parse(c.domains_json) as string[];
+      const health = scoreCertificate({
+        expiresAt: c.expires_at,
+        issuedAt: c.issued_at,
+        domains,
+        certificate: c.certificate,
+        key: c.key,
+        issuer: c.issuer,
+      });
+      return {
+        id: c.id,
+        source: c.source,
+        sourceId: c.source_id,
+        name: c.name,
+        domains,
+        issuer: c.issuer,
+        fingerprint: c.fingerprint,
+        expiresAt: c.expires_at,
+        issuedAt: c.issued_at,
+        firstSeen: c.first_seen,
+        lastSeen: c.last_seen,
+        hasMaterial: Boolean(c.certificate && c.key),
+        health: { score: health.score, grade: health.grade },
+      };
+    }),
+  );
+});
+
+router.post(
+  "/discovery/scan",
+  requireAuth,
+  asyncHandler(async (_req, res) => {
+    const result = await runDiscovery();
+    res.json({ ok: true, ...result });
+  }),
+);
+
+router.delete("/discovery/certificates/:id", requireAuth, (req, res) => {
+  const row = db
+    .listDiscoveredCerts()
+    .find((c) => c.id === Number(req.params.id));
+  if (!row) {
+    res.status(404).json({ error: "Certificate not found" });
+    return;
+  }
+  db.deleteDiscoveredCert(row.id);
+  db.addActivity("discovery-delete", `Removed discovered certificate ${row.name}`);
+  res.json({ ok: true });
+});
+
+// ── DNS health auditing ─────────────────────────────────────────────────
+router.get(
+  "/audit/dns",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const requested =
+      typeof req.query.domain === "string" ? req.query.domain.trim() : "";
+    const targets = requested
+      ? [requested]
+      : db.listDomains().map((d) => d.name);
+    const audits = [];
+    for (const name of targets) {
+      try {
+        const audit = await auditDomain(name);
+        db.saveDnsAudit(audit.domain, audit.score, audit.checks);
+        audits.push(audit);
+      } catch (err) {
+        audits.push({
+          domain: name,
+          runAt: new Date().toISOString(),
+          score: 0,
+          grade: "F",
+          checks: [
+            {
+              name: "error",
+              status: "fail",
+              detail: err instanceof Error ? err.message : String(err),
+            },
+          ],
+        });
+      }
+    }
+    res.json(audits);
+  }),
+);
+
+router.get("/audit/dns/history", requireAuth, (_req, res) => {
+  res.json(
+    db.listDnsAudits(100).map((a) => ({
+      id: a.id,
+      domain: a.domain,
+      runAt: a.run_at,
+      score: a.score,
+      checks: JSON.parse(a.checks_json),
+    })),
+  );
+});
+
+// ── Secret vault ────────────────────────────────────────────────────────
+router.post(
+  "/vault/sync",
+  requireAuth,
+  asyncHandler(async (_req, res) => {
+    if (!vault.isEnabled()) {
+      res.status(409).json({
+        error: "Vault is not configured — set VAULT_ADDR and VAULT_TOKEN in .env",
+      });
+      return;
+    }
+    const { written } = await vault.sync();
+    db.addActivity(
+      "vault-sync",
+      `Synced ${written.length} secret(s) to the vault (manual)`,
+    );
+    res.json({ ok: true, written });
+  }),
+);
 
 // ── Maintenance ─────────────────────────────────────────────────────────
 router.post(

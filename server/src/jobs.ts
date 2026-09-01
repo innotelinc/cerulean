@@ -1,6 +1,9 @@
 import { db } from "./db";
 import { issueCertificate, renewCertificate } from "./services/acme";
 import { npm } from "./services/npm";
+import { runDiscovery } from "./services/discovery";
+import { auditDomain } from "./services/audit";
+import { vault } from "./services/vault";
 
 /**
  * Best-effort: attach an issued/renewed certificate to every NPM proxy host
@@ -79,10 +82,85 @@ export async function renewalSweep(days = 30): Promise<void> {
   }
 }
 
+/** Scan for externally-managed certificates (NPM + local dirs). */
+async function discoverySweep(): Promise<void> {
+  try {
+    await runDiscovery();
+  } catch (err) {
+    db.addActivity(
+      "discovery-error",
+      "Certificate discovery sweep failed",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}
+
+/** Audit DNS health for every registered domain. */
+async function auditSweep(): Promise<void> {
+  const domains = db.listDomains();
+  for (const domain of domains) {
+    try {
+      const audit = await auditDomain(domain.name);
+      db.saveDnsAudit(audit.domain, audit.score, audit.checks);
+      if (audit.score < 60) {
+        db.addActivity(
+          "dns-audit",
+          `DNS audit for ${audit.domain}: ${audit.grade} (${audit.score}/100) — ${audit.checks.filter((c) => c.status !== "ok").map((c) => c.name).join(", ") || "all ok"}`,
+        );
+      }
+    } catch (err) {
+      db.addActivity(
+        "dns-audit-error",
+        `DNS audit failed for ${domain.name}`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+}
+
+/** Mirror sensitive material into the secret vault (if configured). */
+async function vaultSyncSweep(): Promise<void> {
+  if (!vault.isEnabled()) return;
+  try {
+    const { written } = await vault.sync();
+    if (written.length) {
+      db.addActivity(
+        "vault-sync",
+        `Synced ${written.length} secret(s) to the vault`,
+        written.join(", "),
+      );
+    }
+  } catch (err) {
+    db.addActivity(
+      "vault-error",
+      "Vault sync failed",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}
+
 export function startScheduler(): void {
-  // Sweep once at startup, then every 12 hours.
+  // Renewal sweep: once at startup, then every 12 hours.
   renewalSweep().catch(() => undefined);
   setInterval(() => {
     renewalSweep().catch(() => undefined);
   }, 12 * 60 * 60 * 1000);
+
+  // Certificate discovery: at startup, then daily.
+  discoverySweep().catch(() => undefined);
+  setInterval(() => {
+    discoverySweep().catch(() => undefined);
+  }, 24 * 60 * 60 * 1000);
+
+  // DNS health audit: at startup, then every 6 hours.
+  auditSweep().catch(() => undefined);
+  setInterval(() => {
+    auditSweep().catch(() => undefined);
+  }, 6 * 60 * 60 * 1000);
+
+  // Vault sync: at startup, then daily.
+  vaultSyncSweep().catch(() => undefined);
+  setInterval(() => {
+    vaultSyncSweep().catch(() => undefined);
+  }, 24 * 60 * 60 * 1000);
 }

@@ -10,6 +10,31 @@ export interface Config {
   adminPassword: string;
   tokenTtlHours: number;
 
+  auth: {
+    issuerUrl: string;
+    clientId: string;
+    clientSecret: string;
+    redirectUri: string;
+    scopes: string;
+    localEnabled: boolean;
+  };
+
+  vault: {
+    enabled: boolean;
+    addr: string;
+    token: string;
+    prefix: string;
+  };
+
+  discovery: {
+    dirs: string[];
+  };
+
+  audit: {
+    enabled: boolean;
+    resolvers: string[];
+  };
+
   acmeDirectoryUrl: string;
   acmeEmail: string;
 
@@ -47,6 +72,13 @@ function bool(value: string | undefined, def: boolean): boolean {
   return value.toLowerCase() === "true" || value === "1";
 }
 
+function list(value: string | undefined): string[] {
+  return (value || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const adminPassword = env.CERULEAN_ADMIN_PASSWORD || "";
   if (!adminPassword) {
@@ -55,10 +87,50 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     );
   }
 
+  const issuerUrl = env.AUTHENTIK_ISSUER_URL || "";
+  const clientId = env.AUTHENTIK_CLIENT_ID || "";
+  const clientSecret = env.AUTHENTIK_CLIENT_SECRET || "";
+  const vaultAddr = env.VAULT_ADDR || "";
+  const vaultToken = env.VAULT_TOKEN || "";
+
   return {
     port: Number(env.CERULEAN_PORT || 3000),
     adminPassword,
     tokenTtlHours: Number(env.CERULEAN_TOKEN_TTL_HOURS || 12),
+
+    auth: {
+      issuerUrl,
+      clientId,
+      clientSecret,
+      // The OIDC redirect URI. Defaults to the portal's own callback path so
+      // the flow works out of the box when the dashboard is served here.
+      redirectUri:
+        env.AUTHENTIK_REDIRECT_URI ||
+        `http://localhost:${env.CERULEAN_PORT || 3000}/api/auth/oidc/callback`,
+      scopes: env.AUTHENTIK_SCOPES || "openid profile email",
+      // Local admin-password login remains available as a bootstrap fallback
+      // unless explicitly disabled (AUTH_LOCAL_ENABLED=0).
+      localEnabled: bool(env.AUTH_LOCAL_ENABLED, true),
+    },
+
+    vault: {
+      enabled: bool(env.VAULT_ENABLED, Boolean(vaultAddr && vaultToken)),
+      addr: vaultAddr,
+      token: vaultToken,
+      prefix: env.VAULT_PREFIX || "cerulean",
+    },
+
+    discovery: {
+      // Extra directories scanned for PEM certificates (e.g. /etc/ssl/certs).
+      dirs: list(env.CERT_DISCOVERY_DIRS),
+    },
+
+    audit: {
+      enabled: bool(env.DNS_AUDIT_ENABLED, true),
+      resolvers: list(env.DNS_AUDIT_RESOLVERS).length
+        ? list(env.DNS_AUDIT_RESOLVERS)
+        : ["8.8.8.8", "1.1.1.1", "9.9.9.9"],
+    },
 
     acmeDirectoryUrl:
       env.ACME_DIRECTORY_URL ||
@@ -81,10 +153,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       apiUrl: env.ACMEDNS_API_URL || "http://acme-dns:4443",
       publicIp: env.ACMEDNS_PUBLIC_IP || "",
       domain: env.ACMEDNS_DOMAIN || "auth.innotel.us",
-      allowFrom: (env.ACMEDNS_ALLOW_FROM || "")
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean),
+      allowFrom: list(env.ACMEDNS_ALLOW_FROM),
     },
 
     npm: {

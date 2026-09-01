@@ -94,6 +94,19 @@ nav {
   color: var(--red);
 }
 
+.sidebar-footer {
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.divider {
+  text-align: center;
+  font-size: 12px;
+  margin: 14px 0 16px;
+  position: relative;
+}
+
 .content {
   flex: 1;
   padding: 28px 34px;
@@ -389,4 +402,12 @@ textarea {
 .login-box .subtitle {
   text-align: center;
   margin-bottom: 22px;
+}
+
+.login-box button + .divider {
+  margin-top: 16px;
+}
+
+.login-box .form-row {
+  margin-top: 16px;
 }

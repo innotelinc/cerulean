@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { Domain, DnsRecord } from "../types";
+import type { Domain, DnsAudit, DnsRecord } from "../types";
 
 const RECORD_TYPES = ["A", "AAAA", "CNAME", "TXT", "MX", "NS", "SRV"];
 
@@ -19,6 +19,23 @@ export default function Domains() {
   const [records, setRecords] = useState<Record<number, DnsRecord[]>>({});
   const [recordsLoading, setRecordsLoading] = useState<Record<number, boolean>>({});
   const [recordsError, setRecordsError] = useState<Record<number, string>>({});
+
+  // dns audit (per domain)
+  const [auditFor, setAuditFor] = useState<Record<number, DnsAudit | null>>({});
+  const [auditLoading, setAuditLoading] = useState<Record<number, boolean>>({});
+
+  const runAudit = async (d: Domain) => {
+    setAuditLoading((x) => ({ ...x, [d.id]: true }));
+    setError("");
+    try {
+      const [audit] = await api.auditDns(d.name);
+      setAuditFor((x) => ({ ...x, [d.id]: audit }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "DNS audit failed");
+    } finally {
+      setAuditLoading((x) => ({ ...x, [d.id]: false }));
+    }
+  };
 
   // add record form (per open domain)
   const [recType, setRecType] = useState("A");
@@ -174,6 +191,9 @@ export default function Domains() {
                   <span className="muted mono">CNAME target: {d.acmedns_fulldomain}</span>
                 )}
                 <div style={{ flex: 1 }} />
+                <button className="secondary small" onClick={() => runAudit(d)} disabled={auditLoading[d.id]}>
+                  {auditLoading[d.id] ? "Auditing…" : "Audit DNS"}
+                </button>
                 <button className="secondary small" onClick={() => toggleRecords(d.id)}>
                   {openId === d.id ? "Hide records" : "Records"}
                 </button>
@@ -181,6 +201,38 @@ export default function Domains() {
                   Remove
                 </button>
               </div>
+
+              {auditFor[d.id] && (
+                <div style={{ margin: "10px 0 6px" }}>
+                  <p className="panel-title" style={{ marginBottom: 6 }}>
+                    DNS health:{" "}
+                    <span
+                      className={`badge ${auditFor[d.id]!.grade === "A" || auditFor[d.id]!.grade === "B" ? "green" : auditFor[d.id]!.grade === "C" ? "amber" : "red"}`}
+                    >
+                      {auditFor[d.id]!.grade} {auditFor[d.id]!.score}/100
+                    </span>
+                    <span className="muted" style={{ fontSize: 12 }}>
+                      {" "}
+                      {new Date(auditFor[d.id]!.runAt).toLocaleString()}
+                    </span>
+                  </p>
+                  <table>
+                    <tbody>
+                      {auditFor[d.id]!.checks.map((c) => (
+                        <tr key={c.name}>
+                          <td style={{ width: 160 }}>
+                            <span
+                              className={`status-dot ${c.status === "ok" ? "ok" : c.status === "warn" ? "warn" : "err"}`}
+                            />
+                            {c.name}
+                          </td>
+                          <td className="muted">{c.detail}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
 
               {openId === d.id && (
                 <div style={{ margin: "10px 0 6px" }}>

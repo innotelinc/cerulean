@@ -9,6 +9,110 @@ services:
     volumes:
       - ./data:/app/data
 
+  # ── Authentik (OPT-IN: docker compose --profile authentik up -d) ────────
+  # SSO / user management. Cerulean authenticates against it via OIDC
+  # (AUTHENTIK_ISSUER_URL / AUTHENTIK_CLIENT_ID / AUTHENTIK_CLIENT_SECRET).
+  # Reach it at http://<host>:9000, or through the auth.<base> proxy host.
+  authentik-server:
+    image: ghcr.io/goauthentik/server:${AUTHENTIK_IMAGE_TAG:-2024.12.2}
+    container_name: cerulean-authentik
+    profiles: ["authentik"]
+    restart: unless-stopped
+    command: server
+    environment:
+      # Note: no :? syntax here — compose interpolates env for every service
+      # even when the profile is inactive, so these must tolerate being unset.
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:-}
+      AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
+      AUTHENTIK_POSTGRESQL__HOST: authentik-postgres
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_POSTGRESQL_PASSWORD:-}
+      AUTHENTIK_REDIS__HOST: authentik-redis
+      AUTHENTIK_REDIS__CACHE_TIMEOUT_OVERRIDES__default: "86400"
+      AUTHENTIK_BOOTSTRAP_TOKEN: ${AUTHENTIK_BOOTSTRAP_TOKEN:-}
+      AUTHENTIK_BOOTSTRAP_PASSWORD: ${AUTHENTIK_BOOTSTRAP_PASSWORD:-}
+      AUTHENTIK_BOOTSTRAP_EMAIL: ${AUTHENTIK_BOOTSTRAP_EMAIL:-admin@cerulean.innotel.us}
+    ports:
+      - "9000:9000"
+      - "9443:9443"
+    volumes:
+      - ./data/authentik/media:/media
+      - ./data/authentik/custom-templates:/templates
+    depends_on:
+      authentik-postgres:
+        condition: service_healthy
+      authentik-redis:
+        condition: service_healthy
+
+  authentik-worker:
+    image: ghcr.io/goauthentik/server:${AUTHENTIK_IMAGE_TAG:-2024.12.2}
+    container_name: cerulean-authentik-worker
+    profiles: ["authentik"]
+    restart: unless-stopped
+    command: worker
+    environment:
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:-}
+      AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
+      AUTHENTIK_POSTGRESQL__HOST: authentik-postgres
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_POSTGRESQL_PASSWORD:-}
+      AUTHENTIK_REDIS__HOST: authentik-redis
+    volumes:
+      - ./data/authentik/media:/media
+      - ./data/authentik/custom-templates:/templates
+    depends_on:
+      authentik-postgres:
+        condition: service_healthy
+      authentik-redis:
+        condition: service_healthy
+
+  authentik-postgres:
+    image: docker.io/library/postgres:16-alpine
+    container_name: cerulean-authentik-postgres
+    profiles: ["authentik"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: authentik
+      POSTGRES_USER: authentik
+      POSTGRES_PASSWORD: ${AUTHENTIK_POSTGRESQL_PASSWORD:-}
+    volumes:
+      - ./data/authentik/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authentik"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  authentik-redis:
+    image: docker.io/library/redis:alpine
+    container_name: cerulean-authentik-redis
+    profiles: ["authentik"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── HashiCorp Vault (OPT-IN: docker compose --profile vault up -d) ───────
+  # Secret vault for private keys and credentials. This runs Vault in DEV
+  # mode (ephemeral, single unsealed node) for a self-hosted stack — for
+  # anything beyond testing, point VAULT_ADDR at a real Vault instead.
+  vault:
+    image: hashicorp/vault:${VAULT_IMAGE_TAG:-1.17}
+    container_name: cerulean-vault
+    profiles: ["vault"]
+    restart: unless-stopped
+    command: server -dev -dev-root-token-id=${VAULT_DEV_ROOT_TOKEN_ID:-cerulean-root}
+    environment:
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    ports:
+      - "8200:8200"
+    cap_add:
+      - IPC_LOCK
+
   # acme-dns is OPT-IN: only started when you choose the 'acmedns' strategy.
   #   docker compose --profile acmedns up -d
   # The 'bind' strategy (default) does not need it at all.
