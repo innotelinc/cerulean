@@ -58,7 +58,10 @@ credential, and zone is configurable.
 - **Automatic certificate attach** — the moment a certificate is issued or
   renewed for a provisioned proxy host's domain, Cerulean imports the fresh
   material into NPM and attaches it to the matching host (SSL + HTTP/2 on),
-  refreshing in place on renewal — no clicks, ever.
+  refreshing in place on renewal — no clicks, ever. Wildcard certificates
+  (`*.innotel.us`) attach to every matching subdomain host
+  (`cerulean.innotel.us`) too, unless the host already has its own
+  certificate (toggle with `NPM_WILDCARD_ATTACH`).
 - **REST API** — every dashboard action is also available as a JSON endpoint
   (see below), so you can script issuance or exports.
 - **Audit log** — every domain, record, issuance, and export is recorded.
@@ -161,9 +164,12 @@ only, keep it firewalled).
 By default hosts are created without SSL (`certificate_id: 0`). The moment you
 issue a certificate for `cerulean.innotel.us` (or any provisioned host's
 domain), Cerulean **automatically imports it into NPM and attaches it to the
-matching proxy host** — renewals refresh the same NPM certificate in place. If
-you'd rather have NPM request its own Let's Encrypt certificate via HTTP-01,
-set `NPM_PROXY_SSL=1` in `.env` instead.
+matching proxy host** — renewals refresh the same NPM certificate in place. A
+wildcard certificate for `*.innotel.us` is attached to every matching subdomain
+host (e.g. `cerulean.innotel.us`) as well, but never replaces a certificate a
+host already has — set `NPM_WILDCARD_ATTACH=0` in `.env` to restrict attaches
+to exact-domain matches. If you'd rather have NPM request its own Let's Encrypt
+certificate via HTTP-01, set `NPM_PROXY_SSL=1` instead.
 
 ## Using Cerulean
 
@@ -174,8 +180,8 @@ set `NPM_PROXY_SSL=1` in `.env` instead.
    shown live; expiry is tracked and certificates auto-renew.
 3. **nginx proxy manager** — proxies are provisioned automatically by
    `setup.sh`; once a certificate is issued for a host's domain it is attached
-   to the host automatically. The *Export to NPM* button is still there for
-   manual exports (e.g. wildcard certificates without a matching host).
+   to the host automatically (wildcards cover matching subdomains). The
+   *Export to NPM* button is still there for manual exports.
 
 ## REST API
 

@@ -36,6 +36,7 @@ export interface Config {
     apiUrl: string;
     email: string;
     password: string;
+    wildcardAttach: boolean;
   };
 
   dataDir: string;
@@ -90,6 +91,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       apiUrl: env.NPM_API_URL || "",
       email: env.NPM_EMAIL || "",
       password: env.NPM_PASSWORD || "",
+      // Attach wildcard certificates (e.g. *.innotel.us) to every matching
+      // subdomain proxy host, unless the host already has its own certificate.
+      wildcardAttach: bool(env.NPM_WILDCARD_ATTACH, true),
     },
 
     dataDir: env.CERULEAN_DATA_DIR || path.resolve(__dirname, "../../../data"),
