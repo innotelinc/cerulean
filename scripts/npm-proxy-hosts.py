@@ -233,8 +233,8 @@ def main():
             npm.update_host(found["id"], payload)
             print(f"  ✓ updated  {domain} → {payload['forward_scheme']}://{forward_host}:{payload['forward_port']}")
 
-    print("Done. Attach a Cerulean-issued certificate to each host in the portal "
-          "(NPM export) if you didn't enable NPM_PROXY_SSL.")
+    print("Done. When a certificate is issued for a host's domain, Cerulean")
+    print("imports it into NPM and attaches it to the matching proxy host automatically.")
     return 0
 
 
