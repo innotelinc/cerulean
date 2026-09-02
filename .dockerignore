@@ -1,0 +1,17 @@
+# Git and CI
+.git
+.github
+
+# Secrets and runtime data
+.env
+.env.*
+data
+
+# Dependencies and build output
+node_modules
+**/node_modules
+**/dist
+
+# Editor/OS cruft
+.DS_Store
+*.log
