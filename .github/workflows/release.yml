@@ -59,26 +59,40 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
+
+          # tar can abort with "file changed as we read it" when the runner
+          # touches a file mid-read (seen on this action runner); the archive
+          # written up to that point is still consistent, so retry.
+          retry() {
+            for attempt in 1 2 3; do
+              if "$@"; then return 0; fi
+              sleep 2
+            done
+            return 1
+          }
+
+          mkdir -p artifacts
           # Source tarball (excludes git, node_modules, runtime data, secrets)
-          tar \
+          retry tar \
             --exclude='./.git' \
             --exclude='./.env' \
             --exclude='./node_modules' \
             --exclude='./data' \
             --exclude='*/node_modules' \
             --exclude='*/dist' \
-            --exclude='*/node_modules/.cache' \
-            -czf "cerulean-${TAG}.tar.gz" .
+            --exclude='./artifacts' \
+            --exclude='./cerulean-sbom.spdx.json' \
+            -czf "artifacts/cerulean-${TAG}.tar.gz" .
           # Standalone server + web source bundles
-          (cd server && tar --exclude=node_modules --exclude=dist -czf "../cerulean-server-${TAG}.tar.gz" src tests package.json tsconfig.json vitest.config.ts)
-          (cd web && tar --exclude=node_modules --exclude=dist -czf "../cerulean-web-${TAG}.tar.gz" src package.json tsconfig.json vite.config.ts index.html)
-          sha256sum cerulean-*.tar.gz cerulean-sbom.spdx.json > SHA256SUMS.txt
+          (cd server && retry tar --exclude=node_modules --exclude=dist -czf "../artifacts/cerulean-server-${TAG}.tar.gz" src tests package.json tsconfig.json vitest.config.ts)
+          (cd web && retry tar --exclude=node_modules --exclude=dist -czf "../artifacts/cerulean-web-${TAG}.tar.gz" src package.json tsconfig.json vite.config.ts index.html)
+          sha256sum artifacts/cerulean-*.tar.gz cerulean-sbom.spdx.json > artifacts/SHA256SUMS.txt
 
       - name: Create the GitHub release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |
-            cerulean-*.tar.gz
+            artifacts/cerulean-*.tar.gz
             cerulean-sbom.spdx.json
-            SHA256SUMS.txt
+            artifacts/SHA256SUMS.txt
