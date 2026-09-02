@@ -13,9 +13,13 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 COPY server/package.json server/package.json
 COPY web/package.json web/package.json
-RUN npm install --workspaces --include-workspace-root --omit=dev
+# Full install first: tsc is a devDependency and is required to build.
+RUN npm install --workspaces --include-workspace-root
 COPY server server
-RUN npm run build -w server
+RUN npm run build -w server \
+    # Drop dev dependencies afterwards so the runtime image stays lean.
+    && rm -rf node_modules \
+    && npm install --workspaces --include-workspace-root --omit=dev
 
 # ── Runtime ───────────────────────────────────────────────────────────────
 FROM node:24-alpine
