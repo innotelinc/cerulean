@@ -42,9 +42,22 @@ fi
 
 # ── 1. BIND / TSIG ───────────────────────────────────────────────────────────
 # DNS-01 challenges are validated by writing TXT records straight into BIND
-# over SSH (nsupdate + TSIG). If BIND_SSH_* is configured, generate + install
-# the TSIG key automatically; otherwise the operator adds it by hand.
-if bind_configured; then
+# over SSH (nsupdate + TSIG).
+#   BIND_MODE=local  (default: remote) — the compose stack bundles a BIND+sshd
+#                    container (profile "bind"); nothing to configure here, the
+#                    container generates its TSIG key and root password on
+#                    first start (printed to its logs — copy into .env).
+#   BIND_MODE=remote — generate + install the TSIG key on the remote BIND
+#                    server automatically when BIND_SSH_* is configured.
+BIND_MODE="$(env_get BIND_MODE remote)"
+if [ "$BIND_MODE" = "local" ]; then
+  log "BIND_MODE=local — bundled BIND container will serve the zones"
+  log "Start it with: docker compose --profile bind up -d"
+  if [ -z "$(env_get BIND_TSIG_SECRET)" ]; then
+    warn "BIND_TSIG_SECRET not set — the bundled container generates one on first"
+    warn "start (see: docker logs cerulean-bind); copy it into .env and restart."
+  fi
+elif bind_configured; then
   "${SCRIPT_DIR}/setup-bind.sh"
 else
   warn "BIND is not configured in .env — skipping automatic BIND setup"
@@ -68,7 +81,10 @@ if [ "$NO_START" = "1" ]; then
 else
   log "Starting the stack…"
   if command -v docker >/dev/null 2>&1; then
-    ( cd "${CERULEAN_ROOT}" && docker compose up -d --build )
+    PROFILES=()
+    [ "$(env_get BIND_MODE remote)" = "local" ] && PROFILES+=("--profile" "bind")
+    [ "$(env_get NPM_MODE remote)" = "local" ] && PROFILES+=("--profile" "npm")
+    ( cd "${CERULEAN_ROOT}" && docker compose up -d --build "${PROFILES[@]}" )
     ok "Stack is up. Dashboard: http://<this-host>:3000"
   else
     warn "docker not found — start the portal manually with:"

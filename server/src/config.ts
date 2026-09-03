@@ -39,6 +39,7 @@ export interface Config {
   acmeEmail: string;
 
   bind: {
+    mode: string; // "remote" (default) | "local"
     host: string;
     port: number;
     user: string;
@@ -51,6 +52,7 @@ export interface Config {
   propagationBufferSeconds: number;
 
   npm: {
+    mode: string; // "remote" (default) | "local"
     apiUrl: string;
     email: string;
     password: string;
@@ -85,6 +87,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const clientSecret = env.AUTHENTIK_CLIENT_SECRET || "";
   const vaultAddr = env.VAULT_ADDR || "";
   const vaultToken = env.VAULT_TOKEN || "";
+
+  const bindMode = (env.BIND_MODE || "remote").toLowerCase();
+  const npmMode = (env.NPM_MODE || "remote").toLowerCase();
+  // In "local" mode the compose stack bundles a BIND+sshd container and/or an
+  // nginx-proxy-manager container. Their compose service names are used as the
+  // default addresses (still overridable via the *_SSH_HOST / *_API_URL vars).
+  //
+  // NPM_INTERNAL_API_URL is the address the portal container itself uses; when
+  // NPM_MODE=local it points at the bundled NPM's compose service name, while
+  // NPM_API_URL (used by host-side scripts like npm-proxy-hosts.py) stays at
+  // http://localhost:81.
+  const bindHost =
+    env.BIND_SSH_HOST || (bindMode === "local" ? "cerulean-bind" : "");
+  const npmApiUrl =
+    env.NPM_INTERNAL_API_URL ||
+    env.NPM_API_URL ||
+    (npmMode === "local" ? "http://cerulean-npm:81" : "");
 
   return {
     port: Number(env.CERULEAN_PORT || 3000),
@@ -131,7 +150,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     acmeEmail: env.ACME_EMAIL || "admin@example.com",
 
     bind: {
-      host: env.BIND_SSH_HOST || "",
+      mode: bindMode,
+      host: bindHost,
       port: Number(env.BIND_SSH_PORT || 22),
       user: env.BIND_SSH_USER || "root",
       keyPath: env.BIND_SSH_KEY_PATH || "",
@@ -143,7 +163,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     propagationBufferSeconds: Number(env.PROPAGATION_BUFFER_SECONDS || 10),
 
     npm: {
-      apiUrl: env.NPM_API_URL || "",
+      mode: npmMode,
+      apiUrl: npmApiUrl,
       email: env.NPM_EMAIL || "",
       password: env.NPM_PASSWORD || "",
       // Attach wildcard certificates (e.g. *.innotel.us) to every matching
