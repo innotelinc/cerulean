@@ -100,7 +100,7 @@ export const api = {
     request<import("./types").CertHealth>("GET", `/certificates/${id}/health`),
 
   listDomains: () => request<import("./types").Domain[]>("GET", "/domains"),
-  createDomain: (input: { name: string; strategy: string }) =>
+  createDomain: (input: { name: string }) =>
     request<import("./types").Domain>("POST", "/domains", input),
   deleteDomain: (id: number) =>
     request<{ ok: boolean }>("DELETE", `/domains/${id}`),
@@ -127,7 +127,6 @@ export const api = {
     name?: string;
     domain: string;
     wildcard: boolean;
-    strategy: string;
   }) => request<import("./types").Certificate>("POST", "/certificates", input),
   getCertificate: (id: number) =>
     request<import("./types").Certificate>("GET", `/certificates/${id}`),

@@ -65,11 +65,6 @@ export default function Settings() {
                   <td className="muted mono">{status.bind.detail}</td>
                 </tr>
                 <tr>
-                  <td>{dot(status.acmedns.status)} acme-dns</td>
-                  <td className="mono">{status.acmedns.status}</td>
-                  <td className="muted mono">{status.config.acmednsApiUrl}</td>
-                </tr>
-                <tr>
                   <td>{dot(status.npm.status)} nginx proxy manager</td>
                   <td className="mono">{status.npm.status}</td>
                   <td className="muted mono">{status.config.npmApiUrl}</td>
@@ -119,14 +114,6 @@ export default function Settings() {
                   </td>
                 </tr>
                 <tr>
-                  <td>acme-dns domain</td>
-                  <td className="mono">{status.config.acmednsDomain}</td>
-                </tr>
-                <tr>
-                  <td>acme-dns public IP (port 53)</td>
-                  <td className="mono">{status.config.acmednsPublicIp || "not set — BIND strategy only"}</td>
-                </tr>
-                <tr>
                   <td>Certificate discovery dirs</td>
                   <td className="mono">{status.discovery.dirs.length ? status.discovery.dirs.join(", ") : "none (NPM only)"}</td>
                 </tr>
@@ -145,19 +132,10 @@ export default function Settings() {
           <div className="panel">
             <div className="panel-title">How DNS-01 works here</div>
             <p className="muted" style={{ lineHeight: 1.6 }}>
-              <strong className="ok">acme-dns strategy:</strong> Cerulean points{" "}
-              <span className="mono">_acme-challenge.yourdomain</span> (CNAME) at a subdomain of{" "}
-              <span className="mono">{status.config.acmednsDomain}</span> served by the acme-dns
-              server, then pushes challenge TXT values to it via its API. One-time delegation:
-              <span className="mono"> {status.config.acmednsDomain} NS {status.config.acmednsDomain}</span>{" "}
-              and <span className="mono">A {status.config.acmednsPublicIp || "&lt;public ip&gt;"}</span> must exist
-              in your public DNS, and port 53 must be reachable from the internet.
-              <br />
-              <br />
-              <strong className="ok">BIND strategy:</strong> Cerulean writes challenge TXT records
-              directly to BIND over SSH using nsupdate with a TSIG key, then waits for them to be
-              served before Let's Encrypt validates. Requires{" "}
-              <span className="mono">allow-update</span> for the TSIG key on each zone.
+              Cerulean writes DNS-01 challenge TXT records directly to BIND over
+              SSH using nsupdate with a TSIG key, then waits for them to be served before
+              Let's Encrypt validates. Requires <span className="mono">allow-update</span> for
+              the TSIG key on each zone, and the zone must be reachable from the internet.
             </p>
           </div>
         </>

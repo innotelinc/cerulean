@@ -38,6 +38,40 @@ function ensureDot(name: string): string {
   return name.endsWith(".") ? name : `${name}.`;
 }
 
+/** Strip a single trailing dot, if present. */
+function stripDot(name: string): string {
+  return name.replace(/\.$/, "");
+}
+
+/**
+ * Resolve the BIND zone that manages `domain`: the longest zone that is a
+ * suffix of `domain` (e.g. "innotel.us" for "monarch.innotel.us"). Pass the
+ * zones Cerulean manages — registered domains plus CERULEAN_ZONE. Throws if
+ * none covers the domain.
+ */
+export function resolveZone(domain: string, zones: string[]): string {
+  const d = stripDot(domain).toLowerCase();
+  let best: string | undefined;
+  for (const zoneRaw of zones) {
+    const raw = stripDot(zoneRaw);
+    const z = raw.toLowerCase();
+    if (!z) continue;
+    if ((d === z || d.endsWith(`.${z}`)) && (!best || z.length > best.length)) {
+      best = raw;
+    }
+  }
+  if (!best) {
+    const listed = zones.filter(Boolean).length
+      ? zones.filter(Boolean).join(", ")
+      : "none registered";
+    throw new Error(
+      `Domain "${domain}" is not covered by any managed BIND zone (${listed}). ` +
+        `Register the zone on the Domains page or set CERULEAN_ZONE in .env.`,
+    );
+  }
+  return best;
+}
+
 function tsigFileCommand(): string {
   // The key name must match named.conf EXACTLY (no normalization) — nsupdate
   // rejects keys whose name differs from the server's by even a trailing dot.
@@ -113,7 +147,18 @@ export async function deleteRecord(input: {
   await runNsupdate(commands);
 }
 
-/** Set a TXT record, replacing any existing TXT records at that name first. */
+/**
+ * Publish a TXT record at `name` WITHOUT removing existing TXT records there.
+ *
+ * DNS-01 challenges for a wildcard certificate produce two authorizations
+ * (apex and the wildcard) that share the same _acme-challenge name but carry
+ * DIFFERENT TXT values. Replacing the RRset would delete the first value
+ * before Let's Encrypt validates it — instead we append, and the per-value
+ * cleanup in `clearTxtRecord` removes each value after validation.
+ *
+ * BIND rejects a duplicate "update add"; if the value is already published
+ * (e.g. a retry), that is fine and the duplicate error is ignored.
+ */
 export async function setTxtRecord(
   zone: string,
   name: string,
@@ -124,11 +169,14 @@ export async function setTxtRecord(
   const commands = [
     `server ${config.bind.host}`,
     `zone ${ensureDot(zone)}`,
-    `update delete ${owner} TXT`,
     `update add ${owner} ${ttl} TXT ${quoteTxt(value)}`,
     "send",
   ];
-  await runNsupdate(commands);
+  try {
+    await runNsupdate(commands);
+  } catch (err) {
+    if (!/duplicate/i.test(String(err))) throw err;
+  }
 }
 
 /** Remove a TXT record at `name` (all TXT records there if value is omitted). */

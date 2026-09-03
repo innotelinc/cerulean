@@ -6,8 +6,8 @@ import { config } from "../config";
  *  1. Resolve `vault://<path>#<key>` references in .env values — e.g.
  *     `NPM_PASSWORD=vault://cerulean/npm#password` — so real credentials
  *     never live in the repo or shell history.
- *  2. Mirror certificate private keys, ACME account keys, and acme-dns
- *     credentials into Vault (`POST /api/vault/sync`) for off-host storage.
+ *  2. Mirror certificate private keys and ACME account keys into Vault
+ *     (`POST /api/vault/sync`) for off-host storage.
  *
  * KV v2 paths are addressed as `secret/data/<path>` under the configured
  * mount prefix.
@@ -139,8 +139,8 @@ class VaultClient {
   }
 
   /**
-   * Mirror sensitive material into Vault: certificate private keys + fullchain,
-   * ACME account keys, and acme-dns credentials. Returns the paths written.
+   * Mirror sensitive material into Vault: certificate private keys + fullchain
+   * and ACME account keys. Returns the paths written.
    */
   async sync(): Promise<{ written: string[] }> {
     if (!this.isEnabled()) {
@@ -157,17 +157,6 @@ class VaultClient {
       await this.writeKV(path, {
         certificate: cert.certificate ?? "",
         key: cert.key ?? "",
-      });
-      written.push(path);
-    }
-
-    for (const domain of db.listDomains()) {
-      if (!domain.acmedns_password || !domain.acmedns_username) continue;
-      const path = `domains/${domain.name}`;
-      await this.writeKV(path, {
-        acmedns_username: domain.acmedns_username,
-        acmedns_password: domain.acmedns_password,
-        acmedns_fulldomain: domain.acmedns_fulldomain ?? "",
       });
       written.push(path);
     }

@@ -3,10 +3,11 @@
 *Point DNS at it once — never touch a zone file again.*
 
 Cerulean is a self-hosted, centralized certificate and DNS lifecycle
-platform. It runs an **acme-dns** server, issues **Let's Encrypt certificates
-(regular and wildcard)** via DNS-01 challenges, manages **DNS records on
-remote BIND servers** through `nsupdate` over SSH, and **exports certificates
-to nginx proxy manager** with one click. It also **discovers certificates**
+platform. It issues **Let's Encrypt certificates (regular and wildcard)** via
+DNS-01 challenges written straight into **your own BIND server** over SSH
+(nsupdate + TSIG), manages **DNS records on remote BIND servers**, and
+**exports certificates to nginx proxy manager** with one click. It also
+**discovers certificates**
 in your environment, **audits DNS health**, **scores certificate health**,
 stores secrets in a **vault**, and signs users in through **Authentik**. On a
 fresh host it even **provisions every nginx proxy host automatically** — the
@@ -20,17 +21,17 @@ zone is configurable.
                     ┌─────────────────────────────────────────┐
                     │              Cerulean portal            │
                     │  (dashboard + REST API, Node/TypeScript)│
-                    └──────┬──────────────┬──────────┬────────┘
-                           │              │          │
-             SSH + nsupdate│              │HTTP API  │HTTP API (token)
-               (TSIG key)  │              │          │
-                           ▼              ▼          ▼
-                    ┌─────────────┐  ┌───────────┐  ┌──────────────────────┐
-                    │ BIND server │  │ acme-dns  │  │ nginx proxy manager  │
-                    │ 192.168.1.80│  │ (port 53) │  │ 192.168.1.71:81      │
-                    └─────────────┘  └───────────┘  └──────────────────────┘
-                           ▲              ▲
-                           └── authoritative for innotel.us / auth.innotel.us ──┘
+                    └────────────┬──────────────┬─────────────┘
+                                 │              │
+                  SSH + nsupdate │              │ HTTP API (token)
+                    (TSIG key)   │              │
+                                 ▼              ▼
+                    ┌─────────────┐        ┌──────────────────────┐
+                    │ BIND server │        │ nginx proxy manager  │
+                    │ 192.168.1.80│        │ 192.168.1.71:81      │
+                    └─────────────┘        └──────────────────────┘
+                           ▲
+                           └── authoritative for innotel.us ──┘
 ```
 
 ## Features
@@ -41,10 +42,9 @@ zone is configurable.
   `scripts/authentik-setup.py` provisions the OIDC provider automatically.
   The admin password stays available as a bootstrap fallback
   (`AUTH_LOCAL_ENABLED=0` for Authentik-only).
-- **Secret vault** — private keys, acme-dns credentials, and ACME account
-  keys are mirrored into a HashiCorp Vault (KV v2) when `VAULT_ADDR` +
-  `VAULT_TOKEN` are set, and any .env value may be a `vault://path#key`
-  reference instead of plaintext.
+- **Secret vault** — private keys and ACME account keys are mirrored into a
+  HashiCorp Vault (KV v2) when `VAULT_ADDR` + `VAULT_TOKEN` are set, and any
+  .env value may be a `vault://path#key` reference instead of plaintext.
 - **Certificate discovery** — a sweep imports certificates found on nginx
   proxy manager (including ones Cerulean didn't issue) and in local PEM
   directories (`CERT_DISCOVERY_DIRS`) into a central inventory.
@@ -54,19 +54,12 @@ zone is configurable.
 - **Certificate health scoring** — every issued and discovered certificate
   gets a 0–100 score and A–F grade from its validity, key strength,
   signature algorithm, SAN coverage, and material.
-- **acme-dns built in** — `docker-compose` runs an acme-dns server; Cerulean
-  registers per-domain subdomains and points `_acme-challenge` CNAME records
-  at them automatically.
 - **Let's Encrypt certificates** — regular and **wildcard** (SAN), issued
-  in-process with the ACME v2 protocol, stored with their private keys, and
-  **auto-renewed** 30 days before expiry.
-- **Two DNS-01 strategies** (pick one at setup time via `./scripts/setup.sh`):
-  - `bind` *(default)* — challenge TXT records written straight to BIND via
-    `nsupdate` with an auto-generated TSIG key. Requires BIND to be publicly
-    reachable on port 53 (which it is, if it serves your zone).
-  - `acme-dns` — challenge TXT records served by the acme-dns container
-    (`--profile acmedns`), delegated from a subdomain of your zone. Use this
-    when your authoritative DNS has no write API or isn't publicly reachable.
+  in-process with the ACME v2 protocol over DNS-01, stored with their private
+  keys, and **auto-renewed** 30 days before expiry.
+- **BIND-based DNS-01** — challenge TXT records are written straight to your
+  authoritative BIND server via `nsupdate` with a TSIG key (auto-generated
+  and installed by `./scripts/setup.sh`). No extra challenge servers needed:
 - **BIND record management** — create, list, and delete `A`, `AAAA`, `CNAME`,
   `TXT`, `MX`, `NS`, and `SRV` records on any zone you control, live over SSH.
 - **One-click nginx proxy manager export** — import a Cerulean-issued
@@ -90,17 +83,13 @@ zone is configurable.
 ## Quick start
 
 ```bash
-# One-shot setup: choose your strategy (bind or acmedns), it generates the
-# admin password + TSIG key, configures BIND (and optionally acme-dns),
+# One-shot setup: generates the admin password + TSIG key, configures BIND,
 # installs all dependencies, builds, starts the stack, and provisions every
 # nginx proxy manager proxy host (if NPM_* is configured in .env).
-./scripts/setup.sh --strategy bind
-
-# Or with acme-dns (delegated DNS-01):
-./scripts/setup.sh --strategy acmedns
+./scripts/setup.sh
 
 # Or with Authentik SSO provisioned automatically:
-./scripts/setup.sh --strategy bind --with-authentik
+./scripts/setup.sh --with-authentik
 ```
 
 The dashboard is then at `http://<host>:3000` (or `https://cerulean.innotel.us`
@@ -133,29 +122,7 @@ allow-update { key "cerulean"; };        /* in each managed zone */
 allow-transfer { <portal-ip>; };          /* so Cerulean can list records (AXFR) */
 ```
 
-### 2. acme-dns (only for the `acme-dns` strategy)
-
-`acme-dns/config.cfg` controls the acme-dns server. Set the `A` record in its
-`records` list to your **public IP** — the acme-dns container must be
-reachable on **UDP/TCP 53 from the internet** for Let's Encrypt validation.
-
-Add the delegation to your public DNS (i.e. to BIND's `innotel.us` zone, or
-anywhere innotel.us is served):
-
-```dns
-auth.innotel.us.   IN   NS   auth.innotel.us.
-auth.innotel.us.   IN   A    <your public IP>
-```
-
-Cerulean creates the per-domain CNAME
-(`_acme-challenge.innotel.us. → <uuid>.auth.innotel.us.`) automatically the
-first time it issues a certificate for a domain. See
-[docs/acme-dns-setup.md](docs/acme-dns-setup.md) for a full walkthrough.
-
-> If you only use the `bind` strategy (direct nsupdate), you can skip acme-dns
-> entirely.
-
-### 3. nginx proxy manager
+### 2. nginx proxy manager
 
 Set `NPM_API_URL`, `NPM_EMAIL`, and `NPM_PASSWORD` in `.env`, plus
 `NPM_FORWARD_HOST` (the portal host's LAN IP, as seen from NPM — auto-detected
@@ -169,7 +136,7 @@ then:
 NPM is configured, so a fresh host comes up with every proxy host already
 created.
 
-### 4. nginx proxy manager proxy hosts (the map)
+### 3. nginx proxy manager proxy hosts (the map)
 
 One subdomain per service. `scripts/npm-proxy-hosts.py` creates any missing
 host and updates any that drifted (an already-attached certificate is always
@@ -191,10 +158,7 @@ on BIND automatically (requires `BIND_SSH_*` + `BIND_TSIG_SECRET`), or create
 them in Cerulean under Domains → Records.
 
 To add another service, append an entry to `PROXY_HOSTS` in
-`scripts/npm-proxy-hosts.py` and re-run it. Two ports are deliberately *not*
-proxied: acme-dns **53** (UDP/TCP — must stay directly reachable from the
-internet for Let's Encrypt validation) and acme-dns **4443** (API — internal
-only, keep it firewalled).
+`scripts/npm-proxy-hosts.py` and re-run it.
 
 By default hosts are created without SSL (`certificate_id: 0`). The moment you
 issue a certificate for `cerulean.innotel.us` (or any provisioned host's
@@ -208,11 +172,11 @@ certificate via HTTP-01, set `NPM_PROXY_SSL=1` instead.
 
 ## Using Cerulean
 
-1. **Domains** — add `innotel.us` (choose the challenge strategy). Expand a
-   domain to browse and edit its records live on BIND, or hit *Audit DNS* to
-   run a health audit (NS delegation, SOA consistency, propagation, CAA).
+1. **Domains** — add `innotel.us`. Expand a domain to browse and edit its
+   records live on BIND, or hit *Audit DNS* to run a health audit (NS
+   delegation, SOA consistency, propagation, CAA).
 2. **Certificates** — pick a domain, tick *Wildcard* for a
-   `*.innotel.us` certificate, choose the strategy, and hit *Issue*. Status is
+   `*.innotel.us` certificate, and hit *Issue*. Status is
    shown live; expiry is tracked and certificates auto-renew. Each certificate
    carries a **health score** (0–100, A–F) covering validity, key strength,
    signature algorithm, and SAN coverage.
@@ -264,7 +228,7 @@ TOKEN=$(curl -s -X POST localhost:3000/api/auth/login \
 
 curl -s -X POST localhost:3000/api/certificates \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"domain":"innotel.us","wildcard":true,"strategy":"acme-dns"}'
+  -d '{"domain":"innotel.us","wildcard":true}'
 
 curl -s -X POST localhost:3000/api/npm/export-cert \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
@@ -274,9 +238,8 @@ curl -s -X POST localhost:3000/api/npm/export-cert \
 ## Project layout
 
 ```
-server/          Express + TypeScript API (ACME, BIND/nsupdate, acme-dns, NPM)
+server/          Express + TypeScript API (ACME, BIND/nsupdate, NPM)
 web/             React + Vite dashboard
-acme-dns/        acme-dns server configuration
 scripts/         setup helpers (BIND TSIG key generation, NPM proxy provisioning)
 docs/            deeper setup guides
 data/            runtime data (SQLite DB, gitignored)
@@ -301,9 +264,9 @@ The `auth.cerulean.innotel.us` proxy host fronts Authentik on port 9000.
 ## Secret vault
 
 With `VAULT_ADDR` and `VAULT_TOKEN` set, the server mirrors certificate
-private keys, acme-dns credentials, and ACME account keys into Vault (KV v2)
-on a schedule and on demand (`POST /api/vault/sync`). `.env` values can also
-reference vault secrets instead of holding plaintext:
+private keys and ACME account keys into Vault (KV v2) on a schedule and on
+demand (`POST /api/vault/sync`). `.env` values can also reference vault
+secrets instead of holding plaintext:
 
 ```
 NPM_PASSWORD=vault://cerulean/npm#password
@@ -327,8 +290,6 @@ software bill of materials (SPDX), and `SHA256SUMS.txt` checksums.
   anything sensitive.
 - `scripts/npm-proxy-hosts.py` reads `NPM_*` from `.env` and talks to NPM's API
   with a short-lived token; it never writes credentials anywhere.
-- The acme-dns API port (4443) should be firewalled to your network; only
-  UDP/TCP **53** needs to be public.
 - Change the NPM and BIND passwords if they have ever been shared in chat or
   logs. Prefer SSH keys over passwords for BIND.
 

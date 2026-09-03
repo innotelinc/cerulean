@@ -11,7 +11,6 @@ export default function Domains() {
 
   // add domain form
   const [newName, setNewName] = useState("");
-  const [newStrategy, setNewStrategy] = useState<"acme-dns" | "bind">("acme-dns");
   const [adding, setAdding] = useState(false);
 
   // records
@@ -66,7 +65,7 @@ export default function Domains() {
     setAdding(true);
     setError("");
     try {
-      await api.createDomain({ name: newName, strategy: newStrategy });
+      await api.createDomain({ name: newName });
       setNewName("");
       flash(`Domain ${newName} added`);
       await load();
@@ -147,14 +146,14 @@ export default function Domains() {
     <div>
       <h1>Domains</h1>
       <p className="subtitle">
-        Domains whose DNS we control. Records are managed live on BIND
-        (192.168.1.80) via nsupdate.
+        Zones whose DNS we control. Records are managed live on BIND via
+        nsupdate (TSIG).
       </p>
 
       {error && <p className="error">{error}</p>}
 
       <div className="panel">
-        <div className="panel-title">Register a domain</div>
+        <div className="panel-title">Register a zone</div>
         <form className="form-row" onSubmit={addDomain}>
           <input
             placeholder="e.g. innotel.us"
@@ -162,15 +161,8 @@ export default function Domains() {
             onChange={(e) => setNewName(e.target.value)}
             style={{ flex: 1 }}
           />
-          <select
-            value={newStrategy}
-            onChange={(e) => setNewStrategy(e.target.value as "acme-dns" | "bind")}
-          >
-            <option value="acme-dns">acme-dns (delegated DNS-01)</option>
-            <option value="bind">BIND (direct TXT via nsupdate)</option>
-          </select>
           <button type="submit" disabled={adding || !newName}>
-            {adding ? "Adding…" : "Add domain"}
+            {adding ? "Adding…" : "Add zone"}
           </button>
         </form>
       </div>
@@ -178,18 +170,12 @@ export default function Domains() {
       <div className="panel">
         <div className="panel-title">Managed domains</div>
         {domains.length === 0 ? (
-          <div className="empty">No domains yet — add {`innotel.us`} above.</div>
+          <div className="empty">No zones yet — add {`innotel.us`} above.</div>
         ) : (
           domains.map((d) => (
             <div key={d.id} style={{ marginBottom: 10 }}>
               <div className="form-row" style={{ marginBottom: 0 }}>
                 <strong style={{ fontSize: 15 }}>{d.name}</strong>
-                <span className={`badge ${d.strategy === "acme-dns" ? "blue" : "gray"}`}>
-                  {d.strategy}
-                </span>
-                {d.acmedns_fulldomain && (
-                  <span className="muted mono">CNAME target: {d.acmedns_fulldomain}</span>
-                )}
                 <div style={{ flex: 1 }} />
                 <button className="secondary small" onClick={() => runAudit(d)} disabled={auditLoading[d.id]}>
                   {auditLoading[d.id] ? "Auditing…" : "Audit DNS"}

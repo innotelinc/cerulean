@@ -36,7 +36,6 @@ export async function runIssueJob(certId: number): Promise<void> {
       certId,
       domain: cert.domain,
       wildcard: cert.wildcard === 1,
-      strategy: cert.strategy,
     });
     db.saveCertificateMaterial(
       certId,
@@ -47,7 +46,7 @@ export async function runIssueJob(certId: number): Promise<void> {
     db.addActivity(
       "acme-issued",
       `Certificate issued for ${cert.domain}${cert.wildcard ? " (+ wildcard)" : ""}`,
-      `strategy=${cert.strategy}, expires=${result.expiresAt}`,
+      `expires=${result.expiresAt}`,
     );
     await syncCertToNpmQuietly(certId, cert.domain);
   } catch (err) {
