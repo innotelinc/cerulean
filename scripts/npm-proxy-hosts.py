@@ -278,11 +278,18 @@ def main():
     for path in (os.path.join(here, "..", ".env"), ".env"):
         load_env_file(path)
 
+    # NPM_MODE=local: the compose stack bundles an NPM container, reachable by
+    # the host-side scripts at http://localhost:81 (the portal container itself
+    # uses NPM_INTERNAL_API_URL=http://cerulean-npm:81). NPM_MODE=remote
+    # (default) points at an existing server via NPM_API_URL.
+    npm_mode = env("NPM_MODE", "remote").lower()
     api_url = env("NPM_API_URL")
+    if not api_url and npm_mode == "local":
+        api_url = "http://localhost:81"
     email = env("NPM_EMAIL")
     password = env("NPM_PASSWORD")
     if not (api_url and email and password):
-        print("NPM not configured (set NPM_API_URL, NPM_EMAIL, NPM_PASSWORD in .env) — skipping.", file=sys.stderr)
+        print("NPM not configured (set NPM_MODE, NPM_API_URL, NPM_EMAIL, NPM_PASSWORD in .env) — skipping.", file=sys.stderr)
         return 2
     if password == "change-me":
         print("NPM_PASSWORD is still the 'change-me' placeholder — skipping.", file=sys.stderr)

@@ -9,6 +9,51 @@ services:
     volumes:
       - ./data:/app/data
 
+  # ── Bundled BIND + SSH (OPT-IN: BIND_MODE=local, docker compose --profile bind up -d) ──
+  # Authoritative DNS + sshd so Cerulean manages records exactly like a remote
+  # BIND box (nsupdate over SSH + TSIG, dig AXFR). BIND_SSH_HOST defaults to
+  # "cerulean-bind" inside the compose network; port 53 is published so the
+  # LAN can query the zones, and 2222 maps to sshd for host-side debugging.
+  cerulean-bind:
+    build: ./bind
+    container_name: cerulean-bind
+    profiles: ["bind"]
+    restart: unless-stopped
+    environment:
+      BIND_ZONES: ${BIND_ZONES:-${CERULEAN_ZONE:-}}
+      BIND_TSIG_NAME: ${BIND_TSIG_NAME:-cerulean}
+      BIND_TSIG_SECRET: ${BIND_TSIG_SECRET:-}
+      BIND_SSH_PASSWORD: ${BIND_SSH_PASSWORD:-}
+      BIND_PORTAL_IPS: ${BIND_PORTAL_IPS:-any}
+    ports:
+      - "${BIND_UDP_PORT:-53}:53/udp"
+      - "${BIND_TCP_PORT:-53}:53/tcp"
+      - "2222:22"
+    volumes:
+      - ./data/bind/zones:/etc/bind/zones
+
+  # ── Bundled nginx proxy manager (OPT-IN: NPM_MODE=local, docker compose --profile npm up -d) ──
+  # Self-contained reverse proxy + wildcard SSL for the portal's subdomains.
+  # NPM_API_URL defaults to "http://cerulean-npm:81" inside the compose
+  # network; the host-side scripts (npm-proxy-hosts.py) keep using
+  # NPM_API_URL=http://localhost:81.
+  cerulean-npm:
+    image: jc21/nginx-proxy-manager:latest
+    container_name: cerulean-npm
+    profiles: ["npm"]
+    restart: unless-stopped
+    environment:
+      PUID: 1000
+      PGID: 1000
+      TZ: ${TZ:-UTC}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "81:81"
+    volumes:
+      - ./data/npm:/data
+      - ./data/npm/letsencrypt:/etc/letsencrypt
+
   # ── Authentik (OPT-IN: docker compose --profile authentik up -d) ────────
   # SSO / user management. Cerulean authenticates against it via OIDC
   # (AUTHENTIK_ISSUER_URL / AUTHENTIK_CLIENT_ID / AUTHENTIK_CLIENT_SECRET).

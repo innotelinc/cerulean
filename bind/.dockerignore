@@ -1,0 +1,4 @@
+# Only the entrypoint is copied into the image; the Dockerfile is read by the
+# builder regardless. Ignore everything else to keep the build context tiny.
+*
+!entrypoint.sh
