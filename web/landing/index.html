@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cerulean — Certificate, DNS & Trust Platform</title>
+  <meta name="description" content="Cerulean is a self-hosted trust platform: Let's Encrypt (regular + wildcard) into BIND via RFC 2136, an internal PKI, DNS management and compliance reporting.">
+  <meta property="og:title" content="Cerulean — Certificate, DNS & Trust Platform">
+  <meta property="og:description" content="Self-hosted certificate, DNS & trust management — point DNS at it once.">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230b0d10'/%3E%3Ctext x='32' y='44' font-size='34' text-anchor='middle'%3E🔵%3C/text%3E%3C/svg%3E">
+  <style>
+    /* ---- Product theme (Cerulean landing, modeled on the ONYX outline) ---- */
+    :root {
+      color-scheme: dark;
+      --p-bg: #0b0d10;
+      --p-bg-elevated: #12151a;
+      --p-surface: #181c22;
+      --p-surface-hover: #1f242c;
+      --p-border: #262c35;
+      --p-text: #f4f7fb;
+      --p-text-secondary: #cdd6e0;
+      --p-text-muted: #a8b2bf;
+      --p-accent: #3b82f6;
+      --p-accent-hover: #60a5fa;
+      --p-accent-tint: rgba(59, 130, 246, 0.12);
+      --p-success: #3ddc84;
+      --p-warning: #f5b544;
+      --p-danger: #f25f5f;
+      --p-info: #5ac8fa;
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 16px;
+      --ease: cubic-bezier(.2, .8, .2, 1);
+    }
+
+    * { box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      background: var(--p-bg);
+      color: var(--p-text);
+      font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+      font-size: 16px;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    ::selection { background: var(--p-accent-tint); }
+
+    a { color: var(--p-accent); text-decoration: none; }
+    a:hover { color: var(--p-accent-hover); }
+
+    code, pre {
+      font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+
+    /* ---- Top bar --------------------------------------------------------- */
+    .topbar {
+      position: sticky; top: 0; z-index: 10;
+      background: rgba(11, 13, 16, 0.72);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      border-bottom: 1px solid var(--p-border);
+    }
+    .topbar-inner {
+      display: flex; align-items: center; gap: 20px;
+      height: 60px;
+    }
+    .brand {
+      display: flex; align-items: center; gap: 10px;
+      font-weight: 650; letter-spacing: 0.04em;
+      color: var(--p-text);
+    }
+    .brand:hover { color: var(--p-text); }
+    .brand .mark {
+      display: grid; place-items: center;
+      width: 26px; height: 26px; border-radius: 8px;
+      background: var(--p-bg-elevated);
+      border: 1px solid var(--p-border);
+      font-size: 15px;
+    }
+    .brand .dot { color: var(--p-accent); }
+    .topbar nav { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+    .topbar nav a {
+      color: var(--p-text-secondary);
+      padding: 6px 12px; border-radius: var(--radius-sm);
+      font-size: 14px;
+      transition: color .15s var(--ease), background .15s var(--ease);
+    }
+    .topbar nav a:hover { color: var(--p-text); background: var(--p-surface-hover); }
+    .topbar .gh {
+      display: inline-flex; align-items: center; gap: 8px;
+      margin-left: 8px;
+      border: 1px solid var(--p-border);
+      border-radius: var(--radius-md);
+      padding: 7px 14px;
+      color: var(--p-text);
+      font-size: 14px;
+      transition: border-color .15s var(--ease), background .15s var(--ease);
+    }
+    .topbar .gh:hover { border-color: var(--p-accent); background: var(--p-accent-tint); color: var(--p-text); }
+
+    /* ---- Hero ------------------------------------------------------------ */
+    .hero { position: relative; overflow: hidden; padding: 96px 0 72px; }
+    .hero::before {
+      content: "";
+      position: absolute; inset: 0;
+      background:
+        radial-gradient(600px 320px at 70% -10%, rgba(59, 130, 246, 0.14), transparent 70%),
+        radial-gradient(500px 300px at 15% 110%, rgba(96, 165, 250, 0.08), transparent 70%);
+      pointer-events: none;
+    }
+    .hero-inner { position: relative; max-width: 760px; }
+    .kicker {
+      display: inline-flex; align-items: center; gap: 8px;
+      font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--p-accent-hover);
+      background: var(--p-accent-tint);
+      border: 1px solid rgba(59, 130, 246, 0.25);
+      border-radius: 999px;
+      padding: 5px 14px;
+      margin: 0 0 24px;
+    }
+    .kicker .pulse {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--p-success);
+      box-shadow: 0 0 0 0 rgba(61, 220, 132, 0.5);
+      animation: pulse 2.4s var(--ease) infinite;
+    }
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(61, 220, 132, 0.45); }
+      70% { box-shadow: 0 0 0 9px rgba(61, 220, 132, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(61, 220, 132, 0); }
+    }
+    h1 {
+      font-size: clamp(2.2rem, 5.5vw, 3.4rem);
+      line-height: 1.08;
+      letter-spacing: -0.02em;
+      margin: 0 0 20px;
+      font-weight: 700;
+    }
+    h1 .accent { color: var(--p-accent); }
+    .lede {
+      font-size: 1.125rem;
+      color: var(--p-text-secondary);
+      max-width: 640px;
+      margin: 0 0 32px;
+    }
+    .cta-row { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 28px; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      border-radius: var(--radius-md);
+      padding: 11px 20px;
+      font-size: 15px; font-weight: 550;
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: background .15s var(--ease), border-color .15s var(--ease), transform .15s var(--ease);
+    }
+    .btn-primary { background: var(--p-accent); color: #071018; font-weight: 600; }
+    .btn-primary:hover { background: var(--p-accent-hover); color: #071018; }
+    .btn-secondary { border-color: var(--p-border); color: var(--p-text); background: transparent; }
+    .btn-secondary:hover { border-color: var(--p-accent); background: var(--p-accent-tint); color: var(--p-text); }
+    .quickstart {
+      display: flex; align-items: center; gap: 14px;
+      background: var(--p-bg-elevated);
+      border: 1px solid var(--p-border);
+      border-radius: var(--radius-md);
+      padding: 12px 16px;
+      max-width: 640px;
+      font-size: 13.5px;
+    }
+    .quickstart code { color: var(--p-text); white-space: nowrap; overflow-x: auto; }
+    .quickstart code .c { color: var(--p-text-muted); }
+    .quickstart .copy {
+      margin-left: auto; flex: 0 0 auto;
+      background: transparent; border: 1px solid var(--p-border);
+      color: var(--p-text-secondary);
+      border-radius: var(--radius-sm);
+      font: inherit; font-size: 12px;
+      padding: 4px 10px; cursor: pointer;
+      transition: border-color .15s var(--ease), color .15s var(--ease);
+    }
+    .quickstart .copy:hover { border-color: var(--p-accent); color: var(--p-text); }
+    .quickstart .copy.copied { color: var(--p-success); border-color: var(--p-success); }
+
+    /* ---- Stat strip ------------------------------------------------------ */
+    .stats {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 12px; margin: 56px 0 0;
+    }
+    .stat {
+      background: var(--p-bg-elevated);
+      border: 1px solid var(--p-border);
+      border-radius: var(--radius-md);
+      padding: 16px 18px;
+    }
+    .stat b { display: block; font-size: 1.35rem; font-variant-numeric: tabular-nums; }
+    .stat span { color: var(--p-text-secondary); font-size: 13px; }
+
+    /* ---- Sections -------------------------------------------------------- */
+    section { padding: 64px 0; }
+    section h2 {
+      font-size: 1.7rem; letter-spacing: -0.01em;
+      margin: 0 0 8px;
+    }
+    section .section-sub { color: var(--p-text-secondary); margin: 0 0 32px; max-width: 620px; }
+
+    .grid { display: grid; gap: 14px; }
+    .grid-3 { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+    .grid-2 { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+
+    .card {
+      background: var(--p-bg-elevated);
+      border: 1px solid var(--p-border);
+      border-radius: var(--radius-lg);
+      padding: 22px;
+      transition: border-color .15s var(--ease), transform .15s var(--ease);
+    }
+    .card:hover { border-color: #34404f; }
+    .card h3 { margin: 0 0 6px; font-size: 1.02rem; }
+    .card p { margin: 0; color: var(--p-text-secondary); font-size: 14px; }
+    .card .icon {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 34px; height: 34px;
+      border-radius: var(--radius-md);
+      background: var(--p-accent-tint);
+      margin-bottom: 14px;
+      font-size: 16px;
+    }
+    .card ul { margin: 10px 0 0; padding-left: 18px; color: var(--p-text-secondary); font-size: 14px; }
+    .card ul li { margin: 3px 0; }
+    .card ul li b { color: var(--p-text); font-weight: 600; }
+
+    /* ---- Surfaces table -------------------------------------------------- */
+    .surfaces { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+    .surface {
+      display: flex; flex-direction: column; gap: 2px;
+      background: var(--p-bg-elevated);
+      border: 1px solid var(--p-border);
+      border-radius: var(--radius-md);
+      padding: 14px 16px;
+      transition: border-color .15s var(--ease);
+    }
+    .surface:hover { border-color: var(--p-accent); }
+    .surface b { font-size: 14.5px; }
+    .surface small { color: var(--p-text-secondary); font-size: 12.5px; }
+    .surface .live {
+      margin-left: auto;
+      font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
+      color: var(--p-success);
+      border: 1px solid rgba(61, 220, 132, 0.3);
+      border-radius: 999px;
+      padding: 1px 8px;
+    }
+
+    /* ---- Stack / code ---------------------------------------------------- */
+    .split { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; align-items: center; }
+    @media (max-width: 900px) { .split { grid-template-columns: 1fr; } }
+    pre.terminal {
+      margin: 0;
+      background: var(--p-bg-elevated);
+      border: 1px solid var(--p-border);
+      border-radius: var(--radius-lg);
+      padding: 20px;
+      font-size: 13px;
+      line-height: 1.75;
+      overflow-x: auto;
+      color: var(--p-text-secondary);
+    }
+    pre.terminal .p { color: var(--p-accent); }
+    pre.terminal .o { color: var(--p-text); }
+    pre.terminal .ok { color: var(--p-success); }
+    pre.terminal .cmt { color: var(--p-text-muted); }
+
+    /* ---- Roadmap --------------------------------------------------------- */
+    .roadmap { display: grid; gap: 12px; }
+    .mile {
+      display: flex; align-items: baseline; gap: 16px;
+      border: 1px solid var(--p-border);
+      background: var(--p-bg-elevated);
+      border-radius: var(--radius-md);
+      padding: 14px 18px;
+    }
+    .mile .tag {
+      flex: 0 0 130px;
+      font-weight: 650; font-size: 14px;
+      color: var(--p-text);
+    }
+    .mile .tag em {
+      font-style: normal; color: var(--p-accent);
+      display: block; font-size: 12px; font-weight: 500;
+    }
+    .mile p { margin: 0; color: var(--p-text-secondary); font-size: 14px; }
+    .mile .state {
+      margin-left: auto; flex: 0 0 auto;
+      font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
+      border-radius: 999px; padding: 2px 10px;
+    }
+    .mile .state.done { color: var(--p-success); border: 1px solid rgba(61, 220, 132, 0.3); }
+    .mile .state.next { color: var(--p-warning); border: 1px solid rgba(245, 181, 68, 0.3); }
+    .mile .state.later { color: var(--p-text-muted); border: 1px solid var(--p-border); }
+
+    /* ---- Footer ----------------------------------------------------------- */
+    footer {
+      border-top: 1px solid var(--p-border);
+      padding: 32px 0 40px;
+      color: var(--p-text-muted);
+      font-size: 13.5px;
+    }
+    .foot-inner {
+      display: flex; flex-wrap: wrap; gap: 16px; align-items: center;
+      justify-content: space-between;
+    }
+    footer a { color: var(--p-text-secondary); }
+    footer a:hover { color: var(--p-text); }
+    .foot-links { display: flex; gap: 18px; flex-wrap: wrap; }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      html { scroll-behavior: auto; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <a class="brand" href="#">
+        <span class="mark" aria-hidden="true">🔵</span>
+        Cerulean<span class="dot">.</span>
+      </a>
+      <nav aria-label="Main">
+        <a href="#features">Features</a>
+        <a href="#stack">Stack</a>
+        <a href="#platform">Platform</a>
+        <a href="#roadmap">Roadmap</a>
+        <a href="https://github.com/innotelinc/cerulean/tree/main/docs">Docs</a>
+        <a class="gh" href="https://github.com/innotelinc/cerulean">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+          GitHub
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <!-- Hero -->
+    <div class="hero">
+      <div class="wrap hero-inner">
+        <p class="kicker"><span class="pulse" aria-hidden="true"></span> v0.6.0 · TrustOps live</p>
+        <h1>Point DNS at it once —<br>never touch a <span class="accent">zone file</span> again.</h1>
+        <p class="lede">Cerulean owns the Trust layer of the Innotel Platform Stack: certificate lifecycle and ACME automation, wildcard Let's Encrypt into BIND via TSIG-signed dynamic updates, an internal CA for client certificates, DNS health and compliance reporting — with Authentik SSO and Infisical secrets.</p>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="https://github.com/innotelinc/cerulean#quick-start">Get started</a>
+          <a class="btn btn-secondary" href="https://github.com/innotelinc/cerulean/tree/main/docs">Docs</a>
+        </div>
+        <div class="quickstart">
+          <code><span class="c">$</span> git clone https://github.com/innotelinc/cerulean.git && cd cerulean && cp .env.example .env && ./scripts/setup.sh</code>
+          <button class="copy" id="copy-btn" type="button" aria-label="Copy quick start command">copy</button>
+        </div>
+        <div class="stats">
+          <div class="stat"><b>ACME</b><span>Let's Encrypt regular + wildcard</span></div><div class="stat"><b>RFC 2136</b><span>TSIG-signed dynamic DNS updates</span></div><div class="stat"><b>PKI</b><span>internal CA + client certificates</span></div><div class="stat"><b>1 command</b><span>BIND configured, stack provisioned</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Features -->
+    <section id="features">
+      <div class="wrap">
+        <h2>Trust, automated end to end<span class="accent">.</span></h2>
+        <p class="section-sub">Every certificate, zone and client cert issued, rotated and reported — no SSH sessions, no spreadsheets.</p>
+        <div class="grid grid-3">
+          <div class="card"><span class="icon" aria-hidden="true">🛡️</span><h3>Certificate lifecycle</h3><p>Let's Encrypt issuance — regular and wildcard via DNS-01 — with automatic renewal and deployment.</p></div><div class="card"><span class="icon" aria-hidden="true">🌐</span><h3>DNS automation</h3><p>Authoritative BIND management through TSIG (RFC 2136): add a domain, get its zone wired.</p></div><div class="card"><span class="icon" aria-hidden="true">🔑</span><h3>Internal PKI</h3><p>A private CA for client certificates — issue, revoke and monitor device certs from the dashboard.</p></div><div class="card"><span class="icon" aria-hidden="true">📋</span><h3>Compliance reporting</h3><p>Trust scoring, DNS health checks and compliance evidence for audits.</p></div><div class="card"><span class="icon" aria-hidden="true">🔐</span><h3>Authentik SSO</h3><p>Every surface behind one identity provider at <b>auth.cerulean.innotel.us</b>.</p></div><div class="card"><span class="icon" aria-hidden="true">🤫</span><h3>Infisical secrets</h3><p>TSIG keys and CA keys live in Infisical (SecretOps) — resolved at runtime, never in git.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Stack -->
+    <section id="stack">
+      <div class="wrap">
+        <h2>The Trust layer of the stack<span class="accent">.</span></h2>
+        <p class="section-sub">Cerulean consumes Authentik (identity) and Infisical (secrets) and provides trust services to every other platform.</p>
+        <div class="split">
+          <div>
+            <div class="grid" style="gap:14px">
+              <div class="card"><span class="icon" aria-hidden="true">📦</span><h3>Cerulean server</h3><p>API + dashboard — certificate, DNS and PKI control plane.</p></div><div class="card"><span class="icon" aria-hidden="true">🌐</span><h3>BIND</h3><p>Authoritative DNS, updated via TSIG-signed dynamic updates.</p></div><div class="card"><span class="icon" aria-hidden="true">🛡️</span><h3>ACME client</h3><p>Let's Encrypt issuance, wildcard via DNS-01, auto-renewal.</p></div><div class="card"><span class="icon" aria-hidden="true">🔑</span><h3>Internal CA</h3><p>Client-certificate issuance for device trust across the ecosystem.</p></div>
+            </div>
+          </div>
+          <pre class="terminal"><span class="cmt"># one-shot setup: TSIG key + BIND + stack</span>
+$ <span class="p">./scripts/setup.sh</span>
+<span class="ok">>> [bind] generated TSIG key, configured zones</span>
+<span class="ok">>> [acme] wildcard *.innotel.us issued (DNS-01)</span>
+<span class="ok">>> [infisical] CA + TSIG secrets mirrored to Infisical</span>
+$ <span class="p">cerulean</span> cert issue api.example.com
+<span class="ok">certificate issued · auto-renewal armed</span></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- Platform surfaces -->
+    <section id="platform">
+      <div class="wrap">
+        <h2>Every trust surface, one dashboard<span class="accent">.</span></h2>
+        <p class="section-sub">Canonical subdomains under cerulean.innotel.us, wildcard-TLS'd and SSO'd by default.</p>
+        <div class="surfaces">
+          <a class="surface" href="https://cerulean.innotel.us"><b>Portal</b><small>cerulean.innotel.us · dashboard + REST API</small><span class="live">live</span></a><a class="surface" href="https://app.cerulean.innotel.us"><b>App</b><small>app.cerulean.innotel.us · application</small><span class="live">live</span></a><a class="surface" href="https://api.cerulean.innotel.us"><b>API</b><small>api.cerulean.innotel.us · REST API</small><span class="live">live</span></a><a class="surface" href="https://auth.cerulean.innotel.us"><b>Identity</b><small>auth.cerulean.innotel.us · Authentik SSO</small><span class="live">live</span></a><a class="surface" href="https://dns.cerulean.innotel.us"><b>DNS</b><small>dns.cerulean.innotel.us · zone management</small><span class="live">live</span></a><a class="surface" href="https://certs.cerulean.innotel.us"><b>Certificates</b><small>certs.cerulean.innotel.us · ACME + PKI</small><span class="live">live</span></a>
+        </div>
+      </div>
+    </section>
+
+    <!-- Roadmap -->
+    <section id="roadmap">
+      <div class="wrap">
+        <h2>Roadmap<span class="accent">.</span></h2>
+        <p class="section-sub">Shipped as v0.6.0; trust scoring and deeper fleet integration are next.</p>
+        <div class="roadmap">
+          <div class="mile"><span class="tag">v0.6.0 <em>"TrustOps"</em></span><p>ACME + wildcard DNS-01, BIND automation, internal PKI, Infisical mirror.</p><span class="state done">done</span></div><div class="mile"><span class="tag">v0.7.0 <em>"Trust scoring"</em></span><p>Compliance reporting, DNS health, fleet-wide trust posture.</p><span class="state next">next</span></div><div class="mile"><span class="tag">v1.0 <em>"LTS"</em></span><p>Security audit, hardening, docs, LTS channel.</p><span class="state later">later</span></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap foot-inner">
+      <span>Cerulean — Certificate, DNS & Trust Platform · MIT License</span>
+      <span class="foot-links">
+        <a href="https://github.com/innotelinc/cerulean">GitHub</a>
+        <a href="https://github.com/innotelinc/cerulean/tree/main/docs">Docs</a>
+        <a href="https://github.com/innotelinc/cerulean/releases">Releases</a>
+      </span>
+    </div>
+  </footer>
+
+  <script>
+    // Copy-to-clipboard for the quick-start one-liner (progressive enhancement).
+    document.getElementById('copy-btn').addEventListener('click', function () {
+      var cmd = 'git clone https://github.com/innotelinc/cerulean.git && cd cerulean && cp .env.example .env && ./scripts/setup.sh';
+      var self = this;
+      function done() {
+        self.textContent = 'copied';
+        self.classList.add('copied');
+        setTimeout(function () {
+          self.textContent = 'copy';
+          self.classList.remove('copied');
+        }, 2000);
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(cmd).then(done, done);
+      } else {
+        done();
+      }
+    });
+  </script>
+</body>
+</html>
