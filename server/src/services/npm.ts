@@ -1,6 +1,79 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { config } from "../config";
 import { db } from "../db";
 import { vault } from "./vault";
+
+// ── Device mTLS (client certificates at the reverse proxy) ────────────────
+// "Auto-allow": a proxy host is configured to demand a TLS client certificate
+// and to trust exactly the Cerulean internal root CA, so any device holding a
+// certificate Cerulean issued is let straight through and anything else is
+// rejected by nginx itself — no app changes needed.
+
+/** Client-CA file as the NPM container sees it (its mounted data dir). */
+export const MTLS_CA_CONTAINER_PATH = "/data/cerulean-client-ca.pem";
+const MTLS_MARK = "# cerulean-mtls";
+const MTLS_MARK_END = "# /cerulean-mtls";
+
+/**
+ * Insert (or remove) the mTLS snippet into a proxy host's custom nginx
+ * configuration. `on` demands a valid client certificate (mode "on"); `off`
+ * strips the block. Idempotent and marker-delimited, so re-runs never
+ * duplicate the block and existing custom config is preserved.
+ */
+export function applyMtlsConfig(
+  advancedConfig: string,
+  mode: "on" | "off",
+): string {
+  const lines = (advancedConfig ?? "").split("\n");
+  const kept: string[] = [];
+  let skipping = false;
+  for (const line of lines) {
+    if (line.trim() === MTLS_MARK) {
+      skipping = true;
+      continue;
+    }
+    if (line.trim() === MTLS_MARK_END) {
+      skipping = false;
+      continue;
+    }
+    if (!skipping) kept.push(line);
+  }
+  const base = kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  if (mode === "off") return base;
+
+  const block = [
+    MTLS_MARK,
+    "# Device TLS client certificates signed by the Cerulean internal CA:",
+    "# any device presenting a valid certificate is auto-allowed; requests",
+    "# without one are rejected here, at the TLS layer.",
+    `ssl_client_certificate ${MTLS_CA_CONTAINER_PATH};`,
+    "ssl_verify_client on;",
+    MTLS_MARK_END,
+  ].join("\n");
+  return base ? `${base}\n\n${block}\n` : `${block}\n`;
+}
+
+/**
+ * Write the internal root CA where the bundled NPM container reads it as the
+ * client-certificate trust store (NPM_MODE=local: both containers share the
+ * host ./data/npm directory). Returns the host path written, or null in
+ * remote mode — there you must place the CA on the NPM host yourself at
+ * {@link MTLS_CA_CONTAINER_PATH}.
+ */
+export function materializeClientCaFile(): string | null {
+  if (config.npm.mode !== "local") return null;
+  const ca = db.getCa();
+  if (!ca) {
+    throw new Error(
+      "Internal CA is not initialized — initialize it first (POST /api/pki/init)",
+    );
+  }
+  const hostPath = join(config.dataDir, "npm", "cerulean-client-ca.pem");
+  mkdirSync(dirname(hostPath), { recursive: true });
+  writeFileSync(hostPath, ca.certificate, "utf8");
+  return hostPath;
+}
 
 export interface NpmProxyHost {
   id: number;
@@ -293,6 +366,7 @@ class NpmClient {
     id: number,
     host: NpmProxyHost,
     certificateId: number | string,
+    advancedConfig?: string,
   ): Promise<NpmProxyHost> {
     return this.request<NpmProxyHost>("PUT", `/nginx/proxy-hosts/${id}`, {
       domain_names: host.domain_names,
@@ -306,9 +380,33 @@ class NpmClient {
       caching_enabled: host.caching_enabled ?? false,
       allow_websocket_upgrade: host.allow_websocket_upgrade ?? true,
       access_list_id: host.access_list_id ?? 0,
-      advanced_config: host.advanced_config ?? "",
+      advanced_config: advancedConfig ?? host.advanced_config ?? "",
       meta: host.meta ?? { letsencrypt_agree: false, dns_challenge: false },
     });
+  }
+
+  /**
+   * Gate (or ungate) a proxy host behind device client certificates issued by
+   * the Cerulean internal CA. `on` requires a valid certificate — nginx then
+   * auto-allows every trusted device and rejects everything else. The host
+   * needs an SSL certificate of its own first (its `certificate_id`).
+   */
+  async setHostMtls(
+    host: NpmProxyHost,
+    mode: "on" | "off",
+  ): Promise<NpmProxyHost> {
+    if (mode === "on" && !Number(host.certificate_id)) {
+      throw new Error(
+        `Host ${host.domain_names.join(", ")} has no SSL certificate yet — ` +
+          "issue one for its domain and attach it before enabling device mTLS",
+      );
+    }
+    return this.updateProxyHost(
+      host.id,
+      host,
+      host.certificate_id,
+      applyMtlsConfig(host.advanced_config ?? "", mode),
+    );
   }
 
   /**

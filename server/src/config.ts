@@ -65,6 +65,11 @@ export interface Config {
     caCommonName: string;
     caValidityDays: number;
     certValidityDays: number;
+    // SCEP endpoint embedded in the Apple enrollment profile (.mobileconfig)
+    // that MDM-managed devices use to obtain their client certificate.
+    scepUrl: string;
+    scepCaName: string;
+    scepChallenge: string;
   };
 
   dataDir: string;
@@ -187,6 +192,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       caValidityDays: Number(env.CA_VALIDITY_DAYS || 3650),
       // Default validity of issued device client certificates.
       certValidityDays: Number(env.PKI_CERT_VALIDITY_DAYS || 825),
+      // SCEP endpoint for device enrollment (https://scep.example.com/scep),
+      // CA name advertised to enrolling devices, and an optional shared
+      // challenge. Empty until you point PKI_SCEP_URL at a SCEP server.
+      scepUrl: (env.PKI_SCEP_URL || "").trim(),
+      scepCaName: env.PKI_SCEP_CA_NAME || "cerulean",
+      scepChallenge: (env.PKI_SCEP_CHALLENGE || "").trim(),
     },
 
     dataDir: env.CERULEAN_DATA_DIR || path.resolve(__dirname, "../../data"),

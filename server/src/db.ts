@@ -76,7 +76,7 @@ export interface ClientCertificateRow {
   serial_hex: string;
   status: string; // issued | revoked
   certificate: string; // client cert PEM
-  key: string; // client private key (PKCS#8 PEM)
+  key: string; // client private key (PKCS#8 PEM; "" when CSR-enrolled — the device holds the key)
   fingerprint: string | null;
   expires_at: string | null;
   issued_at: string | null;

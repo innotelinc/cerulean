@@ -23,7 +23,9 @@ import { db, type CaRow, type ClientCertificateRow } from "../db";
  */
 
 const CLIENT_AUTH_OID = "1.3.6.1.5.5.7.3.2";
-const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/** Allowed device/identity names (subject CN, 1-64 chars). */
+export const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** Error with an HTTP status, so routes can respond precisely. */
@@ -170,36 +172,65 @@ export interface IssueClientCertificateInput {
   validityDays?: number;
 }
 
-/**
- * Issue a TLS client certificate signed by the internal CA. The root CA is
- * created on first use, so the first issuance "just works".
- */
-export async function issueClientCertificate(
-  input: IssueClientCertificateInput,
-): Promise<ClientCertificateRow> {
-  const name = input.name.trim();
+export interface EnrollCsrInput {
+  validityDays?: number;
+}
+
+interface ValidatedIssueInput {
+  name: string;
+  email: string;
+  validityDays: number;
+}
+
+function validateIssueInput(
+  nameRaw: string,
+  emailRaw?: string,
+  validityDaysRaw?: number,
+): ValidatedIssueInput {
+  const name = nameRaw.trim();
   if (!NAME_RE.test(name)) {
     throw new PkiError(
       400,
       `Invalid name "${name}" — use letters, digits, '.', '_' or '-', 1-64 chars, no spaces`,
     );
   }
-  const email = input.email?.trim() || "";
+  const email = (emailRaw ?? "").trim();
   if (email && !EMAIL_RE.test(email)) {
     throw new PkiError(400, `Invalid email address: ${email}`);
   }
   const validityDays = Math.min(
-    Math.max(Math.floor(input.validityDays || config.pki.certValidityDays), 1),
+    Math.max(Math.floor(validityDaysRaw || config.pki.certValidityDays), 1),
     config.pki.caValidityDays,
   );
+  return { name, email, validityDays };
+}
 
+function assertNameFree(name: string): void {
   if (db.findActiveClientCertificate(name)) {
     throw new PkiError(
       409,
       `A certificate for "${name}" is already active — revoke it before re-issuing`,
     );
   }
+}
 
+interface SignRequest {
+  name: string;
+  email: string;
+  validityDays: number;
+  publicKey: webcrypto.CryptoKey | x509.PublicKey;
+  /** PKCS#8 PEM of a server-generated key, or null when the private key stays
+   * on the enrollee's side (CSR enrollment). */
+  keyPem: string | null;
+  activityKind: string;
+}
+
+/**
+ * Sign a public key into a TLS client certificate with the internal CA and
+ * persist it. Shared by portal-side issuance (server holds the key) and CSR
+ * enrollment (the device holds the key).
+ */
+async function signAndStore(req: SignRequest): Promise<ClientCertificateRow> {
   const ca = await ensureCa();
   const caKeyObject = createPrivateKey(ca.key);
   const curve = curveName(caKeyObject);
@@ -213,57 +244,154 @@ export async function issueClientCertificate(
   );
 
   const serial = db.nextCaSerial();
-  const clientKeys = await webcrypto.subtle.generateKey(
-    { name: "ECDSA", namedCurve: curve },
-    true,
-    ["sign", "verify"],
-  );
-
   const now = new Date();
-  const notAfter = new Date(now.getTime() + validityDays * 86400_000);
+  const notAfter = new Date(now.getTime() + req.validityDays * 86400_000);
   const extensions: x509.Extension[] = [
     new x509.BasicConstraintsExtension(false, undefined, true),
     new x509.KeyUsagesExtension(x509.KeyUsageFlags.digitalSignature, true),
     new x509.ExtendedKeyUsageExtension([CLIENT_AUTH_OID], true),
-    await x509.SubjectKeyIdentifierExtension.create(clientKeys.publicKey, true),
+    await x509.SubjectKeyIdentifierExtension.create(req.publicKey, true),
     await x509.AuthorityKeyIdentifierExtension.create(caCert.publicKey, false),
   ];
-  if (email) {
+  if (req.email) {
     extensions.push(
-      new x509.SubjectAlternativeNameExtension([{ type: "email", value: email }]),
+      new x509.SubjectAlternativeNameExtension([{ type: "email", value: req.email }]),
     );
   }
 
   const cert = await x509.X509CertificateGenerator.create({
     serialNumber: serialToHex(serial),
-    subject: `CN=${name}`,
+    subject: `CN=${req.name}`,
     issuer: caCert.subject,
     notBefore: now,
     notAfter,
     signingAlgorithm: { name: "ECDSA", hash: "SHA-256" },
-    publicKey: clientKeys.publicKey,
+    publicKey: req.publicKey,
     signingKey: caSigningKey,
     extensions,
   });
   const certificatePem = cert.toString();
-  const keyPem = await exportKey(clientKeys.privateKey, "pkcs8", "PRIVATE KEY");
   const fingerprint = new X509Certificate(certificatePem).fingerprint256;
 
   const row = db.createClientCertificate({
-    name,
-    email: email || undefined,
+    name: req.name,
+    email: req.email || undefined,
     serialHex: serialToHex(serial),
     certificate: certificatePem,
-    key: keyPem,
+    key: req.keyPem ?? "",
     fingerprint,
     expiresAt: notAfter.toISOString(),
   });
   db.addActivity(
-    "pki-issue",
-    `Issued client certificate for "${name}" (serial ${row.serial_hex})`,
+    req.activityKind,
+    `Issued client certificate for "${req.name}" (serial ${row.serial_hex})`,
     `expires=${row.expires_at}`,
   );
   return row;
+}
+
+/**
+ * Issue a TLS client certificate signed by the internal CA. The root CA is
+ * created on first use, so the first issuance "just works".
+ */
+export async function issueClientCertificate(
+  input: IssueClientCertificateInput,
+): Promise<ClientCertificateRow> {
+  const { name, email, validityDays } = validateIssueInput(
+    input.name,
+    input.email,
+    input.validityDays,
+  );
+  assertNameFree(name);
+
+  const ca = await ensureCa();
+  const curve = curveName(createPrivateKey(ca.key));
+  const clientKeys = await webcrypto.subtle.generateKey(
+    { name: "ECDSA", namedCurve: curve },
+    true,
+    ["sign", "verify"],
+  );
+  return signAndStore({
+    name,
+    email,
+    validityDays,
+    publicKey: clientKeys.publicKey,
+    keyPem: await exportKey(clientKeys.privateKey, "pkcs8", "PRIVATE KEY"),
+    activityKind: "pki-issue",
+  });
+}
+
+/**
+ * Sign a device-generated PKCS#10 CSR with the internal CA and record the
+ * certificate. The device keeps its private key — Cerulean stores no key for
+ * it — and the result is revoked/re-issued exactly like a portal-issued one.
+ * This is the CA operation a SCEP/EST/MDM enrollment front ultimately
+ * performs, exposed directly so devices, MDMs and scripts can enroll now.
+ */
+export async function enrollCsr(
+  csrPem: string,
+  input: EnrollCsrInput = {},
+): Promise<ClientCertificateRow> {
+  const pem = String(csrPem ?? "").trim();
+  if (!pem) {
+    throw new PkiError(400, "Missing CSR — send a PKCS#10 request in PEM form");
+  }
+  let csr: x509.Pkcs10CertificateRequest;
+  try {
+    csr = new x509.Pkcs10CertificateRequest(pem);
+  } catch {
+    throw new PkiError(
+      400,
+      "Unparseable CSR — expected -----BEGIN CERTIFICATE REQUEST----- PEM",
+    );
+  }
+  if (!(await csr.verify(webcrypto))) {
+    throw new PkiError(
+      400,
+      "CSR signature does not match the enclosed public key",
+    );
+  }
+
+  const alg = csr.publicKey.algorithm as {
+    name?: string;
+    namedCurve?: string;
+    modulusLength?: number;
+  };
+  const supported =
+    alg?.name === "ECDSA"
+      ? ["P-256", "P-384", "P-521"].includes(alg.namedCurve ?? "")
+      : alg?.name === "RSASSA-PKCS1-v1_5"
+        ? (alg.modulusLength ?? 0) >= 2048
+        : false;
+  if (!supported) {
+    throw new PkiError(
+      400,
+      "CSR key must be ECDSA (P-256/P-384/P-521) or RSA ≥ 2048 bits",
+    );
+  }
+
+  const cn = csr.subjectName.getField("CN");
+  if (!cn.length) {
+    throw new PkiError(
+      400,
+      "CSR subject must include a CN — that is the device/identity name in Cerulean",
+    );
+  }
+  const { name, validityDays } = validateIssueInput(
+    cn[0],
+    undefined,
+    input.validityDays,
+  );
+  assertNameFree(name);
+
+  return signAndStore({
+    name,
+    email: "",
+    validityDays,
+    publicKey: csr.publicKey,
+    keyPem: null,
+    activityKind: "pki-enroll",
+  });
 }
 
 export function listClientCertificates(): ClientCertificateRow[] {

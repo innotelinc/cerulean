@@ -57,7 +57,7 @@ vi.mock("../src/db", () => ({
 }));
 
 import { config } from "../src/config";
-import { npm } from "../src/services/npm";
+import { applyMtlsConfig, npm } from "../src/services/npm";
 
 // ── Stubbed NPM API ─────────────────────────────────────────────────────────
 let mockHosts: Record<string, unknown>[] = [];
@@ -341,5 +341,52 @@ describe("npm.syncCertificateToNpm", () => {
     expect(result.attached).toEqual([]);
     expect(exactCount("/api/nginx/certificates", "POST")).toBe(0);
     expect(callCount("/api/nginx/proxy-hosts/", "PUT")).toBe(0);
+  });
+});
+
+describe("device mTLS on proxy hosts", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    requests.length = 0;
+  });
+
+  it("wraps client-cert directives in a marker block and strips cleanly", () => {
+    const once = applyMtlsConfig("client_max_body_size 10m;", "on");
+    expect(once).toContain("# cerulean-mtls");
+    expect(once).toContain("ssl_client_certificate /data/cerulean-client-ca.pem;");
+    expect(once).toContain("ssl_verify_client on;");
+    expect(once).toContain("client_max_body_size 10m;");
+
+    // Re-applying never duplicates the block.
+    const twice = applyMtlsConfig(once, "on");
+    expect(twice.match(/ssl_verify_client on;/g)).toHaveLength(1);
+    expect(twice.match(/# \/cerulean-mtls/g)).toHaveLength(1);
+
+    // Turning off removes exactly the block, keeping unrelated config.
+    const off = applyMtlsConfig(twice, "off");
+    expect(off).not.toContain("cerulean-mtls");
+    expect(off).not.toContain("ssl_client_certificate");
+    expect(off).toContain("client_max_body_size 10m;");
+  });
+
+  it("enables mTLS on an SSL host via the API and preserves its certificate", async () => {
+    installMockFetch();
+    const host = makeHost({ id: 11, certificate_id: 3, ssl_forced: true });
+    mockHosts = [host];
+
+    const updated = await npm.setHostMtls(host, "on");
+
+    expect(updated.advanced_config).toContain("ssl_verify_client on;");
+    expect(updated.certificate_id).toBe(3);
+    const putBody = bodyOf("/api/nginx/proxy-hosts/11", "PUT") as Record<string, unknown>;
+    expect(String(putBody?.advanced_config)).toContain(
+      "ssl_client_certificate /data/cerulean-client-ca.pem;",
+    );
+    expect(putBody?.ssl_forced).toBe(true);
+  });
+
+  it("refuses to gate a host that has no SSL certificate yet", async () => {
+    const host = makeHost({ id: 12, certificate_id: 0 });
+    await expect(npm.setHostMtls(host, "on")).rejects.toThrow(/no SSL certificate/);
   });
 });
