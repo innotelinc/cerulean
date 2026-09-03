@@ -108,6 +108,21 @@ export interface TenantMember {
   name: string;
 }
 
+export interface DnsProvider {
+  id: number;
+  tenantId: number;
+  name: string;
+  kind: string;
+  host: string;
+  port: number;
+  user: string;
+  hasKey: boolean;
+  hasPassword: boolean;
+  hasTsig: boolean;
+  isDefault: boolean;
+  createdAt: string;
+}
+
 export interface PkiStatus {
   initialized: boolean;
   commonName: string | null;

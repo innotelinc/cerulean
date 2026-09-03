@@ -10,6 +10,22 @@ export interface TenantRow {
   created_at: string;
 }
 
+export interface DnsProviderRow {
+  id: number;
+  tenant_id: number;
+  name: string;
+  kind: "bind-ssh";
+  host: string;
+  port: number;
+  user: string;
+  key_path: string | null;
+  password: string | null;
+  tsig_name: string | null;
+  tsig_secret: string | null;
+  is_default: number;
+  created_at: string;
+}
+
 /** Slug of the built-in tenant that pre-tenant data belongs to. */
 export const DEFAULT_TENANT_ID = 1;
 
@@ -132,6 +148,25 @@ class Database {
         slug TEXT NOT NULL UNIQUE,
         name TEXT NOT NULL,
         created_at TEXT NOT NULL
+      );
+      -- Per-tenant DNS providers: which BIND (SSH + nsupdate + TSIG) a
+      -- tenant's zones are managed on. A tenant with no providers falls back
+      -- to the platform-level BIND configured in .env.
+      CREATE TABLE IF NOT EXISTS dns_providers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tenant_id INTEGER NOT NULL DEFAULT 1,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'bind-ssh',
+        host TEXT NOT NULL,
+        port INTEGER NOT NULL DEFAULT 22,
+        user TEXT NOT NULL DEFAULT 'root',
+        key_path TEXT,
+        password TEXT,
+        tsig_name TEXT,
+        tsig_secret TEXT,
+        is_default INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        UNIQUE(tenant_id, name)
       );
       CREATE TABLE IF NOT EXISTS domains (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -301,6 +336,142 @@ class Database {
       .run(name, id);
     if (Number(result.changes) === 0) return undefined;
     return this.getTenant(id);
+  }
+
+  // ── DNS providers ──────────────────────────────────────────────────────
+  listDnsProviders(tenantId: number): DnsProviderRow[] {
+    return this.db
+      .prepare("SELECT * FROM dns_providers WHERE tenant_id = ? ORDER BY name")
+      .all(tenantId) as unknown as DnsProviderRow[];
+  }
+
+  getDnsProvider(id: number, tenantId?: number): DnsProviderRow | undefined {
+    const row = tenantId
+      ? this.db
+          .prepare("SELECT * FROM dns_providers WHERE id = ? AND tenant_id = ?")
+          .get(id, tenantId)
+      : this.db.prepare("SELECT * FROM dns_providers WHERE id = ?").get(id);
+    return row as DnsProviderRow | undefined;
+  }
+
+  createDnsProvider(input: {
+    tenantId: number;
+    name: string;
+    kind?: string;
+    host: string;
+    port?: number;
+    user?: string;
+    keyPath?: string;
+    password?: string;
+    tsigName?: string;
+    tsigSecret?: string;
+    isDefault?: boolean;
+  }): DnsProviderRow {
+    const result = this.db
+      .prepare(
+        `INSERT INTO dns_providers
+           (tenant_id, name, kind, host, port, user, key_path, password,
+            tsig_name, tsig_secret, is_default, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        input.tenantId,
+        input.name,
+        input.kind ?? "bind-ssh",
+        input.host,
+        input.port ?? 22,
+        input.user ?? "root",
+        input.keyPath ?? null,
+        input.password ?? null,
+        input.tsigName ?? null,
+        input.tsigSecret ?? null,
+        input.isDefault ? 1 : 0,
+        nowIso(),
+      );
+    return this.getDnsProvider(
+      Number(result.lastInsertRowid),
+      input.tenantId,
+    )!;
+  }
+
+  updateDnsProvider(
+    id: number,
+    tenantId: number,
+    input: {
+      name?: string;
+      host?: string;
+      port?: number;
+      user?: string;
+      keyPath?: string;
+      password?: string | null;
+      tsigName?: string;
+      tsigSecret?: string;
+      isDefault?: boolean;
+    },
+  ): DnsProviderRow | undefined {
+    const existing = this.getDnsProvider(id, tenantId);
+    if (!existing) return undefined;
+    const next = {
+      name: input.name ?? existing.name,
+      host: input.host ?? existing.host,
+      port: input.port ?? existing.port,
+      user: input.user ?? existing.user,
+      // An empty string means "unchanged"; null explicitly clears.
+      keyPath:
+        input.keyPath !== undefined
+          ? input.keyPath || existing.key_path
+          : existing.key_path,
+      password:
+        input.password !== undefined
+          ? input.password || existing.password
+          : existing.password,
+      tsigName:
+        input.tsigName !== undefined
+          ? input.tsigName || existing.tsig_name
+          : existing.tsig_name,
+      tsigSecret:
+        input.tsigSecret !== undefined
+          ? input.tsigSecret || existing.tsig_secret
+          : existing.tsig_secret,
+      isDefault:
+        input.isDefault !== undefined
+          ? input.isDefault
+          : existing.is_default === 1,
+    };
+    this.db
+      .prepare(
+        `UPDATE dns_providers SET
+           name = ?, host = ?, port = ?, user = ?, key_path = ?, password = ?,
+           tsig_name = ?, tsig_secret = ?, is_default = ?
+         WHERE id = ? AND tenant_id = ?`,
+      )
+      .run(
+        next.name,
+        next.host,
+        next.port,
+        next.user,
+        next.keyPath,
+        next.password,
+        next.tsigName,
+        next.tsigSecret,
+        next.isDefault ? 1 : 0,
+        id,
+        tenantId,
+      );
+    return this.getDnsProvider(id, tenantId);
+  }
+
+  deleteDnsProvider(id: number, tenantId: number): void {
+    this.db
+      .prepare("DELETE FROM dns_providers WHERE id = ? AND tenant_id = ?")
+      .run(id, tenantId);
+  }
+
+  /** Clear the default flag on every provider of a tenant (before promoting one). */
+  clearDnsProviderDefaults(tenantId: number): void {
+    this.db
+      .prepare("UPDATE dns_providers SET is_default = 0 WHERE tenant_id = ?")
+      .run(tenantId);
   }
 
   // ── Domains ────────────────────────────────────────────────────────────

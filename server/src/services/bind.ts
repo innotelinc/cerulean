@@ -72,36 +72,69 @@ export function resolveZone(domain: string, zones: string[]): string {
   return best;
 }
 
-function tsigFileCommand(): string {
+function tsigFileCommand(name: string, secret: string): string {
   // The key name must match named.conf EXACTLY (no normalization) — nsupdate
   // rejects keys whose name differs from the server's by even a trailing dot.
-  const name = config.bind.tsigName;
-  const secret = config.bind.tsigSecret;
   return `key "${name}" { algorithm hmac-sha256; secret "${secret}"; };`;
 }
 
-function hasTsig(): boolean {
-  return Boolean(config.bind.tsigName && config.bind.tsigSecret);
+/**
+ * Optional BIND connection override. When passed, record operations run
+ * against it (a tenant's own DNS provider); otherwise the platform-level
+ * BIND from .env is used. Every field falls back to the .env value.
+ */
+export interface BindConnection {
+  host: string;
+  port: number;
+  user: string;
+  keyPath: string;
+  password: string;
+  tsigName: string;
+  tsigSecret: string;
+}
+
+export function effectiveConnection(conn?: Partial<BindConnection>): BindConnection {
+  const b = config.bind;
+  return {
+    host: conn?.host || b.host,
+    port: conn?.port ?? b.port,
+    user: conn?.user || b.user,
+    keyPath: conn?.keyPath ?? b.keyPath,
+    password: conn?.password ?? b.password,
+    tsigName: conn?.tsigName || b.tsigName,
+    tsigSecret: conn?.tsigSecret || b.tsigSecret,
+  };
 }
 
 /**
- * Run a set of nsupdate commands against the configured BIND server.
- * A temporary TSIG key file is written on the remote host, used, and removed.
+ * Run a set of nsupdate commands against the configured (or overridden) BIND
+ * server. A temporary TSIG key file is written on the remote host, used, and
+ * removed.
  */
-export async function runNsupdate(commands: string[]): Promise<void> {
-  if (!hasTsig()) {
+export async function runNsupdate(
+  commands: string[],
+  conn?: Partial<BindConnection>,
+): Promise<void> {
+  const c = effectiveConnection(conn);
+  if (!c.tsigName || !c.tsigSecret) {
     throw new Error(
-      "BIND TSIG key is not configured — set BIND_TSIG_NAME and BIND_TSIG_SECRET in .env (generate with: tsig-keygen cerulean)",
+      "BIND TSIG key is not configured — set BIND_TSIG_NAME and BIND_TSIG_SECRET in .env (generate with: tsig-keygen cerulean), or provide tsig_name/tsig_secret on the DNS provider",
     );
   }
   const keyFile = "/tmp/cerulean-tsig.key";
-  const keySetup = `printf '%s\n' '${tsigFileCommand()}' > ${keyFile}`;
+  const keySetup = `printf '%s\n' '${tsigFileCommand(c.tsigName, c.tsigSecret)}' > ${keyFile}`;
   const cleanup = `rm -f ${keyFile}`;
   const nsupdate = `nsupdate -k ${keyFile}`;
   const fullCommand = `${keySetup} && ${nsupdate}; rc=$?; ${cleanup}; exit $rc`;
 
   const script = commands.join("\n") + "\n";
-  const result = await sshExec(fullCommand, script);
+  const result = await sshExec(fullCommand, script, 30_000, {
+    host: c.host,
+    port: c.port,
+    user: c.user,
+    keyPath: c.keyPath,
+    password: c.password,
+  });
   if (result.code !== 0) {
     throw new Error(
       `nsupdate failed (exit ${result.code}):\n${result.stderr || result.stdout}`,
@@ -113,38 +146,44 @@ export async function runNsupdate(commands: string[]): Promise<void> {
  * Add a DNS record to the zone via nsupdate. Idempotent-ish: BIND errors on
  * duplicates, so callers that may re-add should delete first.
  */
-export async function addRecord(input: AddRecordInput): Promise<void> {
+export async function addRecord(
+  input: AddRecordInput,
+  conn?: Partial<BindConnection>,
+): Promise<void> {
   const { zone, type, name, value, ttl = 300, priority } = input;
   const owner = fqdn(name, zone);
   const commands = [
-    `server ${config.bind.host}`,
+    `server ${effectiveConnection(conn).host}`,
     `zone ${ensureDot(zone)}`,
     `update add ${owner} ${ttl} ${type} ${type === "TXT" ? quoteTxt(value) : type === "MX" || type === "SRV" ? `${priority ?? 10} ${value}` : value}`,
     "send",
   ];
-  await runNsupdate(commands);
+  await runNsupdate(commands, conn);
 }
 
 /**
  * Delete a DNS record. If `value` is omitted, all records of `type` at `name`
  * are removed.
  */
-export async function deleteRecord(input: {
-  zone: string;
-  type: string;
-  name: string;
-  value?: string;
-}): Promise<void> {
+export async function deleteRecord(
+  input: {
+    zone: string;
+    type: string;
+    name: string;
+    value?: string;
+  },
+  conn?: Partial<BindConnection>,
+): Promise<void> {
   const { zone, type, name, value } = input;
   const owner = fqdn(name, zone);
   const rdata = type === "TXT" && value !== undefined ? ` ${quoteTxt(value)}` : value ? ` ${value}` : "";
   const commands = [
-    `server ${config.bind.host}`,
+    `server ${effectiveConnection(conn).host}`,
     `zone ${ensureDot(zone)}`,
     `update delete ${owner} ${type}${rdata}`,
     "send",
   ];
-  await runNsupdate(commands);
+  await runNsupdate(commands, conn);
 }
 
 /**
@@ -164,16 +203,17 @@ export async function setTxtRecord(
   name: string,
   value: string,
   ttl = 60,
+  conn?: Partial<BindConnection>,
 ): Promise<void> {
   const owner = fqdn(name, zone);
   const commands = [
-    `server ${config.bind.host}`,
+    `server ${effectiveConnection(conn).host}`,
     `zone ${ensureDot(zone)}`,
     `update add ${owner} ${ttl} TXT ${quoteTxt(value)}`,
     "send",
   ];
   try {
-    await runNsupdate(commands);
+    await runNsupdate(commands, conn);
   } catch (err) {
     if (!/duplicate/i.test(String(err))) throw err;
   }
@@ -184,16 +224,17 @@ export async function clearTxtRecord(
   zone: string,
   name: string,
   value?: string,
+  conn?: Partial<BindConnection>,
 ): Promise<void> {
   const owner = fqdn(name, zone);
   const rdata = value !== undefined ? ` ${quoteTxt(value)}` : "";
   const commands = [
-    `server ${config.bind.host}`,
+    `server ${effectiveConnection(conn).host}`,
     `zone ${ensureDot(zone)}`,
     `update delete ${owner} TXT${rdata}`,
     "send",
   ];
-  await runNsupdate(commands);
+  await runNsupdate(commands, conn);
 }
 
 /** Idempotently point `from` (a _acme-challenge name) at `to` via CNAME. */
@@ -201,17 +242,18 @@ export async function ensureCname(
   zone: string,
   from: string,
   to: string,
+  conn?: Partial<BindConnection>,
 ): Promise<void> {
   const owner = fqdn(from, zone);
   const target = ensureDot(to);
   const commands = [
-    `server ${config.bind.host}`,
+    `server ${effectiveConnection(conn).host}`,
     `zone ${ensureDot(zone)}`,
     `update delete ${owner} CNAME`,
     `update add ${owner} 300 CNAME ${target}`,
     "send",
   ];
-  await runNsupdate(commands);
+  await runNsupdate(commands, conn);
 }
 
 /** Parse `dig AXFR` output into records. */
@@ -247,9 +289,16 @@ export function parseZoneTransfer(output: string): DnsRecord[] {
  * List all records in a zone via an AXFR transfer run on the BIND server
  * (requires allow-transfer to permit the portal's host).
  */
-export async function listZone(zone: string): Promise<DnsRecord[]> {
+export async function listZone(
+  zone: string,
+  conn?: Partial<BindConnection>,
+): Promise<DnsRecord[]> {
+  const c = effectiveConnection(conn);
   const result = await sshExec(
-    `dig @${config.bind.host} ${ensureDot(zone)} AXFR +noall +answer +time=10 +tries=1`,
+    `dig @${c.host} ${ensureDot(zone)} AXFR +noall +answer +time=10 +tries=1`,
+    undefined,
+    30_000,
+    { host: c.host, port: c.port, user: c.user, keyPath: c.keyPath, password: c.password },
   );
   if (result.code !== 0) {
     throw new Error(
