@@ -27,6 +27,14 @@ done
 
 log "Cerulean setup — ${CERULEAN_ROOT}"
 
+# ── 0a. Enable the commit-attribution guard hooks (.githooks) ───────────────
+# Point git at the version-controlled hooks dir so commits made from this
+# clone are guarded (blocks attribution to anyone but Darnel Hunter).
+if [ -d "${CERULEAN_ROOT}/.githooks" ] && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  git config core.hooksPath "${CERULEAN_ROOT}/.githooks"
+  ok "commit guard hook enabled (core.hooksPath -> .githooks)"
+fi
+
 # ── 0. .env + admin password ─────────────────────────────────────────────────
 if [ ! -f "$ENV_FILE" ]; then
   cp "${CERULEAN_ROOT}/.env.example" "$ENV_FILE"
