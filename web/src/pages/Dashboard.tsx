@@ -5,7 +5,7 @@ import type { Activity, Certificate, Domain, StatusResponse } from "../types";
 export default function Dashboard({
   goTo,
 }: {
-  goTo: (page: "domains" | "certificates" | "npm" | "settings") => void;
+  goTo: (page: "domains" | "certificates" | "pki" | "npm" | "settings") => void;
 }) {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [domains, setDomains] = useState<Domain[]>([]);
@@ -67,6 +67,10 @@ export default function Dashboard({
           <div className="label">Expiring within 30 days</div>
         </div>
         <div className="card">
+          <div className="num">{status?.pki?.issued ?? 0}</div>
+          <div className="label">Device certificates (PKI)</div>
+        </div>
+        <div className="card">
           <div className="num">{issuing}</div>
           <div className="label">In progress</div>
         </div>
@@ -111,6 +115,14 @@ export default function Dashboard({
                 <td className="muted">{status.vault.status}</td>
                 <td className="muted mono">{status.vault.addr}</td>
               </tr>
+              <tr>
+                <td>
+                  <span className={`status-dot ${status.pki.initialized ? "ok" : "warn"}`} />
+                  Internal root CA (PKI)
+                </td>
+                <td className="muted">{status.pki.initialized ? "ready" : "not-initialized"}</td>
+                <td className="muted mono">{status.pki.commonName || "—"}</td>
+              </tr>
             </tbody>
           </table>
         )}
@@ -121,6 +133,7 @@ export default function Dashboard({
         <div className="actions">
           <button onClick={() => goTo("domains")}>Manage DNS records</button>
           <button onClick={() => goTo("certificates")}>Issue a certificate</button>
+          <button onClick={() => goTo("pki")}>Manage device certificates</button>
           <button onClick={() => goTo("npm")}>Export to nginx proxy manager</button>
         </div>
       </div>
