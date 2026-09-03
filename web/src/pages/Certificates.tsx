@@ -13,7 +13,6 @@ export default function Certificates() {
   const [name, setName] = useState("");
   const [domain, setDomain] = useState("");
   const [wildcard, setWildcard] = useState(false);
-  const [strategy, setStrategy] = useState<"acme-dns" | "bind">("acme-dns");
 
   // detail modal
   const [detail, setDetail] = useState<Certificate | null>(null);
@@ -57,7 +56,6 @@ export default function Certificates() {
         name: name || undefined,
         domain,
         wildcard,
-        strategy,
       });
       setName("");
       setWildcard(false);
@@ -160,8 +158,8 @@ export default function Certificates() {
     <div>
       <h1>Certificates</h1>
       <p className="subtitle">
-        Let's Encrypt certificates issued via DNS-01 (acme-dns or BIND), regular
-        and wildcard.
+        Let's Encrypt certificates issued via DNS-01 (BIND nsupdate + TSIG),
+        regular and wildcard.
       </p>
 
       {error && <p className="error">{error}</p>}
@@ -190,10 +188,6 @@ export default function Certificates() {
             />
             Wildcard (*.{domain || "domain"})
           </label>
-          <select value={strategy} onChange={(e) => setStrategy(e.target.value as "acme-dns" | "bind")}>
-            <option value="acme-dns">acme-dns</option>
-            <option value="bind">BIND nsupdate</option>
-          </select>
           <button type="submit" disabled={busy || !domain}>
             {busy ? "Starting…" : "Issue"}
           </button>
@@ -216,7 +210,6 @@ export default function Certificates() {
               <tr>
                 <th>Name</th>
                 <th>Domains</th>
-                <th>Strategy</th>
                 <th>Status</th>
                 <th>Health</th>
                 <th>Expires</th>
@@ -230,9 +223,6 @@ export default function Certificates() {
                     <strong>{c.name}</strong>
                   </td>
                   <td className="mono">{c.domains.join(", ")}</td>
-                  <td>
-                    <span className="badge gray">{c.strategy}</span>
-                  </td>
                   <td>{statusBadge(c)}</td>
                   <td>{c.status === "issued" ? healthBadge(c) : <span className="muted">—</span>}</td>
                   <td>{expiryCell(c)}</td>

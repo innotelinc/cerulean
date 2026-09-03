@@ -2,7 +2,7 @@
   "name": "cerulean",
   "version": "0.1.0",
   "private": true,
-  "description": "Cerulean — centralized certificate & DNS management: acme-dns, Let's Encrypt (regular + wildcard), BIND records, nginx proxy manager provisioning, Authentik SSO, vault, discovery, DNS auditing and certificate health scoring.",
+  "description": "Cerulean — centralized certificate & DNS management: Let's Encrypt (regular + wildcard) via BIND/TSIG DNS-01, nginx proxy manager provisioning, Authentik SSO, vault, discovery, DNS auditing and certificate health scoring.",
   "workspaces": [
     "server",
     "web"

@@ -1,20 +1,10 @@
 import { X509Certificate } from "node:crypto";
 import * as acme from "acme-client";
 import { config } from "../config";
-import { db, type DomainRow } from "../db";
-import { acmedns } from "./acmedns";
+import { db } from "../db";
 import * as bind from "./bind";
 import { dnsResolveTxt } from "./dns";
 import { dns01Record } from "./dns01";
-
-export type ChallengeStrategy = "acme-dns" | "bind";
-
-export interface IssueInput {
-  certId: number;
-  domain: string;
-  wildcard: boolean;
-  strategy: ChallengeStrategy;
-}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -22,35 +12,6 @@ function sleep(ms: number): Promise<void> {
 
 function stripDot(name: string): string {
   return name.replace(/\.$/, "");
-}
-
-/**
- * Ensure a domain has acme-dns credentials registered, registering one if
- * needed, and store them on the domain row.
- */
-export async function ensureAcmeDnsCreds(
-  domainRow: DomainRow,
-): Promise<DomainRow> {
-  if (
-    domainRow.acmedns_username &&
-    domainRow.acmedns_subdomain &&
-    domainRow.acmedns_password
-  ) {
-    return domainRow;
-  }
-  const creds = await acmedns.register(config.acmedns.allowFrom);
-  db.setAcmeDnsCreds(domainRow.id, {
-    subdomain: creds.subdomain,
-    username: creds.username,
-    password: creds.password,
-    fulldomain: creds.fulldomain,
-  });
-  db.addActivity(
-    "acmedns-register",
-    `Registered acme-dns subdomain for ${domainRow.name}`,
-    creds.fulldomain,
-  );
-  return db.getDomain(domainRow.id)!;
 }
 
 /** Get-or-create the ACME account key for this directory + email. */
@@ -63,42 +24,8 @@ async function getAccountKey(): Promise<string> {
 }
 
 interface DnsChallengeState {
-  strategy: ChallengeStrategy;
   zone: string;
-  domainRow?: DomainRow;
   records: { name: string; value: string }[];
-  cnameEnsured: Set<string>;
-}
-
-/**
- * Point `owner` (_acme-challenge.<domain>) at the acme-dns fulldomain via
- * CNAME. With BIND configured this is done automatically; without BIND we
- * verify the CNAME already exists in the domain's public DNS.
- */
-async function ensureCnameAuto(
-  zone: string,
-  owner: string,
-  fulldomain: string,
-): Promise<void> {
-  const hasBind = Boolean(
-    config.bind.host && (config.bind.keyPath || config.bind.password),
-  );
-  if (hasBind) {
-    await bind.ensureCname(zone, owner, fulldomain);
-    return;
-  }
-  const { resolveCname } = await import("node:dns/promises");
-  try {
-    const targets = await resolveCname(owner);
-    if (targets.some((t) => stripDot(t) === stripDot(fulldomain))) return;
-  } catch {
-    // fall through to the helpful error below
-  }
-  throw new Error(
-    `No BIND server configured and the CNAME ${owner} → ${fulldomain} is missing. ` +
-      `Add this CNAME in your DNS provider, or configure BIND_SSH_* in .env ` +
-      `so Cerulean can create it automatically.`,
-  );
 }
 
 async function setChallengeRecord(
@@ -106,31 +33,9 @@ async function setChallengeRecord(
   name: string,
   value: string,
 ): Promise<void> {
-  if (state.strategy === "acme-dns") {
-    if (!state.domainRow) {
-      throw new Error("Missing domain row for acme-dns strategy");
-    }
-    const fulldomain = state.domainRow.acmedns_fulldomain!;
-    // One-time CNAME delegation: _acme-challenge.<domain> → <sub>.auth.<domain>
-    const owner = stripDot(name);
-    if (!state.cnameEnsured.has(owner)) {
-      await ensureCnameAuto(state.zone, owner, fulldomain);
-      state.cnameEnsured.add(owner);
-    }
-    await acmedns.updateTxt(
-      state.domainRow.acmedns_subdomain!,
-      state.domainRow.acmedns_username!,
-      state.domainRow.acmedns_password!,
-      value,
-    );
-    // acme-dns serves TXT from its own DB as the authoritative server, so the
-    // record is live immediately. A short buffer avoids TOCTOU races at LE.
-    await sleep(Math.min(config.propagationBufferSeconds, 5) * 1000);
-  } else {
-    await bind.setTxtRecord(state.zone, name, value, 60);
-    // Poll the authoritative BIND server until the TXT is served.
-    await waitForTxt(config.bind.host, name, value);
-  }
+  await bind.setTxtRecord(state.zone, name, value, 60);
+  // Poll the authoritative BIND server until the TXT is served.
+  await waitForTxt(config.bind.host, name, value);
 }
 
 async function removeChallengeRecord(
@@ -138,17 +43,7 @@ async function removeChallengeRecord(
   name: string,
   value: string,
 ): Promise<void> {
-  if (state.strategy === "acme-dns") {
-    if (!state.domainRow) return;
-    await acmedns.updateTxt(
-      state.domainRow.acmedns_subdomain!,
-      state.domainRow.acmedns_username!,
-      state.domainRow.acmedns_password!,
-      "",
-    );
-  } else {
-    await bind.clearTxtRecord(state.zone, name, value);
-  }
+  await bind.clearTxtRecord(state.zone, name, value);
 }
 
 /** Poll an authoritative nameserver for a TXT record until it appears. */
@@ -178,26 +73,21 @@ async function waitForTxt(
 }
 
 /**
- * Issue (or renew) a certificate for a domain using DNS-01 validation.
- * Returns { certificate, key } where certificate is the full chain PEM.
+ * Issue (or renew) a certificate for a domain using DNS-01 validation
+ * against the configured BIND server (nsupdate + TSIG).
  */
-export async function issueCertificate(input: IssueInput): Promise<{
+export async function issueCertificate(input: {
+  certId: number;
+  domain: string;
+  wildcard: boolean;
+}): Promise<{
   certificate: string;
   key: string;
   expiresAt: string;
 }> {
-  const { certId, domain, wildcard, strategy } = input;
+  const { certId, domain, wildcard } = input;
 
-  let domainRow: DomainRow | undefined;
-  if (strategy === "acme-dns") {
-    const existing = db.getDomainByName(domain);
-    if (!existing) {
-      throw new Error(
-        `Domain "${domain}" is not registered in Cerulean. Add it on the Domains page first.`,
-      );
-    }
-    domainRow = await ensureAcmeDnsCreds(existing);
-  } else if (!config.bind.tsigSecret) {
+  if (!config.bind.tsigSecret) {
     throw new Error("BIND TSIG key is not configured (see .env)");
   }
 
@@ -217,18 +107,24 @@ export async function issueCertificate(input: IssueInput): Promise<{
     privateKey,
   );
 
+  // The zone that manages this domain: the longest registered domain suffix,
+  // falling back to CERULEAN_ZONE. Challenge TXT records must be written to
+  // the zone BIND actually serves — using the issued domain itself (e.g.
+  // "monarch.innotel.us") makes nsupdate fail with NOTAUTH.
+  const zone = bind.resolveZone(domain, [
+    ...db.listDomains().map((d) => d.name),
+    config.zone,
+  ]);
+
   const state: DnsChallengeState = {
-    strategy,
-    zone: domain,
-    domainRow,
+    zone,
     records: [],
-    cnameEnsured: new Set(),
   };
 
   db.updateCertificateStatus(certId, "issuing");
   db.addActivity(
     "acme-issue",
-    `Issuing ${wildcard ? "wildcard " : ""}certificate for ${domain} (${strategy})`,
+    `Issuing ${wildcard ? "wildcard " : ""}certificate for ${domain}`,
   );
 
   try {
@@ -273,7 +169,7 @@ export async function issueCertificate(input: IssueInput): Promise<{
   }
 }
 
-/** Renew a certificate: re-issue with the same material + strategy. */
+/** Renew a certificate: re-issue with the same material. */
 export async function renewCertificate(certId: number): Promise<void> {
   const cert = db.getCertificate(certId);
   if (!cert) throw new Error("Certificate not found");
@@ -281,7 +177,6 @@ export async function renewCertificate(certId: number): Promise<void> {
     certId,
     domain: cert.domain,
     wildcard: cert.wildcard === 1,
-    strategy: cert.strategy,
   });
   db.saveCertificateMaterial(certId, result.certificate, result.key, result.expiresAt);
   db.addActivity("acme-renew", `Renewed certificate for ${cert.domain}`);

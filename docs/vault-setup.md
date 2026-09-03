@@ -2,9 +2,9 @@
 
 Cerulean integrates with **HashiCorp Vault** (KV v2 engine) in two ways:
 
-1. **Secret mirroring** — certificate private keys, acme-dns credentials, and
-   ACME account keys are copied into Vault on a schedule and on demand
-   (`POST /api/vault/sync`), so sensitive material exists off-host.
+1. **Secret mirroring** — certificate private keys and ACME account keys are
+   copied into Vault on a schedule and on demand (`POST /api/vault/sync`), so
+   sensitive material exists off-host.
 2. **`vault://` references** — any `.env` value may be a
    `vault://<path>#<key>` reference instead of plaintext. The server resolves
    it at use time (NPM password, BIND SSH password, ...).
@@ -37,7 +37,6 @@ runs it on demand. Material is written under the configured prefix:
 
 ```
 certs/<id>              certificate (fullchain) + private key
-domains/<domain>        acme-dns username / password / fulldomain
 acme/<email>            ACME account private key
 ```
 

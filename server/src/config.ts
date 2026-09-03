@@ -50,13 +50,6 @@ export interface Config {
   zone: string;
   propagationBufferSeconds: number;
 
-  acmedns: {
-    apiUrl: string;
-    publicIp: string;
-    domain: string;
-    allowFrom: string[];
-  };
-
   npm: {
     apiUrl: string;
     email: string;
@@ -149,13 +142,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     zone: env.CERULEAN_ZONE || "innotel.us",
     propagationBufferSeconds: Number(env.PROPAGATION_BUFFER_SECONDS || 10),
 
-    acmedns: {
-      apiUrl: env.ACMEDNS_API_URL || "http://acme-dns:4443",
-      publicIp: env.ACMEDNS_PUBLIC_IP || "",
-      domain: env.ACMEDNS_DOMAIN || "auth.innotel.us",
-      allowFrom: list(env.ACMEDNS_ALLOW_FROM),
-    },
-
     npm: {
       apiUrl: env.NPM_API_URL || "",
       email: env.NPM_EMAIL || "",
@@ -165,8 +151,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       wildcardAttach: bool(env.NPM_WILDCARD_ATTACH, true),
     },
 
-    dataDir: env.CERULEAN_DATA_DIR || path.resolve(__dirname, "../../../data"),
-  };
+    dataDir: env.CERULEAN_DATA_DIR || path.resolve(__dirname, "../../data"),  };
 }
 
 export const config = loadConfig();

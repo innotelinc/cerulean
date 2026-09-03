@@ -1,10 +1,12 @@
-import { createHash } from "node:crypto";
-
 /**
- * DNS-01 challenge record for an ACME authorization. The TXT value is the
- * base64url-encoded SHA-256 digest of the key authorization (RFC 8555 §8.4),
- * published at _acme-challenge.<domain>. Wildcard identifiers
- * (`*.example.com`) are validated via the base domain's challenge record.
+ * DNS-01 challenge record for an ACME authorization, published at
+ * _acme-challenge.<domain>. Wildcard identifiers (`*.example.com`) are
+ * validated via the base domain's challenge record.
+ *
+ * The `keyAuthorization` passed in by acme-client for dns-01 challenges is
+ * ALREADY the RFC 8555 §8.4 TXT value (base64url(SHA256(token.thumbprint)))
+ * — it must be published verbatim. Hashing it again would produce a value
+ * neither acme-client's verifier nor Let's Encrypt accepts.
  */
 export function dns01Record(
   authz: { identifier: { value: string } },
@@ -15,6 +17,6 @@ export function dns01Record(
     : authz.identifier.value;
   return {
     key: `_acme-challenge.${identifier}`,
-    value: createHash("sha256").update(keyAuthorization).digest("base64url"),
+    value: keyAuthorization,
   };
 }

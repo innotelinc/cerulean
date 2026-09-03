@@ -27,3 +27,6 @@ npm-debug.log*
 .DS_Store
 .idea/
 .vscode/
+
+# Release artifacts (built by CI, regenerated per release)
+artifacts/

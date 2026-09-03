@@ -89,14 +89,6 @@ export default function Dashboard({
               </tr>
               <tr>
                 <td>
-                  <span className={`status-dot ${statusDot(status.acmedns.status)}`} />
-                  acme-dns
-                </td>
-                <td className="muted">{status.acmedns.status}</td>
-                <td className="muted mono">{status.config.acmednsApiUrl}</td>
-              </tr>
-              <tr>
-                <td>
                   <span className={`status-dot ${statusDot(status.npm.status)}`} />
                   nginx proxy manager
                 </td>
