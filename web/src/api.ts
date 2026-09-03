@@ -164,6 +164,19 @@ export const api = {
     http2_support?: boolean;
   }) => request<import("./types").NpmProxyHost>("POST", "/npm/hosts", input),
 
+  listTenants: () => request<import("./types").TenantRow[]>("GET", "/tenants"),
+  createTenant: (input: { slug: string; name: string }) =>
+    request<import("./types").TenantRow>("POST", "/tenants", input),
+  renameTenant: (id: number, name: string) =>
+    request<import("./types").TenantRow>("PATCH", `/tenants/${id}`, { name }),
+  tenantMembers: (slug: string) =>
+    request<{
+      available: boolean;
+      users: import("./types").TenantMember[];
+      groupExists: boolean;
+      hint: string;
+    }>("GET", `/tenants/${encodeURIComponent(slug)}/members`),
+
   pkiStatus: () => request<import("./types").PkiStatus>("GET", "/pki/status"),
   pkiInit: (commonName?: string) =>
     request<import("./types").PkiStatus>(

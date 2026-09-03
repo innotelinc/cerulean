@@ -85,9 +85,11 @@ zone is configurable.
   secret is scoped to a tenant. Tenant identity rides on Authentik groups: a
   tenant's slug is a group, and group members see only their tenant's data
   (`X-Cerulean-Tenant` switches among the caller's tenants). Local admin
-  sessions (or `TENANT_PLATFORM_GROUP` members) are platform admins who
-  create tenants via `GET/POST /api/tenants`. Existing single-tenant data
-  lives in the built-in `default` tenant — no migration work needed.
+  sessions (or `TENANT_PLATFORM_GROUP` members) are platform admins: the
+  **Tenants** page (nav, platform admins only) creates and renames tenants
+  and lists each tenant's members live from Authentik
+  (`AUTHENTIK_API_URL` + `AUTHENTIK_ADMIN_PASSWORD`). Existing single-tenant
+  data lives in the built-in `default` tenant — no migration work needed.
 - **Device enrollment & mTLS auto-allow** — devices enroll with a key that
   never leaves them (CSR signing, `POST /api/pki/enroll/csr`) or through an
   MDM-pushed Apple profile that installs the root CA and points at your SCEP
@@ -279,6 +281,8 @@ another.
 | GET | `/api/pki/enrollment/profile` | Apple `.mobileconfig` (root CA + SCEP payload) |
 | POST | `/api/npm/mtls` | Gate a proxy host behind device client certs (auto-allow) |
 | GET/POST | `/api/tenants` | List / create tenants (platform admins) |
+| PATCH | `/api/tenants/:id` | Rename a tenant (platform admins) |
+| GET | `/api/tenants/:slug/members` | Tenant members from Authentik (platform admins) |
 | GET | `/api/npm/hosts` · `/api/npm/certificates` | NPM state |
 | POST | `/api/npm/export-cert` | `{ certificate_id }` → import into NPM |
 | POST | `/api/npm/hosts` | Create a proxy host |
