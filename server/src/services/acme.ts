@@ -5,6 +5,7 @@ import { db } from "../db";
 import * as bind from "./bind";
 import { dnsResolveTxt } from "./dns";
 import { dns01Record } from "./dns01";
+import { providerConnectionForTenant } from "./providers";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -32,18 +33,20 @@ async function setChallengeRecord(
   state: DnsChallengeState,
   name: string,
   value: string,
+  conn?: bind.BindConnection,
 ): Promise<void> {
-  await bind.setTxtRecord(state.zone, name, value, 60);
+  await bind.setTxtRecord(state.zone, name, value, 60, conn);
   // Poll the authoritative BIND server until the TXT is served.
-  await waitForTxt(config.bind.host, name, value);
+  await waitForTxt(conn?.host || config.bind.host, name, value);
 }
 
 async function removeChallengeRecord(
   state: DnsChallengeState,
   name: string,
   value: string,
+  conn?: bind.BindConnection,
 ): Promise<void> {
-  await bind.clearTxtRecord(state.zone, name, value);
+  await bind.clearTxtRecord(state.zone, name, value, conn);
 }
 
 /** Poll an authoritative nameserver for a TXT record until it appears. */
@@ -87,8 +90,21 @@ export async function issueCertificate(input: {
 }> {
   const { certId, domain, wildcard } = input;
 
-  if (!config.bind.tsigSecret) {
-    throw new Error("BIND TSIG key is not configured (see .env)");
+  // Challenge TXT records go to the server that serves the certificate's
+  // zone: the tenant's default DNS provider if one is registered, otherwise
+  // the platform-level BIND from .env.
+  const certRow = db.getCertificate(certId);
+  const conn =
+    (certRow ? providerConnectionForTenant(certRow.tenant_id) : null) ?? undefined;
+  const hasTsig = Boolean(
+    (conn && conn.tsigName && conn.tsigSecret) ||
+      (config.bind.tsigName && config.bind.tsigSecret),
+  );
+  if (!hasTsig) {
+    throw new Error(
+      "No TSIG-configured DNS provider — register one for this tenant under " +
+        "DNS Providers, or set BIND_TSIG_NAME / BIND_TSIG_SECRET in .env",
+    );
   }
 
   const accountKey = await getAccountKey();
@@ -142,7 +158,7 @@ export async function issueCertificate(input: {
         const name = stripDot(record.key);
         const value = record.value;
         state.records.push({ name, value });
-        await setChallengeRecord(state, name, value);
+        await setChallengeRecord(state, name, value, conn);
       },
       challengeRemoveFn: async (
         authz: acme.Authorization,
@@ -150,7 +166,7 @@ export async function issueCertificate(input: {
         keyAuthorization: string,
       ) => {
         const record = dns01Record(authz, keyAuthorization);
-        await removeChallengeRecord(state, stripDot(record.key), record.value);
+        await removeChallengeRecord(state, stripDot(record.key), record.value, conn);
       },
     });
 
@@ -160,7 +176,7 @@ export async function issueCertificate(input: {
     // Best-effort cleanup of any challenge records that were set.
     for (const rec of state.records) {
       try {
-        await removeChallengeRecord(state, rec.name, rec.value);
+        await removeChallengeRecord(state, rec.name, rec.value, conn);
       } catch {
         // ignore cleanup errors
       }

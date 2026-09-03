@@ -9,30 +9,50 @@ export interface ExecResult {
   stderr: string;
 }
 
+/** Connection override: lets a per-tenant DNS provider target another BIND.
+ * Omitted fields fall back to the platform .env BIND. */
+export interface SshConnection {
+  host: string;
+  port: number;
+  user: string;
+  keyPath: string;
+  password: string;
+}
+
 /**
- * Run a command on the BIND server over SSH and pipe `stdin` to the remote
- * process. Supports key auth (preferred) or password auth.
+ * Run a command on a BIND server over SSH and pipe `stdin` to the remote
+ * process. Supports key auth (preferred) or password auth. `conn` overrides
+ * the platform BIND (.env) for per-tenant DNS providers.
  */
 export async function sshExec(
   command: string,
   stdin?: string,
   timeoutMs = 30_000,
+  conn?: Partial<SshConnection>,
 ): Promise<ExecResult> {
-  const { host, port, user, keyPath } = config.bind;
+  const host = conn?.host || config.bind.host;
+  const port = conn?.port ?? config.bind.port;
+  const user = conn?.user || config.bind.user;
+  const keyPath = conn?.keyPath ?? config.bind.keyPath;
+  const passwordRaw = conn?.password ?? config.bind.password;
   if (!host) {
     return Promise.reject(
-      new Error("BIND_SSH_HOST is not configured — set it in .env"),
+      new Error(
+        conn
+          ? "DNS provider is missing its host"
+          : "BIND_SSH_HOST is not configured — set it in .env",
+      ),
     );
   }
-  if (!keyPath && !config.bind.password) {
+  if (!keyPath && !passwordRaw) {
     return Promise.reject(
       new Error(
-        "No BIND SSH credentials configured — set BIND_SSH_KEY_PATH or BIND_SSH_PASSWORD in .env",
+        "No BIND SSH credentials configured — set BIND_SSH_KEY_PATH or BIND_SSH_PASSWORD in .env (or on the DNS provider)",
       ),
     );
   }
   // The password may be a vault:// reference resolved from the secret vault.
-  const password = await vault.resolveSecretValue(config.bind.password);
+  const password = await vault.resolveSecretValue(passwordRaw);
 
   return new Promise((resolve, reject) => {
     const conn = new Client();

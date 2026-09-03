@@ -34,10 +34,10 @@ zone is configurable.
 | | | |
 | --- | --- | --- |
 | 🔐 **ACME certificates** | Let's Encrypt, regular + **wildcard**, DNS-01 via your own BIND over `nsupdate` + TSIG. Auto-renewed 30 days before expiry. | 
-| 🌐 **Live DNS management** | Create/list/delete `A`, `AAAA`, `CNAME`, `TXT`, `MX`, `NS`, `SRV` records on zones you control, straight over SSH. |
+| 🌐 **Live DNS management** | Create/list/delete `A`, `AAAA`, `CNAME`, `TXT`, `MX`, `NS`, `SRV` records on zones you control, straight over SSH — routed to **the tenant's own DNS provider** when one is registered. |
 | 🛡 **Internal PKI** | Private root CA issuing **per-device TLS client certificates** (ECDSA P-256, `clientAuth`) — revoke instantly, re-issue freely. |
 | 📱 **Device trust** | Devices enroll with keys that never leave them (CSR signing) or via MDM-pushed Apple profiles (root CA + SCEP). nginx **auto-allows** any device holding a Cerulean certificate. |
-| 🏢 **Multi-tenant** | Certificates, domains, and secrets scoped per organization. Tenant identity rides on Authentik groups; platform admins manage tenants in the dashboard. |
+| 🏢 **Multi-tenant** | Certificates, domains, PKI, and vault secrets scoped per organization. Tenants can bring their **own BIND servers**; tenant identity rides on Authentik groups; platform admins manage tenants in the dashboard. |
 | ⇄ **nginx proxy manager** | One-click cert export, automatic attach on issue/renew, and full proxy-host provisioning on a fresh host. |
 | ⌕ **Discovery & audit** | Sweep NPM and local PEM directories into a central inventory; audit NS delegation, SOA, propagation, and CAA per domain. |
 | 💯 **Health scoring** | Every issued and discovered certificate gets a 0–100 score and A–F grade across validity, key strength, algorithm, SANs, material. |
@@ -236,6 +236,13 @@ admins who manage tenants from the **Tenants** page or `GET/POST /api/tenants`.
 Existing single-tenant data lives in the built-in `default` tenant — upgrading
 requires no migration work.
 
+**Per-tenant DNS providers.** A tenant that runs its own BIND can register it
+under **DNS Providers** (SSH endpoint, auth, and TSIG key; secrets are
+write-only and never leave the server). Record operations on the tenant's
+zones — AXFR listing and nsupdate adds/deletes — run against its **default**
+provider; tenants with no provider fall back to the platform-level BIND from
+`.env`, so nothing breaks when a provider is removed.
+
 ## REST API
 
 All endpoints require `Authorization: Bearer <token>` (obtain a token via
@@ -258,6 +265,7 @@ another.
 | GET | `/api/certificates/:id/health` | Certificate health breakdown |
 | POST | `/api/vault/sync` | Mirror secrets into the vault |
 | GET/POST/DELETE | `/api/domains[/:id]` | Manage registered domains |
+| GET/POST/PATCH/DELETE | `/api/dns/providers[/:id]` | Per-tenant BIND providers (secrets write-only) |
 | GET | `/api/domains/:id/records` | List zone records (AXFR) |
 | POST/DELETE | `/api/domains/:id/records` | Add / delete a DNS record |
 | GET/POST | `/api/certificates` | List certificates / start issuance |
