@@ -19,6 +19,14 @@ export interface Config {
     localEnabled: boolean;
   };
 
+  // Admin API credentials (optional) used to inspect Authentik groups/users —
+  // e.g. listing a tenant's members (a tenant is an Authentik group).
+  authentikAdmin: {
+    apiUrl: string;
+    user: string;
+    password: string;
+  };
+
   vault: {
     enabled: boolean;
     addr: string;
@@ -142,6 +150,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       // Local admin-password login remains available as a bootstrap fallback
       // unless explicitly disabled (AUTH_LOCAL_ENABLED=0).
       localEnabled: bool(env.AUTH_LOCAL_ENABLED, true),
+    },
+
+    authentikAdmin: {
+      apiUrl: env.AUTHENTIK_API_URL || issuerUrl,
+      user: env.AUTHENTIK_ADMIN_USER || "akadmin",
+      password: env.AUTHENTIK_ADMIN_PASSWORD || "",
     },
 
     vault: {

@@ -117,6 +117,20 @@ export function createTenant(input: {
   return db.createTenant({ slug, name });
 }
 
+/** Rename a tenant (display name; the slug — and thus the Authentik group —
+ * is the stable identity and cannot change). */
+export function renameTenant(id: number, nameRaw: string): TenantRow {
+  const name = nameRaw.trim();
+  if (!name || name.length > 128) {
+    throw new TenantError(400, "name must be 1-128 characters");
+  }
+  const row = db.renameTenant(id, name);
+  if (!row) {
+    throw new TenantError(404, "Tenant not found");
+  }
+  return row;
+}
+
 export class TenantError extends Error {
   constructor(
     public readonly status: number,

@@ -5,20 +5,22 @@ import Domains from "./pages/Domains";
 import Certificates from "./pages/Certificates";
 import NpmExport from "./pages/NpmExport";
 import Pki from "./pages/Pki";
+import Tenants from "./pages/Tenants";
 import Discovery from "./pages/Discovery";
 import Settings from "./pages/Settings";
 import Login from "./pages/Login";
 import type { SessionUser } from "./types";
 
-type Page = "dashboard" | "domains" | "certificates" | "pki" | "npm" | "discovery" | "settings";
+type Page = "dashboard" | "domains" | "certificates" | "pki" | "tenants" | "npm" | "discovery" | "settings";
 
-const NAV: { page: Page; label: string; icon: string }[] = [
+const NAV: { page: Page; label: string; icon: string; platformOnly?: boolean }[] = [
   { page: "dashboard", label: "Dashboard", icon: "◈" },
   { page: "domains", label: "Domains", icon: "◉" },
   { page: "certificates", label: "Certificates", icon: "🔒" },
   { page: "pki", label: "PKI & Devices", icon: "🛡" },
   { page: "npm", label: "nginx Proxy Manager", icon: "⇄" },
   { page: "discovery", label: "Discovery & Audit", icon: "⌕" },
+  { page: "tenants", label: "Tenants", icon: "▤", platformOnly: true },
   { page: "settings", label: "Settings", icon: "⚙" },
 ];
 
@@ -80,7 +82,7 @@ export default function App() {
           <span>Cerulean</span>
         </div>
         <nav>
-          {NAV.map((item) => (
+          {NAV.filter((item) => !item.platformOnly || platform).map((item) => (
             <button
               key={item.page}
               className={`nav-item ${page === item.page ? "active" : ""}`}
@@ -116,6 +118,7 @@ export default function App() {
         {page === "domains" && <Domains />}
         {page === "certificates" && <Certificates />}
         {page === "pki" && <Pki />}
+        {page === "tenants" && platform && <Tenants />}
         {page === "npm" && <NpmExport />}
         {page === "discovery" && <Discovery />}
         {page === "settings" && <Settings />}

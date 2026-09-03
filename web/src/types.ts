@@ -94,6 +94,20 @@ export interface NpmCertificate {
   expires_on: string | null;
 }
 
+export interface TenantRow {
+  id: number;
+  slug: string;
+  name: string;
+  created_at: string;
+}
+
+export interface TenantMember {
+  pk: string;
+  username: string;
+  email: string;
+  name: string;
+}
+
 export interface PkiStatus {
   initialized: boolean;
   commonName: string | null;
