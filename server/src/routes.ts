@@ -20,6 +20,7 @@ import { scoreCertificate } from "./services/health";
 import { runDiscovery } from "./services/discovery";
 import { auditDomain } from "./services/audit";
 import { vault } from "./services/vault";
+import * as pki from "./services/pki";
 
 const router = Router();
 
@@ -32,6 +33,51 @@ function asyncHandler(
     next: import("express").NextFunction,
   ) => {
     fn(req, res).catch(next);
+  };
+}
+
+/** Run an async pki handler, mapping PkiError to its HTTP status. */
+function pkiHandler(
+  fn: (req: import("express").Request, res: import("express").Response) => Promise<unknown>,
+) {
+  return (
+    req: import("express").Request,
+    res: import("express").Response,
+    next: import("express").NextFunction,
+  ) => {
+    fn(req, res).catch((err) => {
+      if (err instanceof pki.PkiError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      next(err);
+    });
+  };
+}
+
+function clientCertToJson(c: {
+  id: number;
+  name: string;
+  email: string | null;
+  serial_hex: string;
+  status: string;
+  fingerprint: string | null;
+  expires_at: string | null;
+  issued_at: string | null;
+  revoked_at: string | null;
+  created_at: string;
+}) {
+  return {
+    id: c.id,
+    name: c.name,
+    email: c.email,
+    serial: c.serial_hex,
+    status: c.status,
+    fingerprint: c.fingerprint,
+    expiresAt: c.expires_at,
+    issuedAt: c.issued_at,
+    revokedAt: c.revoked_at,
+    createdAt: c.created_at,
   };
 }
 
@@ -180,6 +226,7 @@ router.get(
         dirs: config.discovery.dirs,
         count: db.listDiscoveredCerts().length,
       },
+      pki: pki.pkiStatus(),
       config: {
         zone: config.zone,
         acmeDirectoryUrl: config.acmeDirectoryUrl,
@@ -511,6 +558,102 @@ router.put(
       `Updated NPM proxy host ${(existing.domain_names || []).join(", ")}`,
     );
     res.json(updated);
+  }),
+);
+
+// ── Private PKI (internal CA + TLS client certificates) ────────────────
+// The internal root CA is created lazily on first issuance; POST /pki/init
+// only pre-creates it (idempotent). Issued client certificates are meant for
+// device/identity mTLS — nginx ssl_verify_client, MDM enrollment, etc.
+router.get(
+  "/pki/status",
+  requireAuth,
+  asyncHandler(async (_req, res) => {
+    res.json(pki.pkiStatus());
+  }),
+);
+
+router.post(
+  "/pki/init",
+  requireAuth,
+  pkiHandler(async (req, res) => {
+    const existed = pki.pkiStatus().initialized;
+    const commonName =
+      typeof req.body?.commonName === "string" && req.body.commonName.trim()
+        ? req.body.commonName.trim()
+        : undefined;
+    await pki.ensureCa(commonName);
+    res.status(existed ? 200 : 201).json(pki.pkiStatus());
+  }),
+);
+
+router.get("/pki/ca", requireAuth, (_req, res) => {
+  const status = pki.pkiStatus();
+  if (!status.initialized) {
+    res.status(404).json({ error: "Internal CA not initialized yet" });
+    return;
+  }
+  res.json({
+    certificate: pki.caCertificatePem(),
+    commonName: status.commonName,
+    fingerprint: status.caFingerprint,
+    expiresAt: status.caExpiresAt,
+    createdAt: status.createdAt,
+  });
+});
+
+router.get("/pki/certificates", requireAuth, (_req, res) => {
+  res.json(pki.listClientCertificates().map(clientCertToJson));
+});
+
+router.post(
+  "/pki/certificates",
+  requireAuth,
+  pkiHandler(async (req, res) => {
+    const row = await pki.issueClientCertificate({
+      name: String(req.body?.name || ""),
+      email: req.body?.email !== undefined ? String(req.body.email) : undefined,
+      validityDays:
+        req.body?.validity_days !== undefined
+          ? Number(req.body.validity_days)
+          : undefined,
+    });
+    res.status(201).json(clientCertToJson(row));
+  }),
+);
+
+router.get("/pki/certificates/:id", requireAuth, (req, res) => {
+  const row = pki.getClientCertificate(Number(req.params.id));
+  if (!row) {
+    res.status(404).json({ error: "Client certificate not found" });
+    return;
+  }
+  res.json(clientCertToJson(row));
+});
+
+router.get(
+  "/pki/certificates/:id/material",
+  requireAuth,
+  pkiHandler(async (req, res) => {
+    const row = pki.getClientCertificate(Number(req.params.id));
+    if (!row) {
+      res.status(404).json({ error: "Client certificate not found" });
+      return;
+    }
+    if (row.status === "revoked") {
+      res.status(409).json({ error: "Certificate is revoked — material is no longer available" });
+      return;
+    }
+    res.json(pki.clientCertificateMaterial(row));
+  }),
+);
+
+router.post(
+  "/pki/certificates/:id/revoke",
+  requireAuth,
+  pkiHandler(async (req, res) => {
+    const row = pki.revokeClientCertificate(Number(req.params.id));
+    res.json(clientCertToJson(row));
   }),
 );
 
