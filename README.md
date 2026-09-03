@@ -358,22 +358,39 @@ authentication flow, so enrolled users sign in with a passkey (Community
 Edition; users enroll once in their Authentik settings). See
 `docs/device-enrollment.md` §5.
 
-## Secret vault
+## Secrets — Infisical (SecretOps) and legacy Vault
 
-With `VAULT_ADDR` and `VAULT_TOKEN` set, the server mirrors certificate
-private keys and ACME account keys into Vault (KV v2) on a schedule and on
-demand (`POST /api/vault/sync`). Each tenant's material lives under its own
-KV prefix (`certs/<tenant>/<id>`, `pki/certs/<tenant>/<id>`) so vault ACLs can
-isolate tenants. `.env` values can also reference vault secrets instead of
-holding plaintext:
+Cerulean follows the [Innotel Platform Stack](https://github.com/innotelinc/innotel-platform-stack):
+**Infisical** (SecretOps) is the source of truth for secrets, with the legacy HashiCorp
+Vault integration kept for existing deployments.
+
+With `INFISICAL_ADDR` / `INFISICAL_TOKEN` / `INFISICAL_WORKSPACE_ID` set (provisioned by
+`scripts/infisical-setup.sh`), `.env` values can reference secrets instead of holding
+plaintext:
+
+```
+NPM_PASSWORD=infisical://NPM_PASSWORD
+BIND_SSH_PASSWORD=infisical://BIND_SSH_PASSWORD
+```
+
+The server also mirrors certificate private keys and ACME account keys into Infisical on
+a schedule and on demand (`POST /api/vault/sync`), each under its own secret name
+(`certs.<tenant>.<id>.*`, `pki.ca.*`, `acme.<email>.key`). Enable the bundled Infisical
+profile with:
+
+```bash
+docker compose -f docker-compose.yml -f compose.infisical.yml --profile infisical up -d
+bash scripts/infisical-setup.sh
+```
+
+Legacy deployments can keep using Vault: with `VAULT_ADDR` and `VAULT_TOKEN` set, the
+server mirrors the same material into Vault (KV v2) and resolves `vault://path#key`
+references (a dev-mode Vault ships as `docker compose --profile vault up -d`):
 
 ```
 NPM_PASSWORD=vault://cerulean/npm#password
 BIND_SSH_PASSWORD=vault://cerulean/bind#password
 ```
-
-A dev-mode Vault is available via `docker compose --profile vault up -d` for
-self-hosted stacks — point `VAULT_ADDR` at a real Vault for production.
 
 ## Release pipeline
 
@@ -395,3 +412,13 @@ software bill of materials (SPDX), and `SHA256SUMS.txt` checksums.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## 🏛️ Platform stack
+
+Cerulean is the ecosystem's **TrustOps** platform — certificate lifecycle, DNS automation, PKI, and trust scoring in the
+[**Innotel Platform Stack**](https://github.com/innotelinc/innotel-platform-stack) — the
+canonical single-responsibility architecture where Authentik owns identity, Infisical owns
+secrets, Cerulean owns trust, ONYX owns storage, Magnate owns revenue, and every other
+platform is a business function that consumes them. See
+[docs/stack.md](docs/stack.md) for this platform's owns/consumes boundaries and its
+Infisical secret setup.

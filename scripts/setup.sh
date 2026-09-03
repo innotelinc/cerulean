@@ -170,3 +170,21 @@ echo "  Admin pass:  ${ADMIN}"
 echo "  Authentik:   $(env_get AUTHENTIK_ISSUER_URL '(not configured)')  — add --with-authentik to enable SSO"
 echo "  Vault:       $(env_get VAULT_ADDR '(not configured)')  — set VAULT_ADDR/VAULT_TOKEN to enable"
 echo "──────────────────────────────────────────────────────────"
+
+# ── Infisical (SecretOps) — opt-in secret provisioning ──────────────
+# Secrets for the Innotel Platform Stack live in Infisical. Enable by
+# setting INFISICAL_ADMIN_EMAIL / INFISICAL_ADMIN_PASSWORD and the
+# INFISICAL_* keys in .env, then re-run setup (idempotent).
+if grep -qE '^INFISICAL_ADMIN_EMAIL=.+' .env 2>/dev/null && \
+   grep -qE '^INFISICAL_ADMIN_PASSWORD=.+' .env 2>/dev/null; then
+  __root="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
+  case "$__root" in
+    */scripts) __root="$(dirname "$__root")" ;;
+  esac
+  if [ -f "$__root/scripts/infisical-setup.sh" ]; then
+    echo ">> provisioning secrets into Infisical (SecretOps)..."
+    bash "$__root/scripts/infisical-setup.sh" \
+      || echo "!! infisical setup failed (see above); .env values remain valid" >&2
+  fi
+  unset __root
+fi
