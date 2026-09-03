@@ -101,12 +101,25 @@ generated admin password is printed at the end of setup (and stored in
 
 ### 1. BIND (SSH + nsupdate)
 
-`./scripts/setup.sh` runs `./scripts/setup-bind.sh` for you. It SSHs to the
-BIND server and **automatically**: generates a TSIG key, installs it
-(`/etc/bind/cerulean.keys` + an `include` in `named.conf`), and patches each
-zone in `BIND_ZONES` with `allow-update` and `allow-transfer` — with a
-backup of your config before editing and a `named-checkconf` rollback if
-anything is invalid, then reloads BIND and writes the key into `.env`.
+Two modes, picked with `BIND_MODE` in `.env`:
+
+- **`BIND_MODE=remote`** (default) — point at an existing BIND server. This
+  is what the rest of this section describes.
+- **`BIND_MODE=local`** — run the **bundled BIND + sshd container** from this
+  stack: `docker compose --profile bind up -d`. Cerulean reaches it at the
+  compose service name `cerulean-bind` over SSH, exactly like a remote box
+  (nsupdate + TSIG, dig AXFR). On first start the container generates its
+  TSIG key and root SSH password and prints them to its logs — copy them into
+  `BIND_TSIG_SECRET` / `BIND_SSH_PASSWORD` in `.env` (or set them before
+  starting). Zones come from `BIND_ZONES` / `CERULEAN_ZONE`.
+
+For `BIND_MODE=remote`, `./scripts/setup.sh` runs `./scripts/setup-bind.sh`
+for you. It SSHs to the BIND server and **automatically**: generates a TSIG
+key, installs it (`/etc/bind/cerulean.keys` + an `include` in `named.conf`),
+and patches each zone in `BIND_ZONES` with `allow-update` and
+`allow-transfer` — with a backup of your config before editing and a
+`named-checkconf` rollback if anything is invalid, then reloads BIND and
+writes the key into `.env`.
 
 What it needs from you: `.env` with `BIND_SSH_HOST`, `BIND_SSH_USER` and
 (`BIND_SSH_KEY_PATH` or `BIND_SSH_PASSWORD`), plus the ability for the portal
@@ -123,6 +136,15 @@ allow-transfer { <portal-ip>; };          /* so Cerulean can list records (AXFR)
 ```
 
 ### 2. nginx proxy manager
+
+Two modes, picked with `NPM_MODE` in `.env`:
+
+- **`NPM_MODE=remote`** (default) — drive an existing NPM server via its API.
+- **`NPM_MODE=local`** — run the **bundled NPM container** from this stack:
+  `docker compose --profile npm up -d`. Cerulean talks to it at the compose
+  service name `cerulean-npm` (`NPM_INTERNAL_API_URL=http://cerulean-npm:81`
+  by default); the host-side provisioning script `npm-proxy-hosts.py` uses
+  `NPM_API_URL=http://localhost:81`.
 
 Set `NPM_API_URL`, `NPM_EMAIL`, and `NPM_PASSWORD` in `.env`, plus
 `NPM_FORWARD_HOST` (the portal host's LAN IP, as seen from NPM — auto-detected
