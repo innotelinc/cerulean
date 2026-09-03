@@ -81,6 +81,14 @@ zone is configurable.
   reverse proxy and MDM-driven enrollment. The CA is created lazily on first
   issuance; certificates can be listed, re-issued after revoke, and exported
   as leaf + key + CA PEM so a device can install the trust chain.
+- **Device enrollment & mTLS auto-allow** — devices enroll with a key that
+  never leaves them (CSR signing, `POST /api/pki/enroll/csr`) or through an
+  MDM-pushed Apple profile that installs the root CA and points at your SCEP
+  endpoint (`PKI_SCEP_URL`, dashboard → PKI & Devices). Flip a proxy host's
+  TLS gate on (`POST /api/npm/mtls`) and nginx auto-allows any device holding
+  a Cerulean-signed certificate while rejecting everything else — passkeys in
+  Authentik are provisioned by `scripts/authentik-passkeys.py`. Runbook:
+  `docs/device-enrollment.md`.
 - **REST API** — every dashboard action is also available as a JSON endpoint
   (see below), so you can script issuance or exports.
 - **Audit log** — every domain, record, issuance, and export is recorded.
@@ -216,14 +224,14 @@ certificate via HTTP-01, set `NPM_PROXY_SSL=1` instead.
    *Export to NPM* button is still there for manual exports.
 5. **Settings** — integration health, vault sync, renewal sweep, and a
    full configuration summary.
-6. **Internal PKI** (API, dashboard UI coming soon) — Cerulean generates its
-   own private root CA on first use (`POST /api/pki/init`) and issues TLS
-   client certificates for devices/identities. Issue one per device, install
-   the root CA as the trust anchor on your endpoints (nginx
-   `ssl_client_certificate`, browsers, MDM), and nginx will accept any device
-   presenting a valid certificate. Revoking a certificate immediately stops
-   it from being downloadable again and unblocks re-issuing under the same
-   name.
+6. **PKI & Devices** — Cerulean generates its own private root CA on first
+   use and issues TLS client certificates for devices/identities, all from
+   the dashboard: initialize the CA, issue a certificate (or enroll a device
+   with a CSR so its key never leaves it), download material or an MDM
+   enrollment profile, and revoke instantly. Install the root CA as the
+   trust anchor on your endpoints (nginx `ssl_client_certificate`, browsers,
+   MDM) and nginx will accept any device presenting a valid certificate —
+   see `docs/device-enrollment.md` for the full MDM/SCEP/mTLS runbook.
 
 ## REST API
 
@@ -256,6 +264,9 @@ All endpoints require `Authorization: Bearer <token>` (obtain a token via
 | GET | `/api/pki/certificates/:id` | Client certificate detail |
 | GET | `/api/pki/certificates/:id/material` | Leaf PEM + key + root CA |
 | POST | `/api/pki/certificates/:id/revoke` | Revoke a client certificate |
+| POST | `/api/pki/enroll/csr` | Sign a device-generated CSR (key stays on device) |
+| GET | `/api/pki/enrollment/profile` | Apple `.mobileconfig` (root CA + SCEP payload) |
+| POST | `/api/npm/mtls` | Gate a proxy host behind device client certs (auto-allow) |
 | GET | `/api/npm/hosts` · `/api/npm/certificates` | NPM state |
 | POST | `/api/npm/export-cert` | `{ certificate_id }` → import into NPM |
 | POST | `/api/npm/hosts` | Create a proxy host |
@@ -313,6 +324,12 @@ The OIDC provider and application are created automatically by
 with `docker compose --profile authentik exec authentik-server ak
 createsuperuser`, or set `AUTHENTIK_BOOTSTRAP_PASSWORD` before the first start.
 The `auth.cerulean.innotel.us` proxy host fronts Authentik on port 9000.
+
+Passkeys (WebAuthn) are enabled with `scripts/authentik-passkeys.py` — it
+creates a WebAuthn validation stage and binds it into the default
+authentication flow, so enrolled users sign in with a passkey (Community
+Edition; users enroll once in their Authentik settings). See
+`docs/device-enrollment.md` §5.
 
 ## Secret vault
 

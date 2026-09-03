@@ -178,6 +178,7 @@ class VaultClient {
       written.push(path);
     }
     for (const cert of db.listClientCertificates()) {
+      if (!cert.key) continue; // CSR-enrolled: the device holds the key
       const path = `pki/certs/${cert.id}`;
       await this.writeKV(path, {
         certificate: cert.certificate,

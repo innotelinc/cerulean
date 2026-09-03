@@ -14,13 +14,14 @@ import {
 } from "./auth";
 import { runIssueJob, renewalSweep } from "./jobs";
 import * as bind from "./services/bind";
-import { npm } from "./services/npm";
+import { npm, materializeClientCaFile } from "./services/npm";
 import { oidc } from "./services/oidc";
 import { scoreCertificate } from "./services/health";
 import { runDiscovery } from "./services/discovery";
 import { auditDomain } from "./services/audit";
 import { vault } from "./services/vault";
 import * as pki from "./services/pki";
+import * as enrollment from "./services/enrollment";
 
 const router = Router();
 
@@ -644,7 +645,12 @@ router.get(
       res.status(409).json({ error: "Certificate is revoked — material is no longer available" });
       return;
     }
-    res.json(pki.clientCertificateMaterial(row));
+    const material = pki.clientCertificateMaterial(row);
+    res.json({
+      certificate: material.certificate,
+      key: material.key || null, // null when CSR-enrolled (key stays on device)
+      ca: material.ca,
+    });
   }),
 );
 
@@ -654,6 +660,130 @@ router.post(
   pkiHandler(async (req, res) => {
     const row = pki.revokeClientCertificate(Number(req.params.id));
     res.json(clientCertToJson(row));
+  }),
+);
+
+// ── PKI device enrollment ───────────────────────────────────────────────
+// Two enrollment paths for MDM-managed devices:
+//   POST /pki/enroll/csr   — sign a device-generated CSR (the key never
+//                             leaves the device); the operation any SCEP /
+//                             EST / ACME front performs against the CA.
+//   GET  /pki/enrollment/profile — Apple .mobileconfig (root CA + SCEP
+//                             payload) to push through fleet / MicroMDM.
+router.post(
+  "/pki/enroll/csr",
+  requireAuth,
+  pkiHandler(async (req, res) => {
+    const row = await pki.enrollCsr(String(req.body?.csr ?? ""), {
+      validityDays:
+        req.body?.validity_days !== undefined
+          ? Number(req.body.validity_days)
+          : undefined,
+    });
+    res.status(201).json({
+      certificate: clientCertToJson(row),
+      material: {
+        certificate: row.certificate,
+        key: row.key || null, // CSR-enrolled: the device holds the key
+        ca: pki.caCertificatePem(),
+      },
+    });
+  }),
+);
+
+router.get(
+  "/pki/enrollment/profile",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const name = String(req.query.name ?? "").trim();
+    if (!name) {
+      res.status(400).json({
+        error: "Missing ?name= — the device/identity CN to enroll",
+      });
+      return;
+    }
+    let profile: enrollment.EnrollmentProfile;
+    try {
+      profile = enrollment.buildEnrollmentProfile({ name });
+    } catch (err) {
+      if (err instanceof enrollment.EnrollmentError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
+    res.set("Content-Type", "application/x-apple-aspen-config");
+    res.set(
+      "Content-Disposition",
+      `attachment; filename="${profile.filename}"`,
+    );
+    res.send(profile.xml);
+  }),
+);
+
+// ── Device mTLS on nginx proxy manager hosts ───────────────────────────
+// "Auto-allow": gate a proxy host behind TLS client certificates signed by
+// the Cerulean internal CA. Any device presenting a valid certificate is
+// allowed straight through by nginx; requests without one never reach the
+// app. Requires NPM_MODE=local (bundled NPM shares the CA file through the
+// host ./data/npm directory).
+router.post(
+  "/npm/mtls",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const mode = String(req.body?.mode ?? "");
+    const rawHosts = Array.isArray(req.body?.hosts)
+      ? (req.body.hosts as unknown[]).map(String)
+      : [];
+    if (mode !== "on" && mode !== "off") {
+      res.status(400).json({
+        error: 'mode must be "on" (require a valid device certificate) or "off"',
+      });
+      return;
+    }
+    if (!rawHosts.length) {
+      res.status(400).json({
+        error: 'hosts is required — e.g. ["app.cerulean.innotel.us"]',
+      });
+      return;
+    }
+    if (config.npm.mode !== "local") {
+      res.status(400).json({
+        error:
+          "This endpoint supports the bundled NPM (NPM_MODE=local). For a " +
+          "remote NPM, place the root CA at /data/cerulean-client-ca.pem on " +
+          "the NPM host and add the snippet from docs/device-enrollment.md " +
+          "to the host's Custom Nginx Configuration.",
+      });
+      return;
+    }
+
+    try {
+      const hosts = await npm.listProxyHosts();
+      const wanted = new Set(rawHosts.map((d) => d.toLowerCase()));
+      const matched = hosts.filter((h) =>
+        h.domain_names.some((d) => wanted.has(d.toLowerCase())),
+      );
+      if (!matched.length) {
+        res.status(404).json({
+          error: `No proxy host matches: ${rawHosts.join(", ")}`,
+        });
+        return;
+      }
+      if (mode === "on") materializeClientCaFile();
+      const updated: string[] = [];
+      for (const host of matched) {
+        const result = await npm.setHostMtls(host, mode);
+        updated.push(...result.domain_names);
+      }
+      res.json({ ok: true, mode, hosts: updated });
+    } catch (err) {
+      if (err instanceof Error && /not initialized|no SSL certificate/.test(err.message)) {
+        res.status(409).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
   }),
 );
 

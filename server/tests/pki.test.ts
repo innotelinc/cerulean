@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createPublicKey, X509Certificate } from "node:crypto";
+import { createPublicKey, webcrypto, X509Certificate } from "node:crypto";
 import * as x509 from "@peculiar/x509";
+
+// The enrollment profile embeds the configured SCEP URL; set it before the
+// config singleton loads (first dynamic import below).
+process.env.PKI_SCEP_URL = "https://scep.example.test/scep";
 
 /**
  * The pki service talks to the sqlite-backed `db` singleton. Vitest cannot
@@ -116,6 +120,7 @@ vi.mock("../src/db", () => ({ db: h.db }));
 const {
   caCertificatePem,
   clientCertificateMaterial,
+  enrollCsr,
   ensureCa,
   getClientCertificate,
   issueClientCertificate,
@@ -123,6 +128,7 @@ const {
   pkiStatus,
   revokeClientCertificate,
 } = await import("../src/services/pki");
+const { buildEnrollmentProfile } = await import("../src/services/enrollment");
 
 const CLIENT_AUTH_OID = "1.3.6.1.5.5.7.3.2";
 
@@ -271,5 +277,151 @@ describe("clientCertificateMaterial", () => {
     expect(material.ca).toContain("BEGIN CERTIFICATE");
     // The CA PEM matches the actual root (so clients can build the chain).
     expect(material.ca).toBe(caCertificatePem());
+  });
+});
+
+async function makeCsr(
+  cn: string,
+  alg: { name: "ECDSA"; namedCurve: string } | { name: "RSASSA-PKCS1-v1_5"; modulusLength: number } = {
+    name: "ECDSA",
+    namedCurve: "P-256",
+  },
+): Promise<string> {
+  const keys =
+    alg.name === "ECDSA"
+      ? await webcrypto.subtle.generateKey(
+          { name: "ECDSA", namedCurve: alg.namedCurve },
+          true,
+          ["sign", "verify"],
+        )
+      : await webcrypto.subtle.generateKey(
+          {
+            name: "RSASSA-PKCS1-v1_5",
+            modulusLength: alg.modulusLength,
+            publicExponent: new Uint8Array([1, 0, 1]),
+            hash: "SHA-256",
+          },
+          true,
+          ["sign", "verify"],
+        );
+  const signingAlgorithm =
+    alg.name === "ECDSA"
+      ? { name: "ECDSA", hash: "SHA-256" }
+      : { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" };
+  const csr = await x509.Pkcs10CertificateRequestGenerator.create({
+    name: `CN=${cn}`,
+    signingAlgorithm,
+    keys,
+  });
+  return csr.toString();
+}
+
+describe("enrollCsr", () => {
+  it("signs a device-generated CSR — the device keeps the private key", async () => {
+    const name = uniq("csr");
+    const row = await enrollCsr(await makeCsr(name), { validityDays: 30 });
+
+    expect(row.name).toBe(name);
+    expect(row.status).toBe("issued");
+    expect(row.key).toBe(""); // Cerulean never sees the private key
+    expect(row.serial_hex).toMatch(/^[0-9A-F]+$/);
+
+    const leaf = new X509Certificate(row.certificate);
+    expect(leaf.subject).toBe(`CN=${name}`);
+    expect(leaf.verify(createPublicKey(caCertificatePem()))).toBe(true);
+
+    // The server-side template still applies: clientAuth EKU, not a CA.
+    const parsed = new x509.X509Certificate(row.certificate);
+    const eku = parsed.extensions.find(
+      (e) => e instanceof x509.ExtendedKeyUsageExtension,
+    ) as x509.ExtendedKeyUsageExtension;
+    expect(eku.usages.map(String)).toContain(CLIENT_AUTH_OID);
+    const bc = parsed.extensions.find(
+      (e) => e instanceof x509.BasicConstraintsExtension,
+    ) as x509.BasicConstraintsExtension;
+    expect(bc.ca).toBe(false);
+
+    // Revoke frees the CN so the same device can re-enroll.
+    revokeClientCertificate(row.id);
+    const again = await enrollCsr(await makeCsr(name));
+    expect(again.id).not.toBe(row.id);
+    expect(again.status).toBe("issued");
+  });
+
+  it("accepts RSA ≥ 2048 CSRs too", async () => {
+    const name = uniq("rsa");
+    const row = await enrollCsr(
+      await makeCsr(name, { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048 }),
+    );
+    expect(row.name).toBe(name);
+    expect(row.key).toBe("");
+    expect(new X509Certificate(row.certificate).verify(createPublicKey(caCertificatePem()))).toBe(
+      true,
+    );
+  });
+
+  it("rejects garbage, unsigned-looking and weak-key CSRs", async () => {
+    await expect(enrollCsr("not a csr")).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringContaining("Unparseable"),
+    });
+    await expect(enrollCsr("")).rejects.toMatchObject({ status: 400 });
+
+    // An EC P-521 key is fine, but a 1024-bit RSA CSR must be refused.
+    const weak = await makeCsr(uniq("weak"), {
+      name: "RSASSA-PKCS1-v1_5",
+      modulusLength: 1024,
+    });
+    await expect(enrollCsr(weak)).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringContaining("RSA ≥ 2048"),
+    });
+  });
+
+  it("requires a CN and enforces the one-active-per-name rule across paths", async () => {
+    const name = uniq("both");
+    await issueClientCertificate({ name }); // portal-issued first
+    await expect(enrollCsr(await makeCsr(name))).rejects.toMatchObject({ status: 409 });
+
+    // A CSR with no CN is refused.
+    const keys = await webcrypto.subtle.generateKey(
+      { name: "ECDSA", namedCurve: "P-256" },
+      true,
+      ["sign", "verify"],
+    );
+    const csr = await x509.Pkcs10CertificateRequestGenerator.create({
+      name: "O=No CN Here",
+      signingAlgorithm: { name: "ECDSA", hash: "SHA-256" },
+      keys,
+    });
+    await expect(enrollCsr(csr.toString())).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringContaining("CN"),
+    });
+  });
+});
+
+describe("enrollment profile (.mobileconfig)", () => {
+  it("embeds the root CA trust anchor and an SCEP payload for the device CN", async () => {
+    await ensureCa();
+    const profile = buildEnrollmentProfile({ name: "mbp-admin" });
+    expect(profile.filename).toBe("cerulean-mbp-admin.mobileconfig");
+    expect(profile.xml).toContain("com.apple.security.root");
+    expect(profile.xml).toContain("com.apple.security.scep");
+    expect(profile.xml).toContain("https://scep.example.test/scep");
+    expect(profile.xml).toContain("<string>CN</string>");
+    expect(profile.xml).toContain("<string>mbp-admin</string>");
+    // The profile literally carries the CA cert so the device can trust us.
+    const derB64 = new X509Certificate(caCertificatePem()).raw.toString("base64");
+    expect(profile.xml).toContain(derB64);
+  });
+
+  it("refuses to build before the CA exists or with an invalid name", async () => {
+    expect(() => buildEnrollmentProfile({ name: "no-ca-yet" })).toThrow(
+      /not initialized/,
+    );
+    expect(() => buildEnrollmentProfile({ name: "bad name!" })).toThrow(
+      /Invalid device name/,
+    );
   });
 });
