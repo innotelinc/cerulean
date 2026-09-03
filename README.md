@@ -1,6 +1,6 @@
 <div align="center">
 
-# Cerulean
+# 🔵 Cerulean
 
 **Certificate, DNS & trust management — self-hosted.**
 
@@ -12,6 +12,15 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 </div>
+
+> **About Cerulean** — the self-hosted control plane for certificate lifecycles, DNS
+> automation, and device trust: Let's Encrypt issuance (regular + wildcard) written
+> straight into your own BIND server, live DNS record management, an internal PKI with
+> mTLS device enrollment, discovery and health scoring, a secret vault, Authentik SSO,
+> and multi-tenant isolation — nginx proxy manager wired with zero clicks.
+> **Landing page:** [github.com/innotelinc/cerulean](https://github.com/innotelinc/cerulean)
+
+---
 
 Cerulean centralizes certificate lifecycles, DNS automation, and device trust in
 one self-hosted platform. It issues **Let's Encrypt certificates (regular and
