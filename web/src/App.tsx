@@ -26,12 +26,18 @@ export default function App() {
   const [authed, setAuthed] = useState<boolean>(() => Boolean(getToken()));
   const [page, setPage] = useState<Page>("dashboard");
   const [user, setUser] = useState<SessionUser | null>(null);
+  const [tenant, setTenant] = useState<{ id: number; slug: string; name: string } | null>(null);
+  const [platform, setPlatform] = useState(false);
 
   useEffect(() => {
     if (authed) {
       api
         .me()
-        .then((res) => setUser(res.user))
+        .then((res) => {
+          setUser(res.user);
+          setTenant(res.tenant ?? null);
+          setPlatform(Boolean(res.platform));
+        })
         .catch(() => setUser(null));
     }
   }, [authed]);
@@ -90,6 +96,14 @@ export default function App() {
             <div className="muted" style={{ padding: "0 14px 8px", fontSize: 12 }}>
               {user.name}
               {user.email && <div className="mono">{user.email}</div>}
+              {tenant && (
+                <div style={{ marginTop: 4 }}>
+                  <span className="badge blue">
+                    {tenant.name}
+                    {platform ? " · platform" : ""}
+                  </span>
+                </div>
+              )}
             </div>
           )}
           <button className="nav-item logout" onClick={logout}>
