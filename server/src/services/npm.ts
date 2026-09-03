@@ -84,6 +84,14 @@ class NpmClient {
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
+    return this.parseResponse<T>(res, method, path);
+  }
+
+  private async parseResponse<T>(
+    res: Response,
+    method: string,
+    path: string,
+  ): Promise<T> {
     const text = await res.text();
     let data: T = null as T;
     if (text) {
@@ -103,6 +111,33 @@ class NpmClient {
       );
     }
     return data;
+  }
+
+  /**
+   * POST the PEM files for a custom ("other") certificate via the multipart
+   * /nginx/certificates/:id/upload route. In current NPM builds the JSON
+   * create only stores the row + meta — the PEM files land on disk (and nginx
+   * becomes able to serve the cert) only through this upload route, which
+   * validates the pair and writes /data/custom_ssl/npm-<id>/.
+   */
+  private async uploadCertFiles(
+    id: number,
+    certificate: string,
+    key: string,
+  ): Promise<void> {
+    const token = await this.getToken();
+    const form = new FormData();
+    form.append("certificate", new Blob([certificate]), "certificate.pem");
+    form.append("certificate_key", new Blob([key]), "privkey.pem");
+    const res = await fetch(
+      `${this.baseUrl}/api/nginx/certificates/${id}/upload`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      },
+    );
+    await this.parseResponse<void>(res, "POST", `/nginx/certificates/${id}/upload`);
   }
 
   /** Verify connectivity + credentials. */
@@ -131,6 +166,12 @@ class NpmClient {
   /**
    * Import a Cerulean-issued certificate into NPM as a custom ("other")
    * certificate. Returns the NPM certificate id.
+   *
+   * Current NPM builds require two calls: the JSON create stores the row and
+   * its meta, and the multipart /upload materializes the PEM files on disk
+   * (without it nginx cannot load the certificate). Older NPM builds that
+   * write files directly from the create meta return 404/405 on /upload —
+   * there the create alone is sufficient, so those errors are ignored.
    */
   async importCertificate(input: {
     niceName: string;
@@ -151,7 +192,25 @@ class NpmClient {
         },
       },
     );
+    await this.tryUpload(created.id, input.certificate, input.key);
     return created.id;
+  }
+
+  /** Upload cert files, ignoring "route not found" on older NPM builds. */
+  private async tryUpload(
+    id: number,
+    certificate: string,
+    key: string,
+  ): Promise<void> {
+    try {
+      await this.uploadCertFiles(id, certificate, key);
+    } catch (err) {
+      const status = err instanceof Error ? /HTTP (\d+)/.exec(err.message)?.[1] : "";
+      if (status === "404" || status === "405") {
+        return; // older NPM: create already wrote the files
+      }
+      throw err;
+    }
   }
 
   /**
@@ -188,7 +247,15 @@ class NpmClient {
     });
   }
 
-  /** Refresh the material of an existing custom certificate (renewals). */
+  /**
+   * Refresh the material of an existing custom certificate (renewals).
+   *
+   * Current NPM builds have no PUT route for certificates: the way to refresh
+   * an "other" certificate in place is the multipart /upload route, which
+   * updates the row's meta and rewrites the PEM files on disk. On older builds
+   * that accept PUT, fall back to it (a 404/405 here means the reverse — this
+   * build expects PUT, which writes the files from the updated meta).
+   */
   async updateCertificate(
     id: number,
     input: {
@@ -198,15 +265,24 @@ class NpmClient {
       key: string;
     },
   ): Promise<void> {
-    await this.request("PUT", `/nginx/certificates/${id}`, {
-      provider: "other",
-      nice_name: input.niceName,
-      domain_names: input.domainNames,
-      meta: {
-        certificate: input.certificate,
-        certificate_key: input.key,
-      },
-    });
+    try {
+      await this.uploadCertFiles(id, input.certificate, input.key);
+    } catch (err) {
+      const status = err instanceof Error ? /HTTP (\d+)/.exec(err.message)?.[1] : "";
+      if (status === "404" || status === "405") {
+        await this.request("PUT", `/nginx/certificates/${id}`, {
+          provider: "other",
+          nice_name: input.niceName,
+          domain_names: input.domainNames,
+          meta: {
+            certificate: input.certificate,
+            certificate_key: input.key,
+          },
+        });
+        return;
+      }
+      throw err;
+    }
   }
 
   /**
@@ -274,15 +350,23 @@ class NpmClient {
       return { attached: [] };
     }
 
-    // Reuse an existing NPM custom certificate with the same domains so
-    // renewals refresh in place instead of piling up duplicates.
+    // Reuse an existing NPM custom certificate for this Cerulean cert so
+    // renewals refresh in place instead of piling up duplicates. Prefer the
+    // stable nice_name (cerulean-<domain>[-wildcard]): NPM's /upload route
+    // rewrites a custom cert's domain_names to just its CN, so a wildcard
+    // cert ends up listed as the apex only and exact-domain matching would
+    // miss it on the next run.
+    const expectedNiceName = `cerulean-${cert.domain}${cert.wildcard ? "-wildcard" : ""}`;
     const sameDomains = (names?: string[]) =>
       !!names &&
       names.length === domains.length &&
       domains.every((d) => names.includes(d));
-    const existing = (await this.listCertificates()).find(
-      (c) => c.provider === "other" && sameDomains(c.domain_names),
-    );
+    const byName = (c: NpmCertificate) =>
+      c.provider === "other" && c.nice_name === expectedNiceName;
+    const byDomains = (c: NpmCertificate) =>
+      c.provider === "other" && sameDomains(c.domain_names);
+    const all = await this.listCertificates();
+    const existing = all.find(byName) || all.find(byDomains);
     let npmCertId: number;
     if (existing) {
       await this.updateCertificate(existing.id, {
