@@ -295,6 +295,14 @@ class Database {
     return this.getTenant(Number(result.lastInsertRowid))!;
   }
 
+  renameTenant(id: number, name: string): TenantRow | undefined {
+    const result = this.db
+      .prepare("UPDATE tenants SET name = ? WHERE id = ?")
+      .run(name, id);
+    if (Number(result.changes) === 0) return undefined;
+    return this.getTenant(id);
+  }
+
   // ── Domains ────────────────────────────────────────────────────────────
   listDomains(tenantId?: number): DomainRow[] {
     const rows = tenantId

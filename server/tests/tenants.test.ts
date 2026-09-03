@@ -34,6 +34,12 @@ const h = vi.hoisted(() => {
       tenants.push(row);
       return row;
     },
+    renameTenant: (id: number, name: string) => {
+      const row = tenants.find((t) => t.id === id);
+      if (!row) return undefined;
+      row.name = name;
+      return row;
+    },
   };
   return {
     db,
@@ -57,6 +63,7 @@ const {
   createTenant,
   effectiveTenant,
   isPlatformAdmin,
+  renameTenant,
   TenantError,
   tenantsForUser,
 } = await import("../src/services/tenants");
@@ -154,6 +161,17 @@ describe("createTenant", () => {
     const created = createTenant({ slug: "zeta", name: "Zeta Inc" });
     expect(created.slug).toBe("zeta");
     expect(dbListSlugs()).toContain("zeta");
+  });
+});
+
+describe("renameTenant", () => {
+  it("renames by id, keeps the slug, and validates input", () => {
+    const renamed = renameTenant(2, "Acme Corp (US)");
+    expect(renamed?.name).toBe("Acme Corp (US)");
+    expect(renamed?.slug).toBe("acme"); // slug is the stable identity
+
+    expect(() => renameTenant(2, "   ")).toThrow(/1-128/);
+    expect(() => renameTenant(99_999, "New Name")).toThrow(TenantError);
   });
 });
 

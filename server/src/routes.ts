@@ -25,11 +25,16 @@ import * as enrollment from "./services/enrollment";
 import {
   createTenant,
   isPlatform,
+  renameTenant,
   resolveTenant,
   TenantError,
   tenantOf,
   tenantsForUser,
 } from "./services/tenants";
+import {
+  adminConfigured as authentikAdminConfigured,
+  listGroupMembers,
+} from "./services/authentik";
 
 const router = Router();
 
@@ -887,6 +892,76 @@ router.post(
       throw err;
     }
   },
+);
+
+router.patch(
+  "/tenants/:id",
+  tenantGuard,
+  (req, res) => {
+    if (!isPlatform(res)) {
+      res.status(403).json({ error: "Platform admin required" });
+      return;
+    }
+    try {
+      const tenant = renameTenant(
+        Number(req.params.id),
+        String(req.body?.name ?? ""),
+      );
+      db.addActivity(
+        "tenant-rename",
+        `Renamed tenant ${tenant.slug} → "${tenant.name}"`,
+      );
+      res.json(tenant);
+    } catch (err) {
+      if (err instanceof TenantError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
+  },
+);
+
+router.get(
+  "/tenants/:slug/members",
+  tenantGuard,
+  asyncHandler(async (req, res) => {
+    if (!isPlatform(res)) {
+      res.status(403).json({ error: "Platform admin required" });
+      return;
+    }
+    const slug = String(req.params.slug ?? "");
+    if (!db.getTenantBySlug(slug)) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+    if (!authentikAdminConfigured()) {
+      res.json({
+        available: false,
+        users: [],
+        hint:
+          "Member listing needs Authentik admin credentials — set " +
+          "AUTHENTIK_API_URL and AUTHENTIK_ADMIN_PASSWORD in .env",
+      });
+      return;
+    }
+    try {
+      const { users, groupExists } = await listGroupMembers(slug);
+      res.json({
+        available: true,
+        users,
+        groupExists,
+        hint: groupExists
+          ? `Members are the users in the Authentik group "${slug}"`
+          : `No Authentik group "${slug}" yet — create it and add users; ` +
+            "membership is live instantly",
+      });
+    } catch (err) {
+      res.status(502).json({
+        error: err instanceof Error ? err.message : "Authentik query failed",
+      });
+    }
+  }),
 );
 
 // ── Activities ──────────────────────────────────────────────────────────
