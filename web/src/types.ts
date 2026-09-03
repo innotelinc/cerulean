@@ -94,6 +94,37 @@ export interface NpmCertificate {
   expires_on: string | null;
 }
 
+export interface PkiStatus {
+  initialized: boolean;
+  commonName: string | null;
+  caFingerprint: string | null;
+  caExpiresAt: string | null;
+  createdAt: string | null;
+  issued: number;
+  revoked: number;
+}
+
+export interface PkiCa {
+  certificate: string;
+  commonName: string;
+  fingerprint: string;
+  expiresAt: string;
+  createdAt: string;
+}
+
+export interface ClientCertificate {
+  id: number;
+  name: string;
+  email: string | null;
+  serial: string;
+  status: "issued" | "revoked";
+  fingerprint: string | null;
+  expiresAt: string | null;
+  issuedAt: string | null;
+  revokedAt: string | null;
+  createdAt: string;
+}
+
 export interface AuthConfig {
   localEnabled: boolean;
   oidc: {
@@ -129,6 +160,7 @@ export interface StatusResponse {
     dirs: string[];
     count: number;
   };
+  pki: PkiStatus;
   config: {
     zone: string;
     acmeDirectoryUrl: string;

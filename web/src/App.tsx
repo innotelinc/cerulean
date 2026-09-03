@@ -4,17 +4,19 @@ import Dashboard from "./pages/Dashboard";
 import Domains from "./pages/Domains";
 import Certificates from "./pages/Certificates";
 import NpmExport from "./pages/NpmExport";
+import Pki from "./pages/Pki";
 import Discovery from "./pages/Discovery";
 import Settings from "./pages/Settings";
 import Login from "./pages/Login";
 import type { SessionUser } from "./types";
 
-type Page = "dashboard" | "domains" | "certificates" | "npm" | "discovery" | "settings";
+type Page = "dashboard" | "domains" | "certificates" | "pki" | "npm" | "discovery" | "settings";
 
 const NAV: { page: Page; label: string; icon: string }[] = [
   { page: "dashboard", label: "Dashboard", icon: "◈" },
   { page: "domains", label: "Domains", icon: "◉" },
   { page: "certificates", label: "Certificates", icon: "🔒" },
+  { page: "pki", label: "PKI & Devices", icon: "🛡" },
   { page: "npm", label: "nginx Proxy Manager", icon: "⇄" },
   { page: "discovery", label: "Discovery & Audit", icon: "⌕" },
   { page: "settings", label: "Settings", icon: "⚙" },
@@ -99,6 +101,7 @@ export default function App() {
         {page === "dashboard" && <Dashboard goTo={setPage} />}
         {page === "domains" && <Domains />}
         {page === "certificates" && <Certificates />}
+        {page === "pki" && <Pki />}
         {page === "npm" && <NpmExport />}
         {page === "discovery" && <Discovery />}
         {page === "settings" && <Settings />}

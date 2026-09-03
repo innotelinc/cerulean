@@ -158,4 +158,36 @@ export const api = {
     ssl_forced?: boolean;
     http2_support?: boolean;
   }) => request<import("./types").NpmProxyHost>("POST", "/npm/hosts", input),
+
+  pkiStatus: () => request<import("./types").PkiStatus>("GET", "/pki/status"),
+  pkiInit: (commonName?: string) =>
+    request<import("./types").PkiStatus>(
+      "POST",
+      "/pki/init",
+      commonName ? { commonName } : {},
+    ),
+  pkiCa: () => request<import("./types").PkiCa>("GET", "/pki/ca"),
+  pkiCertificates: () =>
+    request<import("./types").ClientCertificate[]>("GET", "/pki/certificates"),
+  issuePkiCertificate: (input: { name: string; email?: string }) =>
+    request<import("./types").ClientCertificate>(
+      "POST",
+      "/pki/certificates",
+      input,
+    ),
+  pkiCertificateMaterial: (id: number) =>
+    request<{ certificate: string; key: string | null; ca: string }>(
+      "GET",
+      `/pki/certificates/${id}/material`,
+    ),
+  pkiEnrollmentProfile: (name: string) =>
+    request<string>(
+      "GET",
+      `/pki/enrollment/profile?name=${encodeURIComponent(name)}`,
+    ),
+  revokePkiCertificate: (id: number) =>
+    request<import("./types").ClientCertificate>(
+      "POST",
+      `/pki/certificates/${id}/revoke`,
+    ),
 };
