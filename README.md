@@ -6,9 +6,9 @@
 
 *Point DNS at it once — never touch a zone file again.*
 
-[![CI](https://github.com/innotelinc/cerulean/actions/workflows/ci.yml/badge.svg)](https://github.com/innotelinc/cerulean/actions/workflows/ci.yml)
-[![Release](https://github.com/innotelinc/cerulean/actions/workflows/release.yml/badge.svg)](https://github.com/innotelinc/cerulean/actions/workflows/release.yml)
-[![Latest release](https://img.shields.io/github/v/release/innotelinc/cerulean)](https://github.com/innotelinc/cerulean/releases)
+[![CI](https://innotelinc.github.io/cerulean/actions/workflows/ci.yml/badge.svg)](https://innotelinc.github.io/cerulean/actions/workflows/ci.yml)
+[![Release](https://innotelinc.github.io/cerulean/actions/workflows/release.yml/badge.svg)](https://innotelinc.github.io/cerulean/actions/workflows/release.yml)
+[![Latest release](https://img.shields.io/github/v/release/innotelinc/cerulean)](https://innotelinc.github.io/cerulean/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 </div>
@@ -18,7 +18,7 @@
 > straight into your own BIND server, live DNS record management, an internal PKI with
 > mTLS device enrollment, discovery and health scoring, a secret vault, Authentik SSO,
 > and multi-tenant isolation — nginx proxy manager wired with zero clicks.
-> **Landing page:** [github.com/innotelinc/cerulean](https://github.com/innotelinc/cerulean)
+> **Landing page:** [innotelinc.github.io/cerulean](https://innotelinc.github.io/cerulean)
 
 ---
 
