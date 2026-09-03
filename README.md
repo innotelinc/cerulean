@@ -81,6 +81,13 @@ zone is configurable.
   reverse proxy and MDM-driven enrollment. The CA is created lazily on first
   issuance; certificates can be listed, re-issued after revoke, and exported
   as leaf + key + CA PEM so a device can install the trust chain.
+- **Multi-tenant (organizations)** — every certificate, domain and vault
+  secret is scoped to a tenant. Tenant identity rides on Authentik groups: a
+  tenant's slug is a group, and group members see only their tenant's data
+  (`X-Cerulean-Tenant` switches among the caller's tenants). Local admin
+  sessions (or `TENANT_PLATFORM_GROUP` members) are platform admins who
+  create tenants via `GET/POST /api/tenants`. Existing single-tenant data
+  lives in the built-in `default` tenant — no migration work needed.
 - **Device enrollment & mTLS auto-allow** — devices enroll with a key that
   never leaves them (CSR signing, `POST /api/pki/enroll/csr`) or through an
   MDM-pushed Apple profile that installs the root CA and points at your SCEP
@@ -236,7 +243,11 @@ certificate via HTTP-01, set `NPM_PROXY_SSL=1` instead.
 ## REST API
 
 All endpoints require `Authorization: Bearer <token>` (obtain a token via
-`POST /api/auth/login`).
+`POST /api/auth/login`). Tenant-owned data (domains, certificates, PKI,
+discovery) is scoped to your tenant: members of an Authentik group whose slug
+matches a tenant see only that tenant's data, platform admins operate on the
+`default` tenant by default and send `X-Cerulean-Tenant: <slug>` to act in
+another.
 
 | Method | Path | Description |
 | --- | --- | --- |
@@ -267,6 +278,7 @@ All endpoints require `Authorization: Bearer <token>` (obtain a token via
 | POST | `/api/pki/enroll/csr` | Sign a device-generated CSR (key stays on device) |
 | GET | `/api/pki/enrollment/profile` | Apple `.mobileconfig` (root CA + SCEP payload) |
 | POST | `/api/npm/mtls` | Gate a proxy host behind device client certs (auto-allow) |
+| GET/POST | `/api/tenants` | List / create tenants (platform admins) |
 | GET | `/api/npm/hosts` · `/api/npm/certificates` | NPM state |
 | POST | `/api/npm/export-cert` | `{ certificate_id }` → import into NPM |
 | POST | `/api/npm/hosts` | Create a proxy host |

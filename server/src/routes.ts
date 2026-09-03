@@ -22,8 +22,19 @@ import { auditDomain } from "./services/audit";
 import { vault } from "./services/vault";
 import * as pki from "./services/pki";
 import * as enrollment from "./services/enrollment";
+import {
+  createTenant,
+  isPlatform,
+  resolveTenant,
+  TenantError,
+  tenantOf,
+  tenantsForUser,
+} from "./services/tenants";
 
 const router = Router();
+
+/** requireAuth + per-tenant resolution: use on every tenant-owned-data route. */
+const tenantGuard = [requireAuth, resolveTenant] as unknown as import("express").RequestHandler;
 
 function asyncHandler(
   fn: (req: import("express").Request, res: import("express").Response) => Promise<unknown>,
@@ -138,11 +149,25 @@ router.get("/auth/config", (_req, res) => {
   });
 });
 
-/** Who is the current session? */
-router.get("/auth/me", requireAuth, (req, res) => {
-  const session = getSession(extractToken(req));
-  res.json({ user: session?.user ?? null });
-});
+/** Who is the current session? Also resolves the caller's tenants. */
+router.get(
+  "/auth/me",
+  requireAuth,
+  resolveTenant,
+  (req, res) => {
+    const session = getSession(extractToken(req));
+    const tenant = tenantOf(res);
+    const user = session?.user ?? null;
+    res.json({
+      user,
+      tenant: user
+        ? { id: tenant.id, slug: tenant.slug, name: tenant.name }
+        : null,
+      tenants: user ? tenantsForUser(user).map((t) => ({ id: t.id, slug: t.slug, name: t.name })) : [],
+      platform: user ? isPlatform(res) : false,
+    });
+  },
+);
 
 /** Start an Authentik OIDC authorization-code + PKCE flow. */
 router.get(
@@ -190,8 +215,9 @@ router.get(
 // ── Status ──────────────────────────────────────────────────────────────
 router.get(
   "/status",
-  requireAuth,
+  tenantGuard,
   asyncHandler(async (_req, res) => {
+    const tenantId = tenantOf(res).id;
     let bindStatus = "not-configured";
     let bindDetail = "";
     if (config.bind.host && (config.bind.keyPath || config.bind.password)) {
@@ -225,9 +251,9 @@ router.get(
       },
       discovery: {
         dirs: config.discovery.dirs,
-        count: db.listDiscoveredCerts().length,
+        count: db.listDiscoveredCerts(tenantId).length,
       },
-      pki: pki.pkiStatus(),
+      pki: pki.pkiStatus(tenantId),
       config: {
         zone: config.zone,
         acmeDirectoryUrl: config.acmeDirectoryUrl,
@@ -243,45 +269,46 @@ router.get(
 );
 
 // ── Domains ─────────────────────────────────────────────────────────────
-router.get("/domains", requireAuth, (_req, res) => {
-  res.json(db.listDomains());
+router.get("/domains", tenantGuard, (_req, res) => {
+  res.json(db.listDomains(tenantOf(res).id));
 });
 
 router.post(
   "/domains",
-  requireAuth,
+  tenantGuard,
   asyncHandler(async (req, res) => {
     const name = String(req.body?.name || "").trim().toLowerCase().replace(/\.$/, "");
     if (!/^[a-z0-9.-]+$/.test(name) || !name.includes(".")) {
       res.status(400).json({ error: "Invalid domain name" });
       return;
     }
-    if (db.getDomainByName(name)) {
-      res.status(409).json({ error: `Domain ${name} is already registered` });
+    const tenantId = tenantOf(res).id;
+    if (db.getDomainByName(name, tenantId)) {
+      res.status(409).json({ error: `Domain ${name} is already registered in this tenant` });
       return;
     }
-    const domain = db.createDomain({ name });
-    res.status(201).json(db.getDomain(domain.id));
+    const domain = db.createDomain({ name, tenantId });
+    res.status(201).json(db.getDomain(domain.id, tenantId));
   }),
 );
 
-router.delete("/domains/:id", requireAuth, (req, res) => {
+router.delete("/domains/:id", tenantGuard, (req, res) => {
   const id = Number(req.params.id);
-  const domain = db.getDomain(id);
+  const domain = db.getDomain(id, tenantOf(res).id);
   if (!domain) {
     res.status(404).json({ error: "Domain not found" });
     return;
   }
-  db.deleteDomain(id);
+  db.deleteDomain(id, tenantOf(res).id);
   db.addActivity("domain-delete", `Removed domain ${domain.name}`);
   res.json({ ok: true });
 });
 
 router.get(
   "/domains/:id/records",
-  requireAuth,
+  tenantGuard,
   asyncHandler(async (req, res) => {
-    const domain = db.getDomain(Number(req.params.id));
+    const domain = db.getDomain(Number(req.params.id), tenantOf(res).id);
     if (!domain) {
       res.status(404).json({ error: "Domain not found" });
       return;
@@ -293,9 +320,9 @@ router.get(
 
 router.post(
   "/domains/:id/records",
-  requireAuth,
+  tenantGuard,
   asyncHandler(async (req, res) => {
-    const domain = db.getDomain(Number(req.params.id));
+    const domain = db.getDomain(Number(req.params.id), tenantOf(res).id);
     if (!domain) {
       res.status(404).json({ error: "Domain not found" });
       return;
@@ -329,9 +356,9 @@ router.post(
 
 router.delete(
   "/domains/:id/records",
-  requireAuth,
+  tenantGuard,
   asyncHandler(async (req, res) => {
-    const domain = db.getDomain(Number(req.params.id));
+    const domain = db.getDomain(Number(req.params.id), tenantOf(res).id);
     if (!domain) {
       res.status(404).json({ error: "Domain not found" });
       return;
@@ -353,13 +380,13 @@ router.delete(
 );
 
 // ── Certificates ────────────────────────────────────────────────────────
-router.get("/certificates", requireAuth, (_req, res) => {
-  res.json(db.listCertificates().map(certToJson));
+router.get("/certificates", tenantGuard, (_req, res) => {
+  res.json(db.listCertificates(tenantOf(res).id).map(certToJson));
 });
 
 router.post(
   "/certificates",
-  requireAuth,
+  tenantGuard,
   asyncHandler(async (req, res) => {
     const domain = String(req.body?.domain || "").trim().toLowerCase().replace(/\.$/, "");
     const wildcard = Boolean(req.body?.wildcard);
@@ -368,15 +395,22 @@ router.post(
       res.status(400).json({ error: "Invalid domain name" });
       return;
     }
-    const cert = db.createCertificate({ name, domain, wildcard });
+    const tenantId = tenantOf(res).id;
+    if (!db.getDomainByName(domain, tenantId)) {
+      res.status(400).json({
+        error: `Domain ${domain} is not registered in this tenant — add it under Domains first`,
+      });
+      return;
+    }
+    const cert = db.createCertificate({ name, domain, wildcard, tenantId });
     // Fire-and-forget issuance; status is polled via GET /certificates/:id
     runIssueJob(cert.id).catch(() => undefined);
-    res.status(202).json(certToJson(db.getCertificate(cert.id)!));
+    res.status(202).json(certToJson(db.getCertificate(cert.id, tenantId)!));
   }),
 );
 
-router.get("/certificates/:id", requireAuth, (req, res) => {
-  const cert = db.getCertificate(Number(req.params.id));
+router.get("/certificates/:id", tenantGuard, (req, res) => {
+  const cert = db.getCertificate(Number(req.params.id), tenantOf(res).id);
   if (!cert) {
     res.status(404).json({ error: "Certificate not found" });
     return;
@@ -386,9 +420,9 @@ router.get("/certificates/:id", requireAuth, (req, res) => {
 
 router.get(
   "/certificates/:id/material",
-  requireAuth,
+  tenantGuard,
   asyncHandler(async (req, res) => {
-    const cert = db.getCertificate(Number(req.params.id));
+    const cert = db.getCertificate(Number(req.params.id), tenantOf(res).id);
     if (!cert) {
       res.status(404).json({ error: "Certificate not found" });
       return;
@@ -403,9 +437,9 @@ router.get(
 
 router.post(
   "/certificates/:id/renew",
-  requireAuth,
+  tenantGuard,
   asyncHandler(async (req, res) => {
-    const cert = db.getCertificate(Number(req.params.id));
+    const cert = db.getCertificate(Number(req.params.id), tenantOf(res).id);
     if (!cert) {
       res.status(404).json({ error: "Certificate not found" });
       return;
@@ -416,13 +450,13 @@ router.post(
   }),
 );
 
-router.delete("/certificates/:id", requireAuth, (req, res) => {
-  const cert = db.getCertificate(Number(req.params.id));
+router.delete("/certificates/:id", tenantGuard, (req, res) => {
+  const cert = db.getCertificate(Number(req.params.id), tenantOf(res).id);
   if (!cert) {
     res.status(404).json({ error: "Certificate not found" });
     return;
   }
-  db.deleteCertificate(cert.id);
+  db.deleteCertificate(cert.id, tenantOf(res).id);
   db.addActivity("cert-delete", `Deleted certificate for ${cert.domain}`);
   res.json({ ok: true });
 });
@@ -447,9 +481,12 @@ router.get(
 /** Import a Cerulean cert into NPM as a custom certificate. */
 router.post(
   "/npm/export-cert",
-  requireAuth,
+  tenantGuard,
   asyncHandler(async (req, res) => {
-    const cert = db.getCertificate(Number(req.body?.certificate_id));
+    const cert = db.getCertificate(
+      Number(req.body?.certificate_id),
+      tenantOf(res).id,
+    );
     if (!cert) {
       res.status(404).json({ error: "Certificate not found" });
       return;
@@ -568,9 +605,9 @@ router.put(
 // device/identity mTLS — nginx ssl_verify_client, MDM enrollment, etc.
 router.get(
   "/pki/status",
-  requireAuth,
+  tenantGuard,
   asyncHandler(async (_req, res) => {
-    res.json(pki.pkiStatus());
+    res.json(pki.pkiStatus(tenantOf(res).id));
   }),
 );
 
@@ -603,28 +640,37 @@ router.get("/pki/ca", requireAuth, (_req, res) => {
   });
 });
 
-router.get("/pki/certificates", requireAuth, (_req, res) => {
-  res.json(pki.listClientCertificates().map(clientCertToJson));
+router.get("/pki/certificates", tenantGuard, (_req, res) => {
+  res.json(
+    pki.listClientCertificates(tenantOf(res).id).map(clientCertToJson),
+  );
 });
 
 router.post(
   "/pki/certificates",
-  requireAuth,
+  tenantGuard,
   pkiHandler(async (req, res) => {
-    const row = await pki.issueClientCertificate({
-      name: String(req.body?.name || ""),
-      email: req.body?.email !== undefined ? String(req.body.email) : undefined,
-      validityDays:
-        req.body?.validity_days !== undefined
-          ? Number(req.body.validity_days)
-          : undefined,
-    });
+    const row = await pki.issueClientCertificate(
+      {
+        name: String(req.body?.name || ""),
+        email:
+          req.body?.email !== undefined ? String(req.body.email) : undefined,
+        validityDays:
+          req.body?.validity_days !== undefined
+            ? Number(req.body.validity_days)
+            : undefined,
+      },
+      tenantOf(res).id,
+    );
     res.status(201).json(clientCertToJson(row));
   }),
 );
 
-router.get("/pki/certificates/:id", requireAuth, (req, res) => {
-  const row = pki.getClientCertificate(Number(req.params.id));
+router.get("/pki/certificates/:id", tenantGuard, (req, res) => {
+  const row = pki.getClientCertificate(
+    Number(req.params.id),
+    tenantOf(res).id,
+  );
   if (!row) {
     res.status(404).json({ error: "Client certificate not found" });
     return;
@@ -634,9 +680,12 @@ router.get("/pki/certificates/:id", requireAuth, (req, res) => {
 
 router.get(
   "/pki/certificates/:id/material",
-  requireAuth,
+  tenantGuard,
   pkiHandler(async (req, res) => {
-    const row = pki.getClientCertificate(Number(req.params.id));
+    const row = pki.getClientCertificate(
+      Number(req.params.id),
+      tenantOf(res).id,
+    );
     if (!row) {
       res.status(404).json({ error: "Client certificate not found" });
       return;
@@ -656,9 +705,12 @@ router.get(
 
 router.post(
   "/pki/certificates/:id/revoke",
-  requireAuth,
+  tenantGuard,
   pkiHandler(async (req, res) => {
-    const row = pki.revokeClientCertificate(Number(req.params.id));
+    const row = pki.revokeClientCertificate(
+      Number(req.params.id),
+      tenantOf(res).id,
+    );
     res.json(clientCertToJson(row));
   }),
 );
@@ -672,14 +724,18 @@ router.post(
 //                             payload) to push through fleet / MicroMDM.
 router.post(
   "/pki/enroll/csr",
-  requireAuth,
+  tenantGuard,
   pkiHandler(async (req, res) => {
-    const row = await pki.enrollCsr(String(req.body?.csr ?? ""), {
-      validityDays:
-        req.body?.validity_days !== undefined
-          ? Number(req.body.validity_days)
-          : undefined,
-    });
+    const row = await pki.enrollCsr(
+      String(req.body?.csr ?? ""),
+      {
+        validityDays:
+          req.body?.validity_days !== undefined
+            ? Number(req.body.validity_days)
+            : undefined,
+      },
+      tenantOf(res).id,
+    );
     res.status(201).json({
       certificate: clientCertToJson(row),
       material: {
@@ -787,6 +843,52 @@ router.post(
   }),
 );
 
+// ── Tenants (organizations) ─────────────────────────────────────────────
+// Tenant identity comes from Authentik groups: a tenant's slug is an
+// Authentik group, and group members are tenant members. Platform admins
+// (local admin sessions, or AUTHENTIK group TENANT_PLATFORM_GROUP) manage
+// tenants here; regular members operate inside the tenant resolved per
+// request (X-Cerulean-Tenant header to switch among their groups).
+router.get(
+  "/tenants",
+  tenantGuard,
+  (_req, res) => {
+    if (!isPlatform(res)) {
+      res.status(403).json({ error: "Platform admin required" });
+      return;
+    }
+    res.json(db.listTenants());
+  },
+);
+
+router.post(
+  "/tenants",
+  tenantGuard,
+  (req, res) => {
+    if (!isPlatform(res)) {
+      res.status(403).json({ error: "Platform admin required" });
+      return;
+    }
+    try {
+      const tenant = createTenant({
+        slug: String(req.body?.slug ?? ""),
+        name: String(req.body?.name ?? ""),
+      });
+      db.addActivity(
+        "tenant-create",
+        `Created tenant "${tenant.name}" (${tenant.slug})`,
+      );
+      res.status(201).json(tenant);
+    } catch (err) {
+      if (err instanceof TenantError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
+  },
+);
+
 // ── Activities ──────────────────────────────────────────────────────────
 router.get("/activities", requireAuth, (_req, res) => {
   res.json(db.listActivities(200));
@@ -795,9 +897,9 @@ router.get("/activities", requireAuth, (_req, res) => {
 // ── Certificate health ──────────────────────────────────────────────────
 router.get(
   "/certificates/:id/health",
-  requireAuth,
+  tenantGuard,
   (req, res) => {
-    const cert = db.getCertificate(Number(req.params.id));
+    const cert = db.getCertificate(Number(req.params.id), tenantOf(res).id);
     if (!cert) {
       res.status(404).json({ error: "Certificate not found" });
       return;
@@ -815,9 +917,9 @@ router.get(
 );
 
 // ── Certificate discovery ───────────────────────────────────────────────
-router.get("/discovery/certificates", requireAuth, (_req, res) => {
+router.get("/discovery/certificates", tenantGuard, (_req, res) => {
   res.json(
-    db.listDiscoveredCerts().map((c) => {
+    db.listDiscoveredCerts(tenantOf(res).id).map((c) => {
       const domains = JSON.parse(c.domains_json) as string[];
       const health = scoreCertificate({
         expiresAt: c.expires_at,
@@ -848,22 +950,22 @@ router.get("/discovery/certificates", requireAuth, (_req, res) => {
 
 router.post(
   "/discovery/scan",
-  requireAuth,
+  tenantGuard,
   asyncHandler(async (_req, res) => {
-    const result = await runDiscovery();
+    const result = await runDiscovery(tenantOf(res).id);
     res.json({ ok: true, ...result });
   }),
 );
 
-router.delete("/discovery/certificates/:id", requireAuth, (req, res) => {
+router.delete("/discovery/certificates/:id", tenantGuard, (req, res) => {
   const row = db
-    .listDiscoveredCerts()
+    .listDiscoveredCerts(tenantOf(res).id)
     .find((c) => c.id === Number(req.params.id));
   if (!row) {
     res.status(404).json({ error: "Certificate not found" });
     return;
   }
-  db.deleteDiscoveredCert(row.id);
+  db.deleteDiscoveredCert(row.id, tenantOf(res).id);
   db.addActivity("discovery-delete", `Removed discovered certificate ${row.name}`);
   res.json({ ok: true });
 });
@@ -871,13 +973,18 @@ router.delete("/discovery/certificates/:id", requireAuth, (req, res) => {
 // ── DNS health auditing ─────────────────────────────────────────────────
 router.get(
   "/audit/dns",
-  requireAuth,
+  tenantGuard,
   asyncHandler(async (req, res) => {
+    const tenantId = tenantOf(res).id;
     const requested =
       typeof req.query.domain === "string" ? req.query.domain.trim() : "";
+    if (requested && !db.getDomainByName(requested, tenantId)) {
+      res.status(404).json({ error: "Domain not found in this tenant" });
+      return;
+    }
     const targets = requested
       ? [requested]
-      : db.listDomains().map((d) => d.name);
+      : db.listDomains(tenantId).map((d) => d.name);
     const audits = [];
     for (const name of targets) {
       try {
@@ -904,15 +1011,19 @@ router.get(
   }),
 );
 
-router.get("/audit/dns/history", requireAuth, (_req, res) => {
+router.get("/audit/dns/history", tenantGuard, (_req, res) => {
+  const owned = new Set(db.listDomains(tenantOf(res).id).map((d) => d.name));
   res.json(
-    db.listDnsAudits(100).map((a) => ({
-      id: a.id,
-      domain: a.domain,
-      runAt: a.run_at,
-      score: a.score,
-      checks: JSON.parse(a.checks_json),
-    })),
+    db
+      .listDnsAudits(200)
+      .filter((a) => owned.has(a.domain))
+      .map((a) => ({
+        id: a.id,
+        domain: a.domain,
+        runAt: a.run_at,
+        score: a.score,
+        checks: JSON.parse(a.checks_json),
+      })),
   );
 });
 
