@@ -150,10 +150,15 @@ class VaultClient {
     // components that only need secret resolution (ssh, npm).
     const { db } = await import("../db");
     const written: string[] = [];
+    // Per-tenant KV paths: each tenant's material lives under its own prefix
+    // (certs/<tenant>/<id>, ...) so vault ACLs can isolate tenants. The root
+    // CA and ACME accounts are platform-wide.
+    const tenantSlug = (tenantId: number): string =>
+      db.getTenant(tenantId)?.slug ?? "default";
 
     for (const cert of db.listCertificates()) {
       if (!cert.certificate && !cert.key) continue;
-      const path = `certs/${cert.id}`;
+      const path = `certs/${tenantSlug(cert.tenant_id)}/${cert.id}`;
       await this.writeKV(path, {
         certificate: cert.certificate ?? "",
         key: cert.key ?? "",
@@ -179,7 +184,7 @@ class VaultClient {
     }
     for (const cert of db.listClientCertificates()) {
       if (!cert.key) continue; // CSR-enrolled: the device holds the key
-      const path = `pki/certs/${cert.id}`;
+      const path = `pki/certs/${tenantSlug(cert.tenant_id)}/${cert.id}`;
       await this.writeKV(path, {
         certificate: cert.certificate,
         key: cert.key,

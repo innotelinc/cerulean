@@ -85,9 +85,9 @@ export interface PkiStatus {
   revoked: number;
 }
 
-export function pkiStatus(): PkiStatus {
+export function pkiStatus(tenantId?: number): PkiStatus {
   const ca = db.getCa();
-  const certs = db.listClientCertificates();
+  const certs = db.listClientCertificates(tenantId);
   const issued = certs.filter((c) => c.status === "issued").length;
   const revoked = certs.filter((c) => c.status === "revoked").length;
   if (!ca) {
@@ -205,8 +205,8 @@ function validateIssueInput(
   return { name, email, validityDays };
 }
 
-function assertNameFree(name: string): void {
-  if (db.findActiveClientCertificate(name)) {
+function assertNameFree(name: string, tenantId?: number): void {
+  if (db.findActiveClientCertificate(name, tenantId)) {
     throw new PkiError(
       409,
       `A certificate for "${name}" is already active — revoke it before re-issuing`,
@@ -218,6 +218,7 @@ interface SignRequest {
   name: string;
   email: string;
   validityDays: number;
+  tenantId?: number;
   publicKey: webcrypto.CryptoKey | x509.PublicKey;
   /** PKCS#8 PEM of a server-generated key, or null when the private key stays
    * on the enrollee's side (CSR enrollment). */
@@ -281,6 +282,7 @@ async function signAndStore(req: SignRequest): Promise<ClientCertificateRow> {
     key: req.keyPem ?? "",
     fingerprint,
     expiresAt: notAfter.toISOString(),
+    tenantId: req.tenantId,
   });
   db.addActivity(
     req.activityKind,
@@ -296,13 +298,14 @@ async function signAndStore(req: SignRequest): Promise<ClientCertificateRow> {
  */
 export async function issueClientCertificate(
   input: IssueClientCertificateInput,
+  tenantId?: number,
 ): Promise<ClientCertificateRow> {
   const { name, email, validityDays } = validateIssueInput(
     input.name,
     input.email,
     input.validityDays,
   );
-  assertNameFree(name);
+  assertNameFree(name, tenantId);
 
   const ca = await ensureCa();
   const curve = curveName(createPrivateKey(ca.key));
@@ -315,6 +318,7 @@ export async function issueClientCertificate(
     name,
     email,
     validityDays,
+    tenantId,
     publicKey: clientKeys.publicKey,
     keyPem: await exportKey(clientKeys.privateKey, "pkcs8", "PRIVATE KEY"),
     activityKind: "pki-issue",
@@ -331,6 +335,7 @@ export async function issueClientCertificate(
 export async function enrollCsr(
   csrPem: string,
   input: EnrollCsrInput = {},
+  tenantId?: number,
 ): Promise<ClientCertificateRow> {
   const pem = String(csrPem ?? "").trim();
   if (!pem) {
@@ -382,24 +387,28 @@ export async function enrollCsr(
     undefined,
     input.validityDays,
   );
-  assertNameFree(name);
+  assertNameFree(name, tenantId);
 
   return signAndStore({
     name,
     email: "",
     validityDays,
+    tenantId,
     publicKey: csr.publicKey,
     keyPem: null,
     activityKind: "pki-enroll",
   });
 }
 
-export function listClientCertificates(): ClientCertificateRow[] {
-  return db.listClientCertificates();
+export function listClientCertificates(tenantId?: number): ClientCertificateRow[] {
+  return db.listClientCertificates(tenantId);
 }
 
-export function getClientCertificate(id: number): ClientCertificateRow | undefined {
-  return db.getClientCertificate(id);
+export function getClientCertificate(
+  id: number,
+  tenantId?: number,
+): ClientCertificateRow | undefined {
+  return db.getClientCertificate(id, tenantId);
 }
 
 /**
@@ -417,8 +426,11 @@ export function clientCertificateMaterial(
   };
 }
 
-export function revokeClientCertificate(id: number): ClientCertificateRow {
-  const row = db.getClientCertificate(id);
+export function revokeClientCertificate(
+  id: number,
+  tenantId?: number,
+): ClientCertificateRow {
+  const row = db.getClientCertificate(id, tenantId);
   if (!row) {
     throw new PkiError(404, "Client certificate not found");
   }

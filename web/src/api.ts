@@ -71,7 +71,12 @@ export const api = {
   logout: () => request<{ ok: boolean }>("POST", "/auth/logout"),
   authConfig: () => request<import("./types").AuthConfig>("GET", "/auth/config"),
   me: () =>
-    request<{ user: import("./types").SessionUser | null }>("GET", "/auth/me"),
+    request<{
+      user: import("./types").SessionUser | null;
+      tenant?: { id: number; slug: string; name: string } | null;
+      tenants?: { id: number; slug: string; name: string }[];
+      platform?: boolean;
+    }>("GET", "/auth/me"),
   status: () => request<import("./types").StatusResponse>("GET", "/status"),
   activities: () => request<import("./types").Activity[]>("GET", "/activities"),
 

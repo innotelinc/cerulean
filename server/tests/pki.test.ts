@@ -25,6 +25,7 @@ type CertRow = {
   expires_at: string | null;
   issued_at: string | null;
   revoked_at: string | null;
+  tenant_id: number;
   created_at: string;
 };
 type CaRow = {
@@ -64,11 +65,21 @@ const h = vi.hoisted(() => {
       state.serial += 1;
       return state.serial;
     },
-    listClientCertificates: () => state.certs,
-    getClientCertificate: (id: number) =>
-      state.certs.find((c) => c.id === id),
-    findActiveClientCertificate: (name: string) =>
-      state.certs.find((c) => c.name === name && c.status === "issued"),
+    listClientCertificates: (tenantId?: number) =>
+      tenantId
+        ? state.certs.filter((c) => c.tenant_id === tenantId)
+        : state.certs,
+    getClientCertificate: (id: number, tenantId?: number) =>
+      state.certs.find(
+        (c) => c.id === id && (tenantId === undefined || c.tenant_id === tenantId),
+      ),
+    findActiveClientCertificate: (name: string, tenantId?: number) =>
+      state.certs.find(
+        (c) =>
+          c.name === name &&
+          c.status === "issued" &&
+          (tenantId === undefined || c.tenant_id === tenantId),
+      ),
     createClientCertificate: (input: {
       name: string;
       email?: string;
@@ -77,6 +88,7 @@ const h = vi.hoisted(() => {
       key: string;
       fingerprint: string;
       expiresAt: string;
+      tenantId?: number;
     }) => {
       const row: CertRow = {
         id: state.certs.length + 1,
@@ -90,6 +102,7 @@ const h = vi.hoisted(() => {
         expires_at: input.expiresAt,
         issued_at: nowIso(),
         revoked_at: null,
+        tenant_id: input.tenantId ?? 1,
         created_at: nowIso(),
       };
       state.certs.push(row);
@@ -398,6 +411,44 @@ describe("enrollCsr", () => {
       status: 400,
       message: expect.stringContaining("CN"),
     });
+  });
+});
+
+describe("tenant isolation (client certificates)", () => {
+  it("scopes issuance, listing, status and revocation to the tenant", async () => {
+    // Two tenants (ids 2 and 3) each issue their own device certificate.
+    const rowA = await issueClientCertificate({ name: uniq("ta") }, 2);
+    const rowB = await issueClientCertificate({ name: uniq("tb") }, 3);
+
+    // Tenant-wide views never leak across tenants.
+    expect(listClientCertificates(2).map((c) => c.id)).toEqual([rowA.id]);
+    expect(listClientCertificates(3).map((c) => c.id)).toEqual([rowB.id]);
+    expect(pkiStatus(2).issued).toBe(1);
+    expect(pkiStatus(3).issued).toBe(1);
+
+    // Cross-tenant reads and revokes are invisible (404 semantics).
+    expect(getClientCertificate(rowA.id, 3)).toBeUndefined();
+    expect(() => revokeClientCertificate(rowA.id, 3)).toThrow(/not found/);
+    expect(revokeClientCertificate(rowB.id, 3).status).toBe("revoked");
+  });
+
+  it("allows the same device name in different tenants", async () => {
+    const name = uniq("shared");
+    const a = await issueClientCertificate({ name }, 2);
+    const b = await issueClientCertificate({ name }, 3); // no 409 across tenants
+    expect(a.id).not.toBe(b.id);
+    // …but a duplicate inside one tenant is still refused.
+    await expect(issueClientCertificate({ name }, 2)).rejects.toMatchObject({
+      status: 409,
+    });
+  });
+
+  it("scopes CSR enrollment to the tenant too", async () => {
+    const name = uniq("csr-t");
+    const row = await enrollCsr(await makeCsr(name), {}, 2);
+    expect(row.key).toBe("");
+    expect(getClientCertificate(row.id, 2)?.id).toBe(row.id);
+    expect(getClientCertificate(row.id, 3)).toBeUndefined();
   });
 });
 

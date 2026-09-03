@@ -59,6 +59,12 @@ export interface Config {
     wildcardAttach: boolean;
   };
 
+  tenant: {
+    // Authentik group that grants platform-admin powers (all tenants, tenant
+    // management). Local admin sessions are always platform admins.
+    platformGroup: string;
+  };
+
   pki: {
     // Internal private CA that issues TLS client certificates for managed
     // devices (mTLS at the reverse proxy, MDM enrollment, ...).
@@ -183,6 +189,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       // Attach wildcard certificates (e.g. *.innotel.us) to every matching
       // subdomain proxy host, unless the host already has its own certificate.
       wildcardAttach: bool(env.NPM_WILDCARD_ATTACH, true),
+    },
+
+    tenant: {
+      platformGroup: env.TENANT_PLATFORM_GROUP || "cerulean-platform",
     },
 
     pki: {

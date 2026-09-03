@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { X509Certificate } from "node:crypto";
 import { config } from "../config";
-import { db } from "../db";
+import { db, DEFAULT_TENANT_ID } from "../db";
 import { npm } from "./npm";
 import { firstPem } from "./health";
 
@@ -72,7 +72,9 @@ function* walkFiles(dir: string): Generator<string> {
 }
 
 /** Scan nginx proxy manager for certificates (including ones not issued here). */
-async function scanNpm(): Promise<{ found: number; added: number }> {
+async function scanNpm(
+  tenantId: number,
+): Promise<{ found: number; added: number }> {
   if (!config.npm.apiUrl || !config.npm.email || !config.npm.password) {
     return { found: 0, added: 0 };
   }
@@ -111,7 +113,7 @@ async function scanNpm(): Promise<{ found: number; added: number }> {
         key,
         expiresAt: parsed?.expiresAt ?? c.expires_on,
         issuedAt: parsed?.issuedAt ?? null,
-      })) {
+      }, tenantId)) {
         added += 1;
       }
       found += 1;
@@ -123,7 +125,9 @@ async function scanNpm(): Promise<{ found: number; added: number }> {
 }
 
 /** Scan local directories for PEM certificates (e.g. /etc/ssl/certs). */
-async function scanFiles(): Promise<{ found: number; added: number }> {
+async function scanFiles(
+  tenantId: number,
+): Promise<{ found: number; added: number }> {
   let found = 0;
   let added = 0;
   for (const dir of config.discovery.dirs) {
@@ -150,7 +154,7 @@ async function scanFiles(): Promise<{ found: number; added: number }> {
           key,
           expiresAt: parsed.expiresAt,
           issuedAt: parsed.issuedAt,
-        })) {
+        }, tenantId)) {
           added += 1;
         }
         found += 1;
@@ -166,14 +170,16 @@ async function scanFiles(): Promise<{ found: number; added: number }> {
  * Run a discovery sweep across all sources. Idempotent — existing entries are
  * refreshed in place (last_seen + material) and never duplicated.
  */
-export async function runDiscovery(): Promise<DiscoveryResult> {
+export async function runDiscovery(
+  tenantId: number = DEFAULT_TENANT_ID,
+): Promise<DiscoveryResult> {
   let npmFound = 0;
   let npmAdded = 0;
   let fileFound = 0;
   let fileAdded = 0;
 
   try {
-    ({ found: npmFound, added: npmAdded } = await scanNpm());
+    ({ found: npmFound, added: npmAdded } = await scanNpm(tenantId));
   } catch (err) {
     db.addActivity(
       "discovery-error",
@@ -182,7 +188,7 @@ export async function runDiscovery(): Promise<DiscoveryResult> {
     );
   }
   try {
-    ({ found: fileFound, added: fileAdded } = await scanFiles());
+    ({ found: fileFound, added: fileAdded } = await scanFiles(tenantId));
   } catch (err) {
     db.addActivity(
       "discovery-error",

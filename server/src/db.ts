@@ -3,10 +3,21 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { config } from "./config";
 
+export interface TenantRow {
+  id: number;
+  slug: string;
+  name: string;
+  created_at: string;
+}
+
+/** Slug of the built-in tenant that pre-tenant data belongs to. */
+export const DEFAULT_TENANT_ID = 1;
+
 export interface DomainRow {
   id: number;
   name: string;
   strategy: "bind";
+  tenant_id: number;
   created_at: string;
 }
 
@@ -24,6 +35,7 @@ export interface CertificateRow {
   expires_at: string | null;
   issued_at: string | null;
   auto_renew: number;
+  tenant_id: number;
   created_at: string;
 }
 
@@ -58,6 +70,7 @@ export interface DiscoveredCertRow {
   issued_at: string | null;
   first_seen: string;
   last_seen: string;
+  tenant_id: number;
 }
 
 export interface CaRow {
@@ -81,6 +94,7 @@ export interface ClientCertificateRow {
   expires_at: string | null;
   issued_at: string | null;
   revoked_at: string | null;
+  tenant_id: number;
   created_at: string;
 }
 
@@ -110,10 +124,20 @@ class Database {
 
   private migrate(): void {
     this.db.exec(`
+      -- Organizations/tenants (Authentik group slug ↔ tenant slug). Rows in
+      -- the tables below carry tenant_id; the default tenant (id 1) owns all
+      -- pre-tenant data and is the home of local/admin sessions.
+      CREATE TABLE IF NOT EXISTS tenants (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        slug TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS domains (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL UNIQUE,
         strategy TEXT NOT NULL DEFAULT 'bind',
+        tenant_id INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS certificates (
@@ -130,6 +154,7 @@ class Database {
         expires_at TEXT,
         issued_at TEXT,
         auto_renew INTEGER NOT NULL DEFAULT 1,
+        tenant_id INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS activities (
@@ -162,6 +187,7 @@ class Database {
         issued_at TEXT,
         first_seen TEXT NOT NULL,
         last_seen TEXT NOT NULL,
+        tenant_id INTEGER NOT NULL DEFAULT 1,
         UNIQUE(source, source_id)
       );
       CREATE TABLE IF NOT EXISTS dns_audits (
@@ -194,60 +220,158 @@ class Database {
         expires_at TEXT,
         issued_at TEXT,
         revoked_at TEXT,
+        tenant_id INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL
       );
-      -- At most one active certificate per name (revoke before re-issuing).
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_client_certs_active_name
-        ON client_certificates (name) WHERE status = 'issued';
       CREATE INDEX IF NOT EXISTS idx_client_certs_status
         ON client_certificates (status);
     `);
+
+    // Seed the default tenant (owns all pre-tenant data + local sessions).
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO tenants (id, slug, name, created_at)
+         VALUES (1, 'default', 'Default', ?)`,
+      )
+      .run(nowIso());
+
+    // Existing databases predate tenants: add tenant_id to every owned table
+    // and back-fill it to the default tenant, then index the column.
+    for (const table of [
+      "domains",
+      "certificates",
+      "discovered_certificates",
+      "client_certificates",
+    ]) {
+      this.ensureColumn(table, "tenant_id", "INTEGER NOT NULL DEFAULT 1");
+      this.db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_${table}_tenant ON ${table} (tenant_id);`,
+      );
+    }
+    // Uniqueness of active certificate names is now per tenant (each tenant
+    // has its own device inventory). Replace the old global partial index.
+    this.db.exec(`
+      DROP INDEX IF EXISTS idx_client_certs_active_name;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_client_certs_active_name
+        ON client_certificates (tenant_id, name) WHERE status = 'issued';
+    `);
+  }
+
+  /** Add a column to an existing table when it is missing (idempotent). */
+  private ensureColumn(table: string, column: string, ddl: string): void {
+    const cols = this.db
+      .prepare(`PRAGMA table_info(${table})`)
+      .all() as { name: string }[];
+    if (!cols.some((c) => c.name === column)) {
+      this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl};`);
+    }
+  }
+
+  // ── Tenants ────────────────────────────────────────────────────────────
+  listTenants(): TenantRow[] {
+    return this.db
+      .prepare("SELECT * FROM tenants ORDER BY id")
+      .all() as unknown as TenantRow[];
+  }
+
+  getTenant(id: number): TenantRow | undefined {
+    return this.db
+      .prepare("SELECT * FROM tenants WHERE id = ?")
+      .get(id) as TenantRow | undefined;
+  }
+
+  getTenantBySlug(slug: string): TenantRow | undefined {
+    return this.db
+      .prepare("SELECT * FROM tenants WHERE slug = ?")
+      .get(slug) as TenantRow | undefined;
+  }
+
+  createTenant(input: { slug: string; name: string }): TenantRow {
+    const result = this.db
+      .prepare(
+        `INSERT INTO tenants (slug, name, created_at) VALUES (?, ?, ?)`,
+      )
+      .run(input.slug, input.name, nowIso());
+    return this.getTenant(Number(result.lastInsertRowid))!;
   }
 
   // ── Domains ────────────────────────────────────────────────────────────
-  listDomains(): DomainRow[] {
-    return this.db
-      .prepare("SELECT * FROM domains ORDER BY name")
-      .all() as unknown as DomainRow[];
+  listDomains(tenantId?: number): DomainRow[] {
+    const rows = tenantId
+      ? this.db
+          .prepare("SELECT * FROM domains WHERE tenant_id = ? ORDER BY name")
+          .all(tenantId)
+      : this.db.prepare("SELECT * FROM domains ORDER BY name").all();
+    return rows as unknown as DomainRow[];
   }
 
-  getDomain(id: number): DomainRow | undefined {
-    return this.db
-      .prepare("SELECT * FROM domains WHERE id = ?")
-      .get(id) as DomainRow | undefined;
+  getDomain(id: number, tenantId?: number): DomainRow | undefined {
+    const row = tenantId
+      ? this.db
+          .prepare("SELECT * FROM domains WHERE id = ? AND tenant_id = ?")
+          .get(id, tenantId)
+      : this.db.prepare("SELECT * FROM domains WHERE id = ?").get(id);
+    return row as DomainRow | undefined;
   }
 
-  getDomainByName(name: string): DomainRow | undefined {
-    return this.db
-      .prepare("SELECT * FROM domains WHERE name = ?")
-      .get(name) as DomainRow | undefined;
+  getDomainByName(name: string, tenantId?: number): DomainRow | undefined {
+    const row = tenantId
+      ? this.db
+          .prepare(
+            "SELECT * FROM domains WHERE name = ? AND tenant_id = ?",
+          )
+          .get(name.toLowerCase().replace(/\.$/, ""), tenantId)
+      : this.db
+          .prepare("SELECT * FROM domains WHERE name = ?")
+          .get(name.toLowerCase().replace(/\.$/, ""));
+    return row as DomainRow | undefined;
   }
 
-  createDomain(input: { name: string }): DomainRow {
+  createDomain(input: { name: string; tenantId?: number }): DomainRow {
     const result = this.db
       .prepare(
-        `INSERT INTO domains (name, strategy, created_at)
-         VALUES (?, 'bind', ?)`,
+        `INSERT INTO domains (name, strategy, tenant_id, created_at)
+         VALUES (?, 'bind', ?, ?)`,
       )
-      .run(input.name.toLowerCase().replace(/\.$/, ""), nowIso());
+      .run(
+        input.name.toLowerCase().replace(/\.$/, ""),
+        input.tenantId ?? DEFAULT_TENANT_ID,
+        nowIso(),
+      );
     return this.getDomain(Number(result.lastInsertRowid))!;
   }
 
-  deleteDomain(id: number): void {
+  deleteDomain(id: number, tenantId?: number): void {
+    if (tenantId) {
+      this.db
+        .prepare("DELETE FROM domains WHERE id = ? AND tenant_id = ?")
+        .run(id, tenantId);
+      return;
+    }
     this.db.prepare("DELETE FROM domains WHERE id = ?").run(id);
   }
 
   // ── Certificates ───────────────────────────────────────────────────────
-  listCertificates(): CertificateRow[] {
-    return this.db
-      .prepare("SELECT * FROM certificates ORDER BY id DESC")
-      .all() as unknown as CertificateRow[];
+  listCertificates(tenantId?: number): CertificateRow[] {
+    const rows = tenantId
+      ? this.db
+          .prepare(
+            "SELECT * FROM certificates WHERE tenant_id = ? ORDER BY id DESC",
+          )
+          .all(tenantId)
+      : this.db.prepare("SELECT * FROM certificates ORDER BY id DESC").all();
+    return rows as unknown as CertificateRow[];
   }
 
-  getCertificate(id: number): CertificateRow | undefined {
-    return this.db
-      .prepare("SELECT * FROM certificates WHERE id = ?")
-      .get(id) as CertificateRow | undefined;
+  getCertificate(id: number, tenantId?: number): CertificateRow | undefined {
+    const row = tenantId
+      ? this.db
+          .prepare(
+            "SELECT * FROM certificates WHERE id = ? AND tenant_id = ?",
+          )
+          .get(id, tenantId)
+      : this.db.prepare("SELECT * FROM certificates WHERE id = ?").get(id);
+    return row as CertificateRow | undefined;
   }
 
   createCertificate(input: {
@@ -255,11 +379,12 @@ class Database {
     domain: string;
     wildcard: boolean;
     autoRenew?: boolean;
+    tenantId?: number;
   }): CertificateRow {
     const result = this.db
       .prepare(
-        `INSERT INTO certificates (name, domain, wildcard, strategy, domains_json, auto_renew, created_at)
-         VALUES (?, ?, ?, 'bind', ?, ?, ?)`,
+        `INSERT INTO certificates (name, domain, wildcard, strategy, domains_json, auto_renew, tenant_id, created_at)
+         VALUES (?, ?, ?, 'bind', ?, ?, ?, ?)`,
       )
       .run(
         input.name,
@@ -271,6 +396,7 @@ class Database {
             : [input.domain],
         ),
         input.autoRenew === false ? 0 : 1,
+        input.tenantId ?? DEFAULT_TENANT_ID,
         nowIso(),
       );
     return this.getCertificate(Number(result.lastInsertRowid))!;
@@ -295,7 +421,13 @@ class Database {
       .run(certificate, key, expiresAt, nowIso(), id);
   }
 
-  deleteCertificate(id: number): void {
+  deleteCertificate(id: number, tenantId?: number): void {
+    if (tenantId) {
+      this.db
+        .prepare("DELETE FROM certificates WHERE id = ? AND tenant_id = ?")
+        .run(id, tenantId);
+      return;
+    }
     this.db.prepare("DELETE FROM certificates WHERE id = ?").run(id);
   }
 
@@ -335,19 +467,22 @@ class Database {
   }
 
   // ── Discovered certificates ────────────────────────────────────────────
-  upsertDiscoveredCert(input: {
-    source: string;
-    sourceId: string | null;
-    name: string;
-    domains: string[];
-    issuer?: string | null;
-    serial?: string | null;
-    fingerprint?: string | null;
-    certificate?: string | null;
-    key?: string | null;
-    expiresAt?: string | null;
-    issuedAt?: string | null;
-  }): boolean {
+  upsertDiscoveredCert(
+    input: {
+      source: string;
+      sourceId: string | null;
+      name: string;
+      domains: string[];
+      issuer?: string | null;
+      serial?: string | null;
+      fingerprint?: string | null;
+      certificate?: string | null;
+      key?: string | null;
+      expiresAt?: string | null;
+      issuedAt?: string | null;
+    },
+    tenantId = DEFAULT_TENANT_ID,
+  ): boolean {
     const existing = this.db
       .prepare(
         "SELECT id FROM discovered_certificates WHERE source = ? AND source_id = ?",
@@ -358,7 +493,8 @@ class Database {
         .prepare(
           `UPDATE discovered_certificates SET
              name = ?, domains_json = ?, issuer = ?, serial = ?, fingerprint = ?,
-             certificate = ?, key = ?, expires_at = ?, issued_at = ?, last_seen = ?
+             certificate = ?, key = ?, expires_at = ?, issued_at = ?, last_seen = ?,
+             tenant_id = ?
            WHERE id = ?`,
         )
         .run(
@@ -372,6 +508,7 @@ class Database {
           input.expiresAt ?? null,
           input.issuedAt ?? null,
           nowIso(),
+          tenantId,
           existing.id,
         );
       return false;
@@ -380,8 +517,8 @@ class Database {
       .prepare(
         `INSERT INTO discovered_certificates
            (source, source_id, name, domains_json, issuer, serial, fingerprint,
-            certificate, key, expires_at, issued_at, first_seen, last_seen)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            certificate, key, expires_at, issued_at, first_seen, last_seen, tenant_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.source,
@@ -397,17 +534,36 @@ class Database {
         input.issuedAt ?? null,
         nowIso(),
         nowIso(),
+        tenantId,
       );
     return true;
   }
 
-  listDiscoveredCerts(): DiscoveredCertRow[] {
-    return this.db
-      .prepare("SELECT * FROM discovered_certificates ORDER BY expires_at IS NULL, expires_at ASC")
-      .all() as unknown as DiscoveredCertRow[];
+  listDiscoveredCerts(tenantId?: number): DiscoveredCertRow[] {
+    const rows = tenantId
+      ? this.db
+          .prepare(
+            `SELECT * FROM discovered_certificates
+             WHERE tenant_id = ? ORDER BY expires_at IS NULL, expires_at ASC`,
+          )
+          .all(tenantId)
+      : this.db
+          .prepare(
+            "SELECT * FROM discovered_certificates ORDER BY expires_at IS NULL, expires_at ASC",
+          )
+          .all();
+    return rows as unknown as DiscoveredCertRow[];
   }
 
-  deleteDiscoveredCert(id: number): void {
+  deleteDiscoveredCert(id: number, tenantId?: number): void {
+    if (tenantId) {
+      this.db
+        .prepare(
+          "DELETE FROM discovered_certificates WHERE id = ? AND tenant_id = ?",
+        )
+        .run(id, tenantId);
+      return;
+    }
     this.db.prepare("DELETE FROM discovered_certificates WHERE id = ?").run(id);
   }
 
@@ -451,25 +607,51 @@ class Database {
     }
   }
 
-  listClientCertificates(): ClientCertificateRow[] {
-    return this.db
-      .prepare("SELECT * FROM client_certificates ORDER BY id DESC")
-      .all() as unknown as ClientCertificateRow[];
+  listClientCertificates(tenantId?: number): ClientCertificateRow[] {
+    const rows = tenantId
+      ? this.db
+          .prepare(
+            "SELECT * FROM client_certificates WHERE tenant_id = ? ORDER BY id DESC",
+          )
+          .all(tenantId)
+      : this.db
+          .prepare("SELECT * FROM client_certificates ORDER BY id DESC")
+          .all();
+    return rows as unknown as ClientCertificateRow[];
   }
 
-  getClientCertificate(id: number): ClientCertificateRow | undefined {
-    return this.db
-      .prepare("SELECT * FROM client_certificates WHERE id = ?")
-      .get(id) as ClientCertificateRow | undefined;
+  getClientCertificate(
+    id: number,
+    tenantId?: number,
+  ): ClientCertificateRow | undefined {
+    const row = tenantId
+      ? this.db
+          .prepare(
+            "SELECT * FROM client_certificates WHERE id = ? AND tenant_id = ?",
+          )
+          .get(id, tenantId)
+      : this.db.prepare("SELECT * FROM client_certificates WHERE id = ?").get(id);
+    return row as ClientCertificateRow | undefined;
   }
 
   /** Active (non-revoked) certificate whose CN/name matches `name`. */
-  findActiveClientCertificate(name: string): ClientCertificateRow | undefined {
-    return this.db
-      .prepare(
-        "SELECT * FROM client_certificates WHERE name = ? AND status = 'issued'",
-      )
-      .get(name) as ClientCertificateRow | undefined;
+  findActiveClientCertificate(
+    name: string,
+    tenantId?: number,
+  ): ClientCertificateRow | undefined {
+    const row = tenantId
+      ? this.db
+          .prepare(
+            `SELECT * FROM client_certificates
+             WHERE name = ? AND status = 'issued' AND tenant_id = ?`,
+          )
+          .get(name, tenantId)
+      : this.db
+          .prepare(
+            "SELECT * FROM client_certificates WHERE name = ? AND status = 'issued'",
+          )
+          .get(name);
+    return row as ClientCertificateRow | undefined;
   }
 
   createClientCertificate(input: {
@@ -480,13 +662,14 @@ class Database {
     key: string;
     fingerprint: string;
     expiresAt: string;
+    tenantId?: number;
   }): ClientCertificateRow {
     const result = this.db
       .prepare(
         `INSERT INTO client_certificates
            (name, email, serial_hex, status, certificate, key, fingerprint,
-            expires_at, issued_at, created_at)
-         VALUES (?, ?, ?, 'issued', ?, ?, ?, ?, ?, ?)`,
+            expires_at, issued_at, tenant_id, created_at)
+         VALUES (?, ?, ?, 'issued', ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.name,
@@ -496,8 +679,9 @@ class Database {
         input.key,
         input.fingerprint,
         input.expiresAt,
-        nowIso(),
-        nowIso(),
+        nowIso(), // issued_at
+        input.tenantId ?? DEFAULT_TENANT_ID,
+        nowIso(), // created_at
       );
     return this.getClientCertificate(Number(result.lastInsertRowid))!;
   }
