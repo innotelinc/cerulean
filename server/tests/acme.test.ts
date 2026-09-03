@@ -10,14 +10,11 @@ describe("dns-01 challenge record construction", () => {
     expect(record.key).toBe("_acme-challenge.innotel.us");
   });
 
-  it("computes base64url(sha256(keyAuthorization)) as the TXT value", () => {
+  it("publishes the key authorization verbatim (RFC 8555 §8.4)", () => {
+    // acme-client passes the already-digested value (base64url SHA-256 of
+    // token.thumbprint); it must NOT be hashed again.
     const record = dns01Record(authz, "fake-key-authorization");
-    const expected = createHash("sha256")
-      .update("fake-key-authorization")
-      .digest("base64url");
-    expect(record.value).toBe(expected);
-    // ACME DNS-01 TXT values are exactly 43 chars of URL-safe base64
-    expect(record.value).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(record.value).toBe("fake-key-authorization");
   });
 
   it("strips the wildcard label — validation happens at the base domain", () => {

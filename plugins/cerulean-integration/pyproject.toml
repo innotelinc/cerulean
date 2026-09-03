@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cerulean-integration"
+version = "0.1.0"
+description = "Provision Nginx Proxy Manager hosts, BIND TSIG A records, and Cerulean-issued wildcard certificates for any project."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+
+[project.scripts]
+cerulean-integration = "cerulean_integration.cli:main"
+
+[tool.setuptools]
+packages = ["cerulean_integration"]

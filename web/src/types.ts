@@ -1,9 +1,6 @@
 export interface Domain {
   id: number;
   name: string;
-  strategy: "acme-dns" | "bind";
-  acmedns_subdomain: string | null;
-  acmedns_fulldomain: string | null;
   created_at: string;
 }
 
@@ -34,7 +31,6 @@ export interface Certificate {
   name: string;
   domain: string;
   wildcard: boolean;
-  strategy: "acme-dns" | "bind";
   status: "issuing" | "issued" | "error";
   error: string | null;
   domains: string[];
@@ -117,7 +113,6 @@ export interface SessionUser {
 
 export interface StatusResponse {
   bind: { status: string; detail: string };
-  acmedns: { status: string };
   npm: { status: string };
   auth: {
     oidcEnabled: boolean;
@@ -139,9 +134,6 @@ export interface StatusResponse {
     acmeDirectoryUrl: string;
     acmeEmail: string;
     bindHost: string;
-    acmednsApiUrl: string;
-    acmednsDomain: string;
-    acmednsPublicIp: string;
     npmApiUrl: string;
     tsigConfigured: boolean;
   };

@@ -6,11 +6,7 @@ import { config } from "./config";
 export interface DomainRow {
   id: number;
   name: string;
-  strategy: "acme-dns" | "bind";
-  acmedns_subdomain: string | null;
-  acmedns_username: string | null;
-  acmedns_password: string | null;
-  acmedns_fulldomain: string | null;
+  strategy: "bind";
   created_at: string;
 }
 
@@ -19,7 +15,7 @@ export interface CertificateRow {
   name: string;
   domain: string;
   wildcard: number;
-  strategy: "acme-dns" | "bind";
+  strategy: "bind";
   status: string; // issuing | issued | error
   error: string | null;
   domains_json: string;
@@ -93,11 +89,7 @@ class Database {
       CREATE TABLE IF NOT EXISTS domains (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL UNIQUE,
-        strategy TEXT NOT NULL DEFAULT 'acme-dns',
-        acmedns_subdomain TEXT,
-        acmedns_username TEXT,
-        acmedns_password TEXT,
-        acmedns_fulldomain TEXT,
+        strategy TEXT NOT NULL DEFAULT 'bind',
         created_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS certificates (
@@ -105,7 +97,7 @@ class Database {
         name TEXT NOT NULL,
         domain TEXT NOT NULL,
         wildcard INTEGER NOT NULL DEFAULT 0,
-        strategy TEXT NOT NULL DEFAULT 'acme-dns',
+        strategy TEXT NOT NULL DEFAULT 'bind',
         status TEXT NOT NULL DEFAULT 'issuing',
         error TEXT,
         domains_json TEXT NOT NULL DEFAULT '[]',
@@ -178,47 +170,14 @@ class Database {
       .get(name) as DomainRow | undefined;
   }
 
-  createDomain(input: {
-    name: string;
-    strategy: "acme-dns" | "bind";
-    acmedns?: {
-      subdomain: string;
-      username: string;
-      password: string;
-      fulldomain: string;
-    };
-  }): DomainRow {
+  createDomain(input: { name: string }): DomainRow {
     const result = this.db
       .prepare(
-        `INSERT INTO domains (name, strategy, acmedns_subdomain, acmedns_username, acmedns_password, acmedns_fulldomain, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO domains (name, strategy, created_at)
+         VALUES (?, 'bind', ?)`,
       )
-      .run(
-        input.name.toLowerCase().replace(/\.$/, ""),
-        input.strategy,
-        input.acmedns?.subdomain ?? null,
-        input.acmedns?.username ?? null,
-        input.acmedns?.password ?? null,
-        input.acmedns?.fulldomain ?? null,
-        nowIso(),
-      );
+      .run(input.name.toLowerCase().replace(/\.$/, ""), nowIso());
     return this.getDomain(Number(result.lastInsertRowid))!;
-  }
-
-  setAcmeDnsCreds(
-    id: number,
-    creds: {
-      subdomain: string;
-      username: string;
-      password: string;
-      fulldomain: string;
-    },
-  ): void {
-    this.db
-      .prepare(
-        `UPDATE domains SET acmedns_subdomain = ?, acmedns_username = ?, acmedns_password = ?, acmedns_fulldomain = ? WHERE id = ?`,
-      )
-      .run(creds.subdomain, creds.username, creds.password, creds.fulldomain, id);
   }
 
   deleteDomain(id: number): void {
@@ -242,19 +201,17 @@ class Database {
     name: string;
     domain: string;
     wildcard: boolean;
-    strategy: "acme-dns" | "bind";
     autoRenew?: boolean;
   }): CertificateRow {
     const result = this.db
       .prepare(
         `INSERT INTO certificates (name, domain, wildcard, strategy, domains_json, auto_renew, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, 'bind', ?, ?, ?)`,
       )
       .run(
         input.name,
         input.domain.toLowerCase().replace(/\.$/, ""),
         input.wildcard ? 1 : 0,
-        input.strategy,
         JSON.stringify(
           input.wildcard
             ? [input.domain, `*.${input.domain}`]

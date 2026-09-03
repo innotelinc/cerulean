@@ -14,9 +14,7 @@ import {
 } from "./auth";
 import { runIssueJob, renewalSweep } from "./jobs";
 import * as bind from "./services/bind";
-import { acmedns } from "./services/acmedns";
 import { npm } from "./services/npm";
-import { ensureAcmeDnsCreds } from "./services/acme";
 import { oidc } from "./services/oidc";
 import { scoreCertificate } from "./services/health";
 import { runDiscovery } from "./services/discovery";
@@ -52,7 +50,6 @@ function certToJson(c: CertificateRow) {
     name: c.name,
     domain: c.domain,
     wildcard: c.wildcard === 1,
-    strategy: c.strategy,
     status: c.status,
     error: c.error,
     domains,
@@ -162,13 +159,11 @@ router.get(
         bindDetail = err instanceof Error ? err.message : String(err);
       }
     }
-    const acmednsStatus = await acmedns.test();
     const npmStatus = await npm.test();
     const vaultStatus = await vault.test();
 
     res.json({
       bind: { status: bindStatus, detail: bindDetail },
-      acmedns: { status: acmednsStatus },
       npm: { status: npmStatus },
       auth: {
         oidcEnabled: oidcConfigured(),
@@ -190,9 +185,6 @@ router.get(
         acmeDirectoryUrl: config.acmeDirectoryUrl,
         acmeEmail: config.acmeEmail,
         bindHost: config.bind.host,
-        acmednsApiUrl: config.acmedns.apiUrl,
-        acmednsDomain: config.acmedns.domain,
-        acmednsPublicIp: config.acmedns.publicIp,
         npmApiUrl: config.npm.apiUrl,
         tsigConfigured: Boolean(config.bind.tsigSecret),
       },
@@ -210,8 +202,6 @@ router.post(
   requireAuth,
   asyncHandler(async (req, res) => {
     const name = String(req.body?.name || "").trim().toLowerCase().replace(/\.$/, "");
-    const strategy: "acme-dns" | "bind" =
-      req.body?.strategy === "bind" ? "bind" : "acme-dns";
     if (!/^[a-z0-9.-]+$/.test(name) || !name.includes(".")) {
       res.status(400).json({ error: "Invalid domain name" });
       return;
@@ -220,19 +210,7 @@ router.post(
       res.status(409).json({ error: `Domain ${name} is already registered` });
       return;
     }
-    const domain = db.createDomain({ name, strategy });
-    if (strategy === "acme-dns") {
-      // Register acme-dns credentials eagerly so the CNAME target is known.
-      try {
-        await ensureAcmeDnsCreds(domain);
-      } catch (err) {
-        res.status(502).json({
-          error: `Domain saved but acme-dns registration failed: ${err instanceof Error ? err.message : err}`,
-          domain,
-        });
-        return;
-      }
-    }
+    const domain = db.createDomain({ name });
     res.status(201).json(db.getDomain(domain.id));
   }),
 );
@@ -335,20 +313,12 @@ router.post(
   asyncHandler(async (req, res) => {
     const domain = String(req.body?.domain || "").trim().toLowerCase().replace(/\.$/, "");
     const wildcard = Boolean(req.body?.wildcard);
-    const strategy: "acme-dns" | "bind" =
-      req.body?.strategy === "bind" ? "bind" : "acme-dns";
     const name = String(req.body?.name || "").trim() || `${wildcard ? "*." : ""}${domain}`;
     if (!/^[a-z0-9.-]+$/.test(domain) || !domain.includes(".")) {
       res.status(400).json({ error: "Invalid domain name" });
       return;
     }
-    if (strategy === "acme-dns" && !db.getDomainByName(domain)) {
-      res
-        .status(400)
-        .json({ error: `Domain ${domain} is not registered — add it on the Domains page first` });
-      return;
-    }
-    const cert = db.createCertificate({ name, domain, wildcard, strategy });
+    const cert = db.createCertificate({ name, domain, wildcard });
     // Fire-and-forget issuance; status is polled via GET /certificates/:id
     runIssueJob(cert.id).catch(() => undefined);
     res.status(202).json(certToJson(db.getCertificate(cert.id)!));
@@ -484,6 +454,61 @@ router.post(
       `Created NPM proxy host ${domain} → ${forward_host}:${forward_port}`,
     );
     res.status(201).json(host);
+  }),
+);
+
+/** Update a proxy host in NPM in place (idempotent reconciliation). */
+router.put(
+  "/npm/hosts/:id",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const hosts = await npm.listProxyHosts();
+    const existing = hosts.find((h) => h.id === Number(req.params.id));
+    if (!existing) {
+      res.status(404).json({ error: "Proxy host not found" });
+      return;
+    }
+    const {
+      forward_host,
+      forward_port,
+      forward_scheme,
+      certificate_id,
+      ssl_forced,
+      http2_support,
+      websocket_support,
+    } = req.body || {};
+    const updated = await npm.updateProxyHost(
+      existing.id,
+      {
+        ...existing,
+        forward_host:
+          forward_host !== undefined ? String(forward_host) : existing.forward_host,
+        forward_port:
+          forward_port !== undefined ? Number(forward_port) : existing.forward_port,
+        forward_scheme:
+          forward_scheme === "https"
+            ? "https"
+            : forward_scheme !== undefined
+              ? "http"
+              : existing.forward_scheme,
+        ssl_forced:
+          ssl_forced !== undefined ? Boolean(ssl_forced) : existing.ssl_forced,
+        http2_support:
+          http2_support !== undefined
+            ? Boolean(http2_support)
+            : existing.http2_support,
+        allow_websocket_upgrade:
+          websocket_support !== undefined
+            ? Boolean(websocket_support)
+            : existing.allow_websocket_upgrade ?? true,
+      },
+      certificate_id !== undefined ? Number(certificate_id) : existing.certificate_id,
+    );
+    db.addActivity(
+      "npm-host",
+      `Updated NPM proxy host ${(existing.domain_names || []).join(", ")}`,
+    );
+    res.json(updated);
   }),
 );
 

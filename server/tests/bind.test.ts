@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { fqdn, parseZoneTransfer, quoteTxt } from "../src/services/bind";
+import {
+  fqdn,
+  parseZoneTransfer,
+  quoteTxt,
+  resolveZone,
+} from "../src/services/bind";
 
 describe("quoteTxt", () => {
   it("wraps values in quotes", () => {
@@ -27,6 +32,33 @@ describe("fqdn", () => {
     expect(fqdn("_acme-challenge.innotel.us", "innotel.us")).toBe(
       "_acme-challenge.innotel.us.",
     );
+  });
+});
+
+describe("resolveZone", () => {
+  const zones = ["innotel.us", "example.com"];
+
+  it("returns the zone for a subdomain", () => {
+    expect(resolveZone("monarch.innotel.us", zones)).toBe("innotel.us");
+    expect(resolveZone("www.example.com", zones)).toBe("example.com");
+  });
+
+  it("returns the zone itself for an apex domain", () => {
+    expect(resolveZone("innotel.us", zones)).toBe("innotel.us");
+  });
+
+  it("picks the longest matching zone", () => {
+    expect(resolveZone("deep.sub.innotel.us", ["us", "innotel.us"])).toBe(
+      "innotel.us",
+    );
+  });
+
+  it("ignores trailing dots and case", () => {
+    expect(resolveZone("MONARCH.INNOTEL.US.", ["Innotel.Us"])).toBe("Innotel.Us");
+  });
+
+  it("throws for domains outside all zones", () => {
+    expect(() => resolveZone("other.org", zones)).toThrow(/not covered/);
   });
 });
 

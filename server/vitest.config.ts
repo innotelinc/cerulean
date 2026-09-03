@@ -15,7 +15,6 @@ export default defineConfig({
       BIND_SSH_PASSWORD: "test-pw",
       BIND_TSIG_NAME: "cerulean.",
       BIND_TSIG_SECRET: "dGVzdC1zZWNyZXQ=",
-      ACMEDNS_API_URL: "http://localhost:4443",
       NPM_API_URL: "http://npm.test:81",
       NPM_EMAIL: "admin@innotel.us",
       NPM_PASSWORD: "npm-test-pw",

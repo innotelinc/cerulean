@@ -44,11 +44,8 @@ import urllib.request
 #   dns.<base>         http://<forward_host>    3000   DNS management
 #   certs.<base>       http://<forward_host>    3000   Certificate management
 #   admin.<base>       http://<forward_host>    3000   Administration
-#
-# acme-dns is deliberately NOT in this list: its port 53 (UDP/TCP) must stay
-# directly reachable from the internet for Let's Encrypt validation, and its
-# API port 4443 is internal-only. NPM proxies HTTP(S) — it cannot (and must
-# not) sit in front of either. Add new services here (one dict per proxy).
+# Add new services here (one dict per proxy). DNS-01 challenge validation
+# runs straight through BIND (nsupdate/TSIG), not through NPM.
 PROXY_HOSTS = [
     {
         "name": "cerulean",
