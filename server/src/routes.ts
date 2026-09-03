@@ -2,6 +2,14 @@ import { Router } from "express";
 import { config } from "./config";
 import { db, type CertificateRow } from "./db";
 import {
+  createProvider as createDnsProvider,
+  deleteProvider as deleteDnsProvider,
+  listProviders as listDnsProviders,
+  ProviderError,
+  providerConnectionForTenant,
+  updateProvider as updateDnsProvider,
+} from "./services/providers";
+import {
   clearSessionCookie,
   extractToken,
   getSession,
@@ -313,12 +321,14 @@ router.get(
   "/domains/:id/records",
   tenantGuard,
   asyncHandler(async (req, res) => {
-    const domain = db.getDomain(Number(req.params.id), tenantOf(res).id);
+    const tenantId = tenantOf(res).id;
+    const domain = db.getDomain(Number(req.params.id), tenantId);
     if (!domain) {
       res.status(404).json({ error: "Domain not found" });
       return;
     }
-    const records = await bind.listZone(domain.name);
+    const conn = providerConnectionForTenant(tenantId) ?? undefined;
+    const records = await bind.listZone(domain.name, conn);
     res.json(records);
   }),
 );
@@ -343,14 +353,18 @@ router.post(
       res.status(400).json({ error: "name and value are required" });
       return;
     }
-    await bind.addRecord({
-      zone: domain.name,
-      type: recordType as bind.RecordType,
-      name,
-      value,
-      ttl: Number(ttl || 300),
-      priority: priority !== undefined ? Number(priority) : undefined,
-    });
+    const conn = providerConnectionForTenant(tenantOf(res).id) ?? undefined;
+    await bind.addRecord(
+      {
+        zone: domain.name,
+        type: recordType as bind.RecordType,
+        name,
+        value,
+        ttl: Number(ttl || 300),
+        priority: priority !== undefined ? Number(priority) : undefined,
+      },
+      conn,
+    );
     db.addActivity(
       "record-add",
       `Added ${recordType} ${name}.${domain.name} → ${value}`,
@@ -373,12 +387,16 @@ router.delete(
       res.status(400).json({ error: "type and name are required" });
       return;
     }
-    await bind.deleteRecord({
-      zone: domain.name,
-      type: String(type).toUpperCase(),
-      name,
-      value: value !== undefined ? String(value) : undefined,
-    });
+    const conn = providerConnectionForTenant(tenantOf(res).id) ?? undefined;
+    await bind.deleteRecord(
+      {
+        zone: domain.name,
+        type: String(type).toUpperCase(),
+        name,
+        value: value !== undefined ? String(value) : undefined,
+      },
+      conn,
+    );
     db.addActivity("record-delete", `Removed ${type} ${name}.${domain.name}`);
     res.json({ ok: true });
   }),
@@ -963,6 +981,89 @@ router.get(
     }
   }),
 );
+
+// ── Per-tenant DNS providers ────────────────────────────────────────────
+// A tenant's zones can be served by its own BIND server(s) instead of the
+// platform-level BIND from .env. Members manage their own tenant's providers;
+// record operations resolve the provider for the domain's tenant.
+router.get("/dns/providers", tenantGuard, (_req, res) => {
+  res.json(listDnsProviders(tenantOf(res).id));
+});
+
+router.post(
+  "/dns/providers",
+  tenantGuard,
+  (req, res) => {
+    try {
+      const row = createDnsProvider(tenantOf(res).id, {
+        name: String(req.body?.name ?? ""),
+        host: String(req.body?.host ?? ""),
+        port: req.body?.port !== undefined ? Number(req.body.port) : undefined,
+        user: req.body?.user !== undefined ? String(req.body.user) : undefined,
+        keyPath:
+          req.body?.key_path !== undefined ? String(req.body.key_path) : undefined,
+        password:
+          req.body?.password !== undefined ? String(req.body.password) : undefined,
+        tsigName:
+          req.body?.tsig_name !== undefined ? String(req.body.tsig_name) : undefined,
+        tsigSecret:
+          req.body?.tsig_secret !== undefined ? String(req.body.tsig_secret) : undefined,
+        isDefault: req.body?.default === true,
+      });
+      res.status(201).json(row);
+    } catch (err) {
+      if (err instanceof ProviderError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
+  },
+);
+
+router.patch(
+  "/dns/providers/:id",
+  tenantGuard,
+  (req, res) => {
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    // Only fields present in the body are updated (blank secrets = unchanged).
+    const input: Record<string, unknown> = {};
+    if (b.name !== undefined) input.name = String(b.name);
+    if (b.host !== undefined) input.host = String(b.host);
+    if (b.port !== undefined) input.port = Number(b.port);
+    if (b.user !== undefined) input.user = String(b.user);
+    if (b.key_path !== undefined) input.keyPath = String(b.key_path);
+    if (b.password !== undefined) input.password = String(b.password);
+    if (b.tsig_name !== undefined) input.tsigName = String(b.tsig_name);
+    if (b.tsig_secret !== undefined) input.tsigSecret = String(b.tsig_secret);
+    if (b.default !== undefined) input.isDefault = b.default === true;
+    try {
+      const row = updateDnsProvider(
+        Number(req.params.id),
+        tenantOf(res).id,
+        input as Parameters<typeof updateDnsProvider>[2],
+      );
+      res.json(row);
+    } catch (err) {
+      if (err instanceof ProviderError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
+  },
+);
+
+router.delete("/dns/providers/:id", tenantGuard, (req, res) => {
+  const id = Number(req.params.id);
+  if (!db.getDnsProvider(id, tenantOf(res).id)) {
+    res.status(404).json({ error: "DNS provider not found" });
+    return;
+  }
+  deleteDnsProvider(id, tenantOf(res).id);
+  db.addActivity("dns-provider-delete", `Removed DNS provider #${id}`);
+  res.json({ ok: true });
+});
 
 // ── Activities ──────────────────────────────────────────────────────────
 router.get("/activities", requireAuth, (_req, res) => {

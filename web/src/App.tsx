@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api, clearToken, getToken } from "./api";
 import Dashboard from "./pages/Dashboard";
 import Domains from "./pages/Domains";
+import DnsProviders from "./pages/DnsProviders";
 import Certificates from "./pages/Certificates";
 import NpmExport from "./pages/NpmExport";
 import Pki from "./pages/Pki";
@@ -11,11 +12,12 @@ import Settings from "./pages/Settings";
 import Login from "./pages/Login";
 import type { SessionUser } from "./types";
 
-type Page = "dashboard" | "domains" | "certificates" | "pki" | "tenants" | "npm" | "discovery" | "settings";
+type Page = "dashboard" | "domains" | "dnsproviders" | "certificates" | "pki" | "tenants" | "npm" | "discovery" | "settings";
 
 const NAV: { page: Page; label: string; icon: string; platformOnly?: boolean }[] = [
   { page: "dashboard", label: "Dashboard", icon: "◈" },
   { page: "domains", label: "Domains", icon: "◉" },
+  { page: "dnsproviders", label: "DNS Providers", icon: "☁" },
   { page: "certificates", label: "Certificates", icon: "🔒" },
   { page: "pki", label: "PKI & Devices", icon: "🛡" },
   { page: "npm", label: "nginx Proxy Manager", icon: "⇄" },
@@ -116,6 +118,7 @@ export default function App() {
       <main className="content">
         {page === "dashboard" && <Dashboard goTo={setPage} />}
         {page === "domains" && <Domains />}
+        {page === "dnsproviders" && <DnsProviders />}
         {page === "certificates" && <Certificates />}
         {page === "pki" && <Pki />}
         {page === "tenants" && platform && <Tenants />}

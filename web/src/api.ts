@@ -164,6 +164,36 @@ export const api = {
     http2_support?: boolean;
   }) => request<import("./types").NpmProxyHost>("POST", "/npm/hosts", input),
 
+  listDnsProviders: () =>
+    request<import("./types").DnsProvider[]>("GET", "/dns/providers"),
+  createDnsProvider: (input: {
+    name: string;
+    host: string;
+    port?: number;
+    user?: string;
+    key_path?: string;
+    password?: string;
+    tsig_name?: string;
+    tsig_secret?: string;
+    default?: boolean;
+  }) => request<import("./types").DnsProvider>("POST", "/dns/providers", input),
+  updateDnsProvider: (
+    id: number,
+    input: {
+      name?: string;
+      host?: string;
+      port?: number;
+      user?: string;
+      key_path?: string;
+      password?: string;
+      tsig_name?: string;
+      tsig_secret?: string;
+      default?: boolean;
+    },
+  ) => request<import("./types").DnsProvider>("PATCH", `/dns/providers/${id}`, input),
+  deleteDnsProvider: (id: number) =>
+    request<{ ok: boolean }>("DELETE", `/dns/providers/${id}`),
+
   listTenants: () => request<import("./types").TenantRow[]>("GET", "/tenants"),
   createTenant: (input: { slug: string; name: string }) =>
     request<import("./types").TenantRow>("POST", "/tenants", input),
