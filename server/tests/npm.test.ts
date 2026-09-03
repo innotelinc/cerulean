@@ -77,7 +77,15 @@ function installMockFetch() {
   vi.stubGlobal("fetch", async (url: string | URL, init?: RequestInit) => {
     const method = init?.method ?? "GET";
     const path = new URL(String(url)).pathname;
-    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    let body: unknown;
+    if (init?.body instanceof FormData) {
+      body = {
+        multipart: true,
+        fields: Array.from(init.body.keys()),
+      };
+    } else {
+      body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    }
     requests.push({ method, path, body });
 
     if (path === "/api/tokens") {
@@ -94,6 +102,13 @@ function installMockFetch() {
       mockCerts.push(created);
       return jsonResponse(created, 201);
     }
+    // Current NPM materializes custom-cert PEMs only via the multipart
+    // /upload route; the JSON create alone leaves the cert without files.
+    if (/^\/api\/nginx\/certificates\/\d+\/upload$/.test(path) && method === "POST") {
+      return jsonResponse({ certificate: true, certificate_key: true });
+    }
+    // Older NPM builds accept PUT /nginx/certificates/:id (falls back only
+    // when /upload 404s — not exercised by default here).
     if (path.startsWith("/api/nginx/certificates/") && method === "PUT") {
       return jsonResponse({ id: Number(path.split("/").pop()), ...body });
     }
@@ -128,6 +143,11 @@ function callCount(pathPrefix: string, method: string): number {
     .length;
 }
 
+/** Count requests whose path equals `path` exactly (e.g. the JSON create). */
+function exactCount(path: string, method: string): number {
+  return requests.filter((r) => r.path === path && r.method === method).length;
+}
+
 function bodyOf(path: string, method: string) {
   return requests.find((r) => r.path === path && r.method === method)?.body;
 }
@@ -150,11 +170,11 @@ describe("npm.syncCertificateToNpm", () => {
     const result = await npm.syncCertificateToNpm(1);
 
     expect(result.attached).toEqual([]);
-    expect(callCount("/api/nginx/certificates", "POST")).toBe(0);
+    expect(exactCount("/api/nginx/certificates", "POST")).toBe(0);
     expect(callCount("/api/nginx/proxy-hosts/", "PUT")).toBe(0);
   });
 
-  it("imports the certificate and attaches it to the matching proxy host", async () => {
+  it("imports the certificate (create then upload) and attaches it to the host", async () => {
     installMockFetch();
     mockHosts = [makeHost()];
 
@@ -170,6 +190,15 @@ describe("npm.syncCertificateToNpm", () => {
     expect(created.provider).toBe("other");
     expect(created.domain_names).toEqual(["cerulean.innotel.us"]);
     expect(created.nice_name).toBe("cerulean-cerulean.innotel.us");
+    // ...then the PEM files are pushed via the multipart upload route so they
+    // land on NPM's disk (/data/custom_ssl/npm-99/) and nginx can serve them.
+    const uploaded = bodyOf("/api/nginx/certificates/99/upload", "POST") as {
+      multipart: boolean;
+      fields: string[];
+    };
+    expect(uploaded.multipart).toBe(true);
+    expect(uploaded.fields).toContain("certificate");
+    expect(uploaded.fields).toContain("certificate_key");
     // proxy host updated with the new cert id + forced SSL
     const updated = bodyOf("/api/nginx/proxy-hosts/7", "PUT") as {
       certificate_id: number;
@@ -200,11 +229,16 @@ describe("npm.syncCertificateToNpm", () => {
 
     expect(result.attached).toEqual(["cerulean.innotel.us"]);
     // no new cert created — the existing one is refreshed in place
-    expect(callCount("/api/nginx/certificates", "POST")).toBe(0);
-    const refreshed = bodyOf("/api/nginx/certificates/3", "PUT") as {
-      meta: { certificate: string };
+    expect(exactCount("/api/nginx/certificates", "POST")).toBe(0);
+    // the material is pushed through the /upload route (rewrites the PEMs)
+    const uploaded = bodyOf("/api/nginx/certificates/3/upload", "POST") as {
+      multipart: boolean;
+      fields: string[];
     };
-    expect(refreshed.meta.certificate).toContain("BEGIN CERTIFICATE");
+    expect(uploaded.multipart).toBe(true);
+    expect(uploaded.fields).toEqual(
+      expect.arrayContaining(["certificate", "certificate_key"]),
+    );
     // host points at the refreshed cert
     const updated = bodyOf("/api/nginx/proxy-hosts/7", "PUT") as {
       certificate_id: number;
@@ -229,8 +263,8 @@ describe("npm.syncCertificateToNpm", () => {
 
     expect(result.attached).toEqual([]);
     expect(callCount("/api/nginx/proxy-hosts/", "PUT")).toBe(0);
-    // material is still refreshed so NPM serves the renewed cert
-    expect(callCount("/api/nginx/certificates/3", "PUT")).toBe(1);
+    // material is still refreshed via /upload so NPM serves the renewed cert
+    expect(callCount("/api/nginx/certificates/3/upload", "POST")).toBe(1);
   });
 
   it("is a no-op when the certificate has no material yet", async () => {
@@ -241,7 +275,7 @@ describe("npm.syncCertificateToNpm", () => {
     const result = await npm.syncCertificateToNpm(1);
 
     expect(result.attached).toEqual([]);
-    expect(callCount("/api/nginx/certificates", "POST")).toBe(0);
+    expect(exactCount("/api/nginx/certificates", "POST")).toBe(0);
   });
 
   it("attaches a wildcard cert to a matching subdomain proxy host", async () => {
@@ -276,7 +310,7 @@ describe("npm.syncCertificateToNpm", () => {
     expect(result.attached).toEqual([]);
     expect(callCount("/api/nginx/proxy-hosts/", "PUT")).toBe(0);
     // the wildcard is still imported so future hosts without a cert can use it
-    expect(callCount("/api/nginx/certificates", "POST")).toBe(1);
+    expect(exactCount("/api/nginx/certificates", "POST")).toBe(1);
   });
 
   it("does not wildcard-match deeper subdomains; the apex matches exactly", async () => {
@@ -305,7 +339,7 @@ describe("npm.syncCertificateToNpm", () => {
     const result = await npm.syncCertificateToNpm(1);
 
     expect(result.attached).toEqual([]);
-    expect(callCount("/api/nginx/certificates", "POST")).toBe(0);
+    expect(exactCount("/api/nginx/certificates", "POST")).toBe(0);
     expect(callCount("/api/nginx/proxy-hosts/", "PUT")).toBe(0);
   });
 });
