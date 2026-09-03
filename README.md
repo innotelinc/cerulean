@@ -76,6 +76,11 @@ zone is configurable.
   (`*.innotel.us`) attach to every matching subdomain host
   (`cerulean.innotel.us`) too, unless the host already has its own
   certificate (toggle with `NPM_WILDCARD_ATTACH`).
+- **Internal PKI** — Cerulean runs a private root CA and issues **per-device
+  TLS client certificates** (ECDSA P-256, `clientAuth` EKU) for mTLS at the
+  reverse proxy and MDM-driven enrollment. The CA is created lazily on first
+  issuance; certificates can be listed, re-issued after revoke, and exported
+  as leaf + key + CA PEM so a device can install the trust chain.
 - **REST API** — every dashboard action is also available as a JSON endpoint
   (see below), so you can script issuance or exports.
 - **Audit log** — every domain, record, issuance, and export is recorded.
@@ -211,6 +216,14 @@ certificate via HTTP-01, set `NPM_PROXY_SSL=1` instead.
    *Export to NPM* button is still there for manual exports.
 5. **Settings** — integration health, vault sync, renewal sweep, and a
    full configuration summary.
+6. **Internal PKI** (API, dashboard UI coming soon) — Cerulean generates its
+   own private root CA on first use (`POST /api/pki/init`) and issues TLS
+   client certificates for devices/identities. Issue one per device, install
+   the root CA as the trust anchor on your endpoints (nginx
+   `ssl_client_certificate`, browsers, MDM), and nginx will accept any device
+   presenting a valid certificate. Revoking a certificate immediately stops
+   it from being downloadable again and unblocks re-issuing under the same
+   name.
 
 ## REST API
 
@@ -236,6 +249,13 @@ All endpoints require `Authorization: Bearer <token>` (obtain a token via
 | GET | `/api/certificates/:id` | Certificate status |
 | GET | `/api/certificates/:id/material` | Fullchain PEM + private key |
 | POST | `/api/certificates/:id/renew` | Renew now |
+| GET | `/api/pki/status` | Internal CA + client-certificate status |
+| POST | `/api/pki/init` | Generate the internal root CA (idempotent) |
+| GET | `/api/pki/ca` | Root CA certificate (PEM, for trust install) |
+| GET/POST | `/api/pki/certificates` | List client certs / issue one |
+| GET | `/api/pki/certificates/:id` | Client certificate detail |
+| GET | `/api/pki/certificates/:id/material` | Leaf PEM + key + root CA |
+| POST | `/api/pki/certificates/:id/revoke` | Revoke a client certificate |
 | GET | `/api/npm/hosts` · `/api/npm/certificates` | NPM state |
 | POST | `/api/npm/export-cert` | `{ certificate_id }` → import into NPM |
 | POST | `/api/npm/hosts` | Create a proxy host |
@@ -255,6 +275,17 @@ curl -s -X POST localhost:3000/api/certificates \
 curl -s -X POST localhost:3000/api/npm/export-cert \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"certificate_id":1}'
+```
+
+Example — issue a device TLS client certificate and download its material:
+
+```bash
+curl -s -X POST localhost:3000/api/pki/certificates \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"laptop-1","email":"admin@innotel.us"}'
+
+curl -s localhost:3000/api/pki/certificates/1/material \
+  -H "Authorization: Bearer $TOKEN"   # → { certificate, key, ca }
 ```
 
 ## Project layout

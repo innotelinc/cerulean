@@ -59,6 +59,14 @@ export interface Config {
     wildcardAttach: boolean;
   };
 
+  pki: {
+    // Internal private CA that issues TLS client certificates for managed
+    // devices (mTLS at the reverse proxy, MDM enrollment, ...).
+    caCommonName: string;
+    caValidityDays: number;
+    certValidityDays: number;
+  };
+
   dataDir: string;
 }
 
@@ -172,7 +180,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       wildcardAttach: bool(env.NPM_WILDCARD_ATTACH, true),
     },
 
-    dataDir: env.CERULEAN_DATA_DIR || path.resolve(__dirname, "../../data"),  };
+    pki: {
+      // Subject CN of the internally generated root CA (created on first use
+      // via POST /api/pki/init or when the first device certificate is issued).
+      caCommonName: env.CA_COMMON_NAME || "Cerulean Root CA",
+      caValidityDays: Number(env.CA_VALIDITY_DAYS || 3650),
+      // Default validity of issued device client certificates.
+      certValidityDays: Number(env.PKI_CERT_VALIDITY_DAYS || 825),
+    },
+
+    dataDir: env.CERULEAN_DATA_DIR || path.resolve(__dirname, "../../data"),
+  };
 }
 
 export const config = loadConfig();

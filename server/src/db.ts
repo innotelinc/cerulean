@@ -60,6 +60,30 @@ export interface DiscoveredCertRow {
   last_seen: string;
 }
 
+export interface CaRow {
+  id: number; // always 1 (singleton)
+  common_name: string;
+  certificate: string; // root CA PEM
+  key: string; // root CA private key (PKCS#8 PEM)
+  serial: number; // last issued serial number (counter)
+  created_at: string;
+}
+
+export interface ClientCertificateRow {
+  id: number;
+  name: string; // subject CN + stable device/owner identifier
+  email: string | null;
+  serial_hex: string;
+  status: string; // issued | revoked
+  certificate: string; // client cert PEM
+  key: string; // client private key (PKCS#8 PEM)
+  fingerprint: string | null;
+  expires_at: string | null;
+  issued_at: string | null;
+  revoked_at: string | null;
+  created_at: string;
+}
+
 export interface DnsAuditRow {
   id: number;
   domain: string;
@@ -148,6 +172,35 @@ class Database {
         checks_json TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_dns_audits_domain ON dns_audits (domain);
+
+      -- Internal private CA (singleton row) issuing TLS client certificates.
+      CREATE TABLE IF NOT EXISTS ca (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        common_name TEXT NOT NULL,
+        certificate TEXT NOT NULL,
+        key TEXT NOT NULL,
+        serial INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS client_certificates (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        email TEXT,
+        serial_hex TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'issued',
+        certificate TEXT NOT NULL,
+        key TEXT NOT NULL,
+        fingerprint TEXT,
+        expires_at TEXT,
+        issued_at TEXT,
+        revoked_at TEXT,
+        created_at TEXT NOT NULL
+      );
+      -- At most one active certificate per name (revoke before re-issuing).
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_client_certs_active_name
+        ON client_certificates (name) WHERE status = 'issued';
+      CREATE INDEX IF NOT EXISTS idx_client_certs_status
+        ON client_certificates (status);
     `);
   }
 
@@ -356,6 +409,106 @@ class Database {
 
   deleteDiscoveredCert(id: number): void {
     this.db.prepare("DELETE FROM discovered_certificates WHERE id = ?").run(id);
+  }
+
+  // ── Private CA + client certificates ──────────────────────────────────
+  getCa(): CaRow | undefined {
+    return this.db.prepare("SELECT * FROM ca WHERE id = 1").get() as
+      | CaRow
+      | undefined;
+  }
+
+  /** Insert the root CA singleton (no-op if it already exists). */
+  createCa(input: {
+    commonName: string;
+    certificate: string;
+    key: string;
+  }): CaRow {
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO ca (id, common_name, certificate, key, serial, created_at)
+         VALUES (1, ?, ?, ?, 0, ?)`,
+      )
+      .run(input.commonName, input.certificate, input.key, nowIso());
+    return this.getCa()!;
+  }
+
+  /** Atomically claim the next serial number for a certificate issuance. */
+  nextCaSerial(): number {
+    this.db.exec("BEGIN IMMEDIATE;");
+    try {
+      const row = this.db
+        .prepare("SELECT serial FROM ca WHERE id = 1")
+        .get() as { serial: number } | undefined;
+      if (!row) throw new Error("CA is not initialized");
+      const next = row.serial + 1;
+      this.db.prepare("UPDATE ca SET serial = ? WHERE id = 1").run(next);
+      this.db.exec("COMMIT;");
+      return next;
+    } catch (err) {
+      this.db.exec("ROLLBACK;");
+      throw err;
+    }
+  }
+
+  listClientCertificates(): ClientCertificateRow[] {
+    return this.db
+      .prepare("SELECT * FROM client_certificates ORDER BY id DESC")
+      .all() as unknown as ClientCertificateRow[];
+  }
+
+  getClientCertificate(id: number): ClientCertificateRow | undefined {
+    return this.db
+      .prepare("SELECT * FROM client_certificates WHERE id = ?")
+      .get(id) as ClientCertificateRow | undefined;
+  }
+
+  /** Active (non-revoked) certificate whose CN/name matches `name`. */
+  findActiveClientCertificate(name: string): ClientCertificateRow | undefined {
+    return this.db
+      .prepare(
+        "SELECT * FROM client_certificates WHERE name = ? AND status = 'issued'",
+      )
+      .get(name) as ClientCertificateRow | undefined;
+  }
+
+  createClientCertificate(input: {
+    name: string;
+    email?: string;
+    serialHex: string;
+    certificate: string;
+    key: string;
+    fingerprint: string;
+    expiresAt: string;
+  }): ClientCertificateRow {
+    const result = this.db
+      .prepare(
+        `INSERT INTO client_certificates
+           (name, email, serial_hex, status, certificate, key, fingerprint,
+            expires_at, issued_at, created_at)
+         VALUES (?, ?, ?, 'issued', ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        input.name,
+        input.email?.toLowerCase() || null,
+        input.serialHex,
+        input.certificate,
+        input.key,
+        input.fingerprint,
+        input.expiresAt,
+        nowIso(),
+        nowIso(),
+      );
+    return this.getClientCertificate(Number(result.lastInsertRowid))!;
+  }
+
+  revokeClientCertificate(id: number): ClientCertificateRow | undefined {
+    this.db
+      .prepare(
+        `UPDATE client_certificates SET status = 'revoked', revoked_at = ? WHERE id = ?`,
+      )
+      .run(nowIso(), id);
+    return this.getClientCertificate(id);
   }
 
   // ── DNS audits ─────────────────────────────────────────────────────────

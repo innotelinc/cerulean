@@ -167,6 +167,25 @@ class VaultClient {
       written.push(path);
     }
 
+    // Private PKI: the root CA key and every issued client-certificate key.
+    const ca = db.getCa();
+    if (ca) {
+      const path = "pki/ca";
+      await this.writeKV(path, {
+        certificate: ca.certificate,
+        key: ca.key,
+      });
+      written.push(path);
+    }
+    for (const cert of db.listClientCertificates()) {
+      const path = `pki/certs/${cert.id}`;
+      await this.writeKV(path, {
+        certificate: cert.certificate,
+        key: cert.key,
+      });
+      written.push(path);
+    }
+
     return { written };
   }
 }
