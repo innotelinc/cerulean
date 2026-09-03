@@ -27,7 +27,7 @@ import { oidc } from "./services/oidc";
 import { scoreCertificate } from "./services/health";
 import { runDiscovery } from "./services/discovery";
 import { auditDomain } from "./services/audit";
-import { vault } from "./services/vault";
+import { infisical, vault } from "./services/vault";
 import * as pki from "./services/pki";
 import * as enrollment from "./services/enrollment";
 import {
@@ -261,6 +261,11 @@ router.get(
         enabled: vault.isEnabled(),
         status: vaultStatus,
         addr: config.vault.addr,
+      },
+      infisical: {
+        enabled: infisical.isEnabled(),
+        status: await infisical.test(),
+        addr: config.infisical.addr,
       },
       discovery: {
         dirs: config.discovery.dirs,
