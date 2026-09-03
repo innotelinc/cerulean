@@ -1,21 +1,77 @@
-# Cerulean — Certificate & DNS Management
+<div align="center">
+
+# Cerulean
+
+**Certificate, DNS & trust management — self-hosted.**
 
 *Point DNS at it once — never touch a zone file again.*
 
-Cerulean is a self-hosted, centralized certificate and DNS lifecycle
-platform. It issues **Let's Encrypt certificates (regular and wildcard)** via
-DNS-01 challenges written straight into **your own BIND server** over SSH
-(nsupdate + TSIG), manages **DNS records on remote BIND servers**, and
-**exports certificates to nginx proxy manager** with one click. It also
-**discovers certificates**
-in your environment, **audits DNS health**, **scores certificate health**,
-stores secrets in a **vault**, and signs users in through **Authentik**. On a
-fresh host it even **provisions every nginx proxy host automatically** — the
-stack is wired up before you open a browser.
+[![CI](https://github.com/innotelinc/cerulean/actions/workflows/ci.yml/badge.svg)](https://github.com/innotelinc/cerulean/actions/workflows/ci.yml)
+[![Release](https://github.com/innotelinc/cerulean/actions/workflows/release.yml/badge.svg)](https://github.com/innotelinc/cerulean/actions/workflows/release.yml)
+[![Latest release](https://img.shields.io/github/v/release/innotelinc/cerulean)](https://github.com/innotelinc/cerulean/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+</div>
+
+Cerulean centralizes certificate lifecycles, DNS automation, and device trust in
+one self-hosted platform. It issues **Let's Encrypt certificates (regular and
+wildcard)** via DNS-01 challenges written straight into **your own BIND server**
+over SSH (nsupdate + TSIG), manages **DNS records live on BIND**, and pushes
+**certificates to nginx proxy manager** with zero clicks. It runs its own
+**internal PKI** for device certificates and mTLS auto-allow, discovers
+certificates across your environment, audits DNS health, scores certificate
+health, mirrors secrets into a **vault**, signs users in through **Authentik**,
+and scopes everything per **organization/tenant**. On a fresh host it even
+provisions every nginx proxy host automatically — the stack is wired before you
+open a browser.
 
 The reference deployment routes `*.cerulean.innotel.us` through nginx proxy
 manager to the portal and its services — but every endpoint, credential, and
 zone is configurable.
+
+## Capabilities
+
+| | | |
+| --- | --- | --- |
+| 🔐 **ACME certificates** | Let's Encrypt, regular + **wildcard**, DNS-01 via your own BIND over `nsupdate` + TSIG. Auto-renewed 30 days before expiry. | 
+| 🌐 **Live DNS management** | Create/list/delete `A`, `AAAA`, `CNAME`, `TXT`, `MX`, `NS`, `SRV` records on zones you control, straight over SSH. |
+| 🛡 **Internal PKI** | Private root CA issuing **per-device TLS client certificates** (ECDSA P-256, `clientAuth`) — revoke instantly, re-issue freely. |
+| 📱 **Device trust** | Devices enroll with keys that never leave them (CSR signing) or via MDM-pushed Apple profiles (root CA + SCEP). nginx **auto-allows** any device holding a Cerulean certificate. |
+| 🏢 **Multi-tenant** | Certificates, domains, and secrets scoped per organization. Tenant identity rides on Authentik groups; platform admins manage tenants in the dashboard. |
+| ⇄ **nginx proxy manager** | One-click cert export, automatic attach on issue/renew, and full proxy-host provisioning on a fresh host. |
+| ⌕ **Discovery & audit** | Sweep NPM and local PEM directories into a central inventory; audit NS delegation, SOA, propagation, and CAA per domain. |
+| 💯 **Health scoring** | Every issued and discovered certificate gets a 0–100 score and A–F grade across validity, key strength, algorithm, SANs, material. |
+| 🔑 **Secret vault** | Private keys mirrored to HashiCorp Vault (KV v2); `.env` values may be `vault://path#key` references. |
+| 🪪 **Authentik SSO** | OIDC authorization-code + PKCE sign-in; passkeys (WebAuthn) provisioned by script; users/groups managed in Authentik. |
+| ⚙️ **REST API** | Every dashboard action is a JSON endpoint — script issuance, exports, and administration. |
+
+## Quick start
+
+```bash
+# One-shot setup: generates the admin password + TSIG key, configures BIND,
+# installs dependencies, builds, starts the stack, and provisions every nginx
+# proxy manager proxy host (if NPM_* is configured in .env).
+./scripts/setup.sh
+
+# Or with Authentik SSO provisioned automatically:
+./scripts/setup.sh --with-authentik
+```
+
+The dashboard is then at `http://<host>:3000` (or `https://cerulean.innotel.us`
+once the proxy host is provisioned and a certificate is attached). The generated
+admin password is printed at the end of setup (and stored in
+`CERULEAN_ADMIN_PASSWORD` in `.env`).
+
+Optional compose profiles, each opt-in:
+
+```bash
+docker compose --profile bind up -d        # bundled BIND + sshd   (BIND_MODE=local)
+docker compose --profile npm up -d         # bundled nginx proxy manager (NPM_MODE=local)
+docker compose --profile authentik up -d   # Authentik SSO + user management
+docker compose --profile vault up -d       # dev-mode HashiCorp Vault
+```
+
+## How it works
 
 ```
                     ┌─────────────────────────────────────────┐
@@ -34,90 +90,19 @@ zone is configurable.
                            └── authoritative for innotel.us ──┘
 ```
 
-## Features
+## Documentation
 
-- **Authentik SSO** — sign in with an OIDC authorization-code + PKCE flow
-  against Authentik (users/groups managed there). The stack bundles Authentik
-  (`docker compose --profile authentik up -d`) and
-  `scripts/authentik-setup.py` provisions the OIDC provider automatically.
-  The admin password stays available as a bootstrap fallback
-  (`AUTH_LOCAL_ENABLED=0` for Authentik-only).
-- **Secret vault** — private keys and ACME account keys are mirrored into a
-  HashiCorp Vault (KV v2) when `VAULT_ADDR` + `VAULT_TOKEN` are set, and any
-  .env value may be a `vault://path#key` reference instead of plaintext.
-- **Certificate discovery** — a sweep imports certificates found on nginx
-  proxy manager (including ones Cerulean didn't issue) and in local PEM
-  directories (`CERT_DISCOVERY_DIRS`) into a central inventory.
-- **DNS health auditing** — every registered domain is audited (NS
-  delegation, authoritative SOA answers, serial consistency, propagation
-  across public resolvers, CAA policy) on a schedule and on demand.
-- **Certificate health scoring** — every issued and discovered certificate
-  gets a 0–100 score and A–F grade from its validity, key strength,
-  signature algorithm, SAN coverage, and material.
-- **Let's Encrypt certificates** — regular and **wildcard** (SAN), issued
-  in-process with the ACME v2 protocol over DNS-01, stored with their private
-  keys, and **auto-renewed** 30 days before expiry.
-- **BIND-based DNS-01** — challenge TXT records are written straight to your
-  authoritative BIND server via `nsupdate` with a TSIG key (auto-generated
-  and installed by `./scripts/setup.sh`). No extra challenge servers needed:
-- **BIND record management** — create, list, and delete `A`, `AAAA`, `CNAME`,
-  `TXT`, `MX`, `NS`, and `SRV` records on any zone you control, live over SSH.
-- **One-click nginx proxy manager export** — import a Cerulean-issued
-  certificate into NPM as a custom certificate and/or create a proxy host
-  (domain → upstream host:port) with SSL, HTTP/2, and forced SSL.
-- **Automatic nginx proxy manager provisioning** — `scripts/npm-proxy-hosts.py`
-  (hooked into `setup.sh`) creates or updates every proxy host on your NPM
-  instance via its API, so a fresh host comes up fully routed. Idempotent:
-  create what's missing, update what drifted, never touch the rest.
-- **Automatic certificate attach** — the moment a certificate is issued or
-  renewed for a provisioned proxy host's domain, Cerulean imports the fresh
-  material into NPM and attaches it to the matching host (SSL + HTTP/2 on),
-  refreshing in place on renewal — no clicks, ever. Wildcard certificates
-  (`*.innotel.us`) attach to every matching subdomain host
-  (`cerulean.innotel.us`) too, unless the host already has its own
-  certificate (toggle with `NPM_WILDCARD_ATTACH`).
-- **Internal PKI** — Cerulean runs a private root CA and issues **per-device
-  TLS client certificates** (ECDSA P-256, `clientAuth` EKU) for mTLS at the
-  reverse proxy and MDM-driven enrollment. The CA is created lazily on first
-  issuance; certificates can be listed, re-issued after revoke, and exported
-  as leaf + key + CA PEM so a device can install the trust chain.
-- **Multi-tenant (organizations)** — every certificate, domain and vault
-  secret is scoped to a tenant. Tenant identity rides on Authentik groups: a
-  tenant's slug is a group, and group members see only their tenant's data
-  (`X-Cerulean-Tenant` switches among the caller's tenants). Local admin
-  sessions (or `TENANT_PLATFORM_GROUP` members) are platform admins: the
-  **Tenants** page (nav, platform admins only) creates and renames tenants
-  and lists each tenant's members live from Authentik
-  (`AUTHENTIK_API_URL` + `AUTHENTIK_ADMIN_PASSWORD`). Existing single-tenant
-  data lives in the built-in `default` tenant — no migration work needed.
-- **Device enrollment & mTLS auto-allow** — devices enroll with a key that
-  never leaves them (CSR signing, `POST /api/pki/enroll/csr`) or through an
-  MDM-pushed Apple profile that installs the root CA and points at your SCEP
-  endpoint (`PKI_SCEP_URL`, dashboard → PKI & Devices). Flip a proxy host's
-  TLS gate on (`POST /api/npm/mtls`) and nginx auto-allows any device holding
-  a Cerulean-signed certificate while rejecting everything else — passkeys in
-  Authentik are provisioned by `scripts/authentik-passkeys.py`. Runbook:
-  `docs/device-enrollment.md`.
-- **REST API** — every dashboard action is also available as a JSON endpoint
-  (see below), so you can script issuance or exports.
-- **Audit log** — every domain, record, issuance, and export is recorded.
+| Guide | What it covers |
+| --- | --- |
+| [Device enrollment & mTLS](docs/device-enrollment.md) | Internal CA, CSR + SCEP/MDM enrollment, nginx auto-allow, Authentik passkeys |
+| [First-time setup](#first-time-setup) | BIND, nginx proxy manager, the proxy-host map |
+| [Using Cerulean](#using-cerulean) | Domains, certificates, discovery, PKI — day to day |
+| [REST API](#rest-api) | Every endpoint, with examples |
+| [Multi-tenant (SSO)](#multi-tenant-sso) | Organizations, Authentik groups, isolation model |
+| [Authentik (SSO)](#authentik-sso) | Provisioning the provider + passkeys |
+| [Secret vault](#secret-vault) | Mirroring and `vault://` references |
 
-## Quick start
-
-```bash
-# One-shot setup: generates the admin password + TSIG key, configures BIND,
-# installs all dependencies, builds, starts the stack, and provisions every
-# nginx proxy manager proxy host (if NPM_* is configured in .env).
-./scripts/setup.sh
-
-# Or with Authentik SSO provisioned automatically:
-./scripts/setup.sh --with-authentik
-```
-
-The dashboard is then at `http://<host>:3000` (or `https://cerulean.innotel.us`
-once the proxy host is provisioned and a certificate is attached). The
-generated admin password is printed at the end of setup (and stored in
-`CERULEAN_ADMIN_PASSWORD` in `.env`).
+---
 
 ## First-time setup
 
@@ -231,16 +216,25 @@ certificate via HTTP-01, set `NPM_PROXY_SSL=1` instead.
    `setup.sh`; once a certificate is issued for a host's domain it is attached
    to the host automatically (wildcards cover matching subdomains). The
    *Export to NPM* button is still there for manual exports.
-5. **Settings** — integration health, vault sync, renewal sweep, and a
+5. **PKI & Devices** — initialize the root CA, issue a device certificate (or
+   enroll one with a CSR so its key never leaves the device), download
+   material or an MDM enrollment profile, and revoke instantly — see
+   `docs/device-enrollment.md` for the full MDM/SCEP/mTLS runbook.
+6. **Tenants** *(platform admins)* — create/rename organizations and view
+   their members live from Authentik.
+7. **Settings** — integration health, vault sync, renewal sweep, and a
    full configuration summary.
-6. **PKI & Devices** — Cerulean generates its own private root CA on first
-   use and issues TLS client certificates for devices/identities, all from
-   the dashboard: initialize the CA, issue a certificate (or enroll a device
-   with a CSR so its key never leaves it), download material or an MDM
-   enrollment profile, and revoke instantly. Install the root CA as the
-   trust anchor on your endpoints (nginx `ssl_client_certificate`, browsers,
-   MDM) and nginx will accept any device presenting a valid certificate —
-   see `docs/device-enrollment.md` for the full MDM/SCEP/mTLS runbook.
+
+## Multi-tenant (SSO)
+
+Every certificate, domain, and vault secret is scoped to an **organization
+(tenant)**. Tenant identity rides on Authentik groups: a tenant's slug is a
+group, and group members see only their tenant's data. Send
+`X-Cerulean-Tenant: <slug>` to switch among the tenants you belong to. Local
+admin sessions (or members of the `TENANT_PLATFORM_GROUP` group) are platform
+admins who manage tenants from the **Tenants** page or `GET/POST /api/tenants`.
+Existing single-tenant data lives in the built-in `default` tenant — upgrading
+requires no migration work.
 
 ## REST API
 
@@ -255,7 +249,7 @@ another.
 | --- | --- | --- |
 | POST | `/api/auth/login` | `{ password }` → `{ token }` |
 | GET | `/api/auth/config` | Public — auth methods available (local + OIDC) |
-| GET | `/api/auth/me` | Current session user |
+| GET | `/api/auth/me` | Current session user + tenant context |
 | GET | `/api/auth/oidc/authorize` · `/callback` | Authentik sign-in flow |
 | GET | `/api/status` | Integration health + config summary |
 | GET | `/api/discovery/certificates` | Discovered certificate inventory |
@@ -318,7 +312,7 @@ curl -s localhost:3000/api/pki/certificates/1/material \
 ## Project layout
 
 ```
-server/          Express + TypeScript API (ACME, BIND/nsupdate, NPM)
+server/          Express + TypeScript API (ACME, BIND/nsupdate, NPM, PKI)
 web/             React + Vite dashboard
 scripts/         setup helpers (BIND TSIG key generation, NPM proxy provisioning)
 docs/            deeper setup guides
@@ -351,8 +345,10 @@ Edition; users enroll once in their Authentik settings). See
 
 With `VAULT_ADDR` and `VAULT_TOKEN` set, the server mirrors certificate
 private keys and ACME account keys into Vault (KV v2) on a schedule and on
-demand (`POST /api/vault/sync`). `.env` values can also reference vault
-secrets instead of holding plaintext:
+demand (`POST /api/vault/sync`). Each tenant's material lives under its own
+KV prefix (`certs/<tenant>/<id>`, `pki/certs/<tenant>/<id>`) so vault ACLs can
+isolate tenants. `.env` values can also reference vault secrets instead of
+holding plaintext:
 
 ```
 NPM_PASSWORD=vault://cerulean/npm#password
