@@ -278,14 +278,24 @@ def main():
     for path in (os.path.join(here, "..", ".env"), ".env"):
         load_env_file(path)
 
-    # NPM_MODE=local: the compose stack bundles an NPM container, reachable by
-    # the host-side scripts at http://localhost:81 (the portal container itself
-    # uses NPM_INTERNAL_API_URL=http://cerulean-npm:81). NPM_MODE=remote
-    # (default) points at an existing server via NPM_API_URL.
+    # NPM_MODE=local is supported only alongside BIND_MODE=local. In local
+    # mode the complete NPM Edge component is bundled by Cerulean and the
+    # host-side script reaches its admin API at localhost:81. Remote-BIND
+    # deployments must use an external NPM endpoint explicitly.
     npm_mode = env("NPM_MODE", "remote").lower()
-    api_url = env("NPM_API_URL")
-    if not api_url and npm_mode == "local":
-        api_url = "http://localhost:81"
+    bind_mode = env("BIND_MODE", "remote").lower()
+    if npm_mode == "local" and bind_mode != "local":
+        print(
+            "NPM_MODE=local requires BIND_MODE=local; use NPM_MODE=remote "
+            "with an external NPM instance for remote BIND.",
+            file=sys.stderr,
+        )
+        return 2
+    api_url = (
+        env("NPM_API_URL")
+        if npm_mode == "remote"
+        else env("NPM_LOCAL_API_URL", f"http://localhost:{env('NPM_ADMIN_PORT', '81')}")
+    )
     email = env("NPM_EMAIL")
     password = env("NPM_PASSWORD")
     if not (api_url and email and password):

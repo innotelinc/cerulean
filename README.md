@@ -74,8 +74,8 @@ admin password is printed at the end of setup (and stored in
 Optional compose profiles, each opt-in:
 
 ```bash
-docker compose --profile bind up -d        # bundled BIND + sshd   (BIND_MODE=local)
-docker compose --profile npm up -d         # bundled nginx proxy manager (NPM_MODE=local)
+docker compose --profile bind --profile npm up -d  # local BIND + bundled NPM Edge (BIND_MODE=local, NPM_MODE=local)
+docker compose --profile bind up -d                # bundled BIND only (BIND_MODE=local)
 docker compose --profile authentik up -d   # Authentik SSO + user management
 docker compose --profile vault up -d       # dev-mode HashiCorp Vault
 ```
@@ -155,17 +155,17 @@ allow-transfer { <portal-ip>; };          /* so Cerulean can list records (AXFR)
 
 Two modes, picked with `NPM_MODE` in `.env`:
 
-- **`NPM_MODE=remote`** (default) — drive an existing NPM server via its API.
-- **`NPM_MODE=local`** — run the **bundled NPM container** from this stack:
-  `docker compose --profile npm up -d`. Cerulean talks to it at the compose
-  service name `cerulean-npm` (`NPM_INTERNAL_API_URL=http://cerulean-npm:81`
-  by default); the host-side provisioning script `npm-proxy-hosts.py` uses
-  `NPM_API_URL=http://localhost:81`.
+- **`NPM_MODE=remote`** (default) — drive an existing external NPM server via its API. This is the only supported NPM mode when `BIND_MODE=remote`.
+- **`NPM_MODE=local`** — available only with `BIND_MODE=local`; it enables the complete NPM Edge component from the sibling `npm/` repository: NPM, MariaDB, and `backup-ui`. Start both opt-in profiles together with `docker compose --profile bind --profile npm up -d`. Cerulean talks to NPM at `http://cerulean-npm:81`; host-side provisioning uses the local admin port.
 
-Set `NPM_API_URL`, `NPM_EMAIL`, and `NPM_PASSWORD` in `.env`, plus
-`NPM_FORWARD_HOST` (the portal host's LAN IP, as seen from NPM — auto-detected
-if blank). Cerulean authenticates against NPM's `/api/tokens` endpoint and can
-then:
+For local mode, the NPM component is imported from `../npm/compose.cerulean.yml`; it includes MariaDB and `backup-ui`, and persists its state in the NPM repository's `data/`, `mysql/`, `letsencrypt/`, and `backups/` directories. Do not use the local profile with a remote BIND server.
+
+Set `NPM_EMAIL` and `NPM_PASSWORD` in `.env`. In remote mode also set
+`NPM_API_URL` to the external NPM API. In local mode, Cerulean uses
+`http://cerulean-npm:81` internally and the host-side provisioner uses the
+configured local admin port. Set `NPM_FORWARD_HOST` (the portal host's LAN IP,
+as seen from NPM — auto-detected if blank). Cerulean authenticates against NPM's
+`/api/tokens` endpoint and can then:
 
 - import any Cerulean certificate as a **custom certificate**, and
 - create **proxy hosts** that use it.

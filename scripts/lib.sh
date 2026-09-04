@@ -51,6 +51,7 @@ env_load() {
   BIND_TSIG_SECRET="$(env_get BIND_TSIG_SECRET)"
   BIND_ZONES="$(env_get BIND_ZONES "$(env_get CERULEAN_ZONE)")"
   CERULEAN_ADMIN_PASSWORD="$(env_get CERULEAN_ADMIN_PASSWORD)"
+  NPM_MODE="$(env_get NPM_MODE remote)"
   NPM_API_URL="$(env_get NPM_API_URL)"
   NPM_EMAIL="$(env_get NPM_EMAIL)"
   NPM_PASSWORD="$(env_get NPM_PASSWORD)"
@@ -92,6 +93,10 @@ bind_configured() {
 }
 
 npm_configured() {
+  if [ "$NPM_MODE" = "local" ]; then
+    [ "$(env_get BIND_MODE remote)" = "local" ] && [ -n "$NPM_EMAIL" ] && [ -n "$NPM_PASSWORD" ] && [ "$NPM_PASSWORD" != "change-me" ]
+    return
+  fi
   [ -n "$NPM_API_URL" ] && [ -n "$NPM_EMAIL" ] && [ -n "$NPM_PASSWORD" ] && [ "$NPM_PASSWORD" != "change-me" ]
 }
 

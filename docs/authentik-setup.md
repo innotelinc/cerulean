@@ -33,7 +33,7 @@ creates the `akadmin` superuser automatically.
 application named **Cerulean**, using these `.env` values:
 
 ```dotenv
-AUTHENTIK_ISSUER_URL=http://auth.cerulean.innotel.us
+AUTHENTIK_ISSUER_URL=https://auth.cerulean.innotel.us
 AUTHENTIK_CLIENT_ID=cerulean
 AUTHENTIK_CLIENT_SECRET=<long random string>
 AUTHENTIK_REDIRECT_URI=http://cerulean.innotel.us/api/auth/oidc/callback
