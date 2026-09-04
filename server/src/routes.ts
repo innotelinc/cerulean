@@ -424,9 +424,17 @@ router.post(
       return;
     }
     const tenantId = tenantOf(res).id;
-    if (!db.getDomainByName(domain, tenantId)) {
+    // Accept the domain itself or anything under a registered zone (e.g.
+    // "zeus.innotel.us" when "innotel.us" is registered). Only the actual
+    // zone apex should be registered — registering a subdomain here makes
+    // DNS-01 zone resolution target a zone BIND does not serve (NOTAUTH).
+    const registered = db.listDomains(tenantId).map((d) => d.name);
+    const covered = registered.some(
+      (z) => domain === z || domain.endsWith(`.${z}`),
+    );
+    if (!covered) {
       res.status(400).json({
-        error: `Domain ${domain} is not registered in this tenant — add it under Domains first`,
+        error: `Domain ${domain} is not covered by a registered zone (${registered.join(", ") || "none"}) — add the zone under Domains first`,
       });
       return;
     }
