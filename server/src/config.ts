@@ -127,20 +127,33 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
   const bindMode = (env.BIND_MODE || "remote").toLowerCase();
   const npmMode = (env.NPM_MODE || "remote").toLowerCase();
-  // In "local" mode the compose stack bundles a BIND+sshd container and/or an
-  // nginx-proxy-manager container. Their compose service names are used as the
-  // default addresses (still overridable via the *_SSH_HOST / *_API_URL vars).
+  if (npmMode !== "local" && npmMode !== "remote") {
+    throw new Error('NPM_MODE must be "local" or "remote".');
+  }
+  if (bindMode !== "local" && bindMode !== "remote") {
+    throw new Error('BIND_MODE must be "local" or "remote".');
+  }
+  if (npmMode === "local" && bindMode !== "local") {
+    throw new Error(
+      "NPM_MODE=local requires BIND_MODE=local. Use NPM_MODE=remote with an external NPM instance when BIND_MODE=remote.",
+    );
+  }
+  // In "local" mode the compose stack bundles BIND+sshd and the complete
+  // NPM Edge component (NPM, MariaDB, and backup-ui). Their compose service
+  // names are used as the default addresses; remote mode always uses an
+  // operator-managed external endpoint.
   //
-  // NPM_INTERNAL_API_URL is the address the portal container itself uses; when
-  // NPM_MODE=local it points at the bundled NPM's compose service name, while
-  // NPM_API_URL (used by host-side scripts like npm-proxy-hosts.py) stays at
-  // http://localhost:81.
+  // NPM_INTERNAL_API_URL is the address the portal container itself uses. A
+  // local deployment deliberately prefers the bundled service over a stale
+  // remote NPM_API_URL from a previous deployment.
   const bindHost =
-    env.BIND_SSH_HOST || (bindMode === "local" ? "cerulean-bind" : "");
+    bindMode === "local"
+      ? env.BIND_LOCAL_SSH_HOST || "cerulean-bind"
+      : env.BIND_SSH_HOST || "";
   const npmApiUrl =
-    env.NPM_INTERNAL_API_URL ||
-    env.NPM_API_URL ||
-    (npmMode === "local" ? "http://cerulean-npm:81" : "");
+    npmMode === "local"
+      ? env.NPM_INTERNAL_API_URL || "http://cerulean-npm:81"
+      : env.NPM_API_URL || env.NPM_INTERNAL_API_URL || "";
 
   return {
     port: Number(env.CERULEAN_PORT || 3000),
