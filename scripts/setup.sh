@@ -55,9 +55,15 @@ fi
 #                    container (profile "bind"); nothing to configure here, the
 #                    container generates its TSIG key and root password on
 #                    first start (printed to its logs — copy into .env).
+#   BIND_MODE=local + NPM_MODE=local — start bundled BIND and the complete
+#                    NPM Edge component (NPM, MariaDB, and backup-ui).
 #   BIND_MODE=remote — generate + install the TSIG key on the remote BIND
 #                    server automatically when BIND_SSH_* is configured.
 BIND_MODE="$(env_get BIND_MODE remote)"
+NPM_MODE="$(env_get NPM_MODE remote)"
+if [ "$NPM_MODE" = "local" ] && [ "$BIND_MODE" != "local" ]; then
+  fail "NPM_MODE=local requires BIND_MODE=local; use NPM_MODE=remote with an external NPM instance for remote BIND"
+fi
 if [ "$BIND_MODE" = "local" ]; then
   log "BIND_MODE=local — bundled BIND container will serve the zones"
   log "Start it with: docker compose --profile bind up -d"
