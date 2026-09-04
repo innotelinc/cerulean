@@ -29,7 +29,14 @@ else
 fi
 
 # The portal host's LAN IP is used for allow-transfer (AXFR record listing).
-PORTAL_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+# Prefer the default-route source address — docker bridge gateways (172.x on
+# docker0/br-*) never own the default route, so this cannot pick a docker IP.
+PORTAL_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[0-9.]+' | grep -v '^127\.' | head -1 || true)"
+if [ -z "$PORTAL_IP" ]; then
+    # Fall back to a global-scope address that isn't on a docker/virtual iface.
+    PORTAL_IP="$(ip -4 addr show scope global 2>/dev/null | \
+        awk '/^[0-9]+: (docker|br-|veth|virbr|lo):/ { skip=1; next } /^[0-9]+: / { skip=0 } !skip && /inet / { print $2; exit }' | cut -d/ -f1 || true)"
+fi
 [ -n "$PORTAL_IP" ] || PORTAL_IP="$(env_get CERULEAN_PORTAL_IP 127.0.0.1)"
 log "allow-transfer will permit portal host IP: ${PORTAL_IP}"
 
