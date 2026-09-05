@@ -4,8 +4,11 @@ import { config } from "../config";
  * Minimal Authentik admin-API client used by tenant administration: members
  * of a tenant are the users of the matching Authentik group (tenant slug =
  * group slug), so listing them requires the Authentik admin API
- * (AUTHENTIK_API_URL + AUTHENTIK_ADMIN_USER/AUTHENTIK_ADMIN_PASSWORD in .env —
- * the same credentials scripts/authentik-setup.py uses).
+ * (AUTHENTIK_API_URL + AUTHENTIK_BOOTSTRAP_TOKEN in .env).
+ *
+ * Authentik 2024.12 removed the POST /api/v3/core/auth/admin/ endpoint, so
+ * all admin-API calls authenticate with the bootstrap API token as a Bearer
+ * token (same token scripts/authentik-setup.py uses).
  */
 
 export interface TenantMember {
@@ -24,8 +27,7 @@ export interface GroupMembersResult {
 export function adminConfigured(): boolean {
   return Boolean(
     config.authentikAdmin.apiUrl &&
-      config.authentikAdmin.user &&
-      config.authentikAdmin.password,
+      config.authentikAdmin.bootstrapToken,
   );
 }
 
@@ -35,28 +37,17 @@ async function adminToken(): Promise<string> {
   if (tokenCache && Date.now() < tokenCache.expires - 30_000) {
     return tokenCache.token;
   }
-  const url = `${config.authentikAdmin.apiUrl.replace(/\/$/, "")}/api/v3/core/auth/admin/`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      username: config.authentikAdmin.user,
-      password: config.authentikAdmin.password,
-    }),
-    signal: AbortSignal.timeout(20_000),
-  });
-  if (!res.ok) {
+  // The bootstrap API token authenticates directly as Bearer — no login round
+  // trip needed (the admin-login endpoint was removed in Authentik 2024.12).
+  const token = config.authentikAdmin.bootstrapToken;
+  if (!token) {
     throw new Error(
-      `Authentik admin login failed (HTTP ${res.status}) — check ` +
-        "AUTHENTIK_API_URL/AUTHENTIK_ADMIN_USER/AUTHENTIK_ADMIN_PASSWORD in .env",
+      "Authentik admin API not configured — check AUTHENTIK_API_URL/" +
+        "AUTHENTIK_BOOTSTRAP_TOKEN in .env",
     );
   }
-  const data = (await res.json()) as { token?: string };
-  if (!data.token) throw new Error("Authentik admin login returned no token");
-  // Authentik does not expire admin tokens via this endpoint; re-login every
-  // few minutes to stay safe with rotated credentials.
-  tokenCache = { token: data.token, expires: Date.now() + 5 * 60 * 1000 };
-  return data.token;
+  tokenCache = { token, expires: Date.now() + 5 * 60 * 1000 };
+  return token;
 }
 
 /**

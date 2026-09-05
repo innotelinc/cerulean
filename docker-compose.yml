@@ -80,6 +80,9 @@ services:
     restart: unless-stopped
     command: worker
     environment:
+      # The worker runs the bootstrap blueprint (system/bootstrap.yaml), so it
+      # needs the same bootstrap env as the server or akadmin is created with
+      # the default root@example.com email and no bootstrap token.
       AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:-}
       AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
       AUTHENTIK_POSTGRESQL__HOST: authentik-postgres
@@ -87,6 +90,9 @@ services:
       AUTHENTIK_POSTGRESQL__USER: authentik
       AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_POSTGRESQL_PASSWORD:-}
       AUTHENTIK_REDIS__HOST: authentik-redis
+      AUTHENTIK_BOOTSTRAP_TOKEN: ${AUTHENTIK_BOOTSTRAP_TOKEN:-}
+      AUTHENTIK_BOOTSTRAP_PASSWORD: ${AUTHENTIK_BOOTSTRAP_PASSWORD:-}
+      AUTHENTIK_BOOTSTRAP_EMAIL: ${AUTHENTIK_BOOTSTRAP_EMAIL:-admin@cerulean.innotel.us}
     volumes:
       - ./data/authentik/media:/media
       - ./data/authentik/custom-templates:/templates
