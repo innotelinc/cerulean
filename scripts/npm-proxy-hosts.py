@@ -37,33 +37,34 @@ import urllib.request
 #
 #   subdomain          upstream                 port   purpose
 #   ─────────────────  ───────────────────────  ─────  ─────────────────────────
-#   cerulean.<base>    http://<forward_host>    3000   Cerulean dashboard + API
-#   app.<base>         http://<forward_host>    3000   Cerulean application
-#   api.<base>         http://<forward_host>    3000   Cerulean REST API
+#   cerulean.<base>    http://<forward_host>    3003   Cerulean dashboard + API
+#   app.<base>         http://<forward_host>    3003   Cerulean application
+#   api.<base>         http://<forward_host>    3003   Cerulean REST API
 #   auth.<base>        http://<forward_host>    9000   Authentik (SSO / users)
-#   dns.<base>         http://<forward_host>    3000   DNS management
-#   certs.<base>       http://<forward_host>    3000   Certificate management
-#   admin.<base>       http://<forward_host>    3000   Administration
+#   secrets.<base>     http://<forward_host>    8383   Infisical (SecretOps)
+#   dns.<base>         http://<forward_host>    3003   DNS management
+#   certs.<base>       http://<forward_host>    3003   Certificate management
+#   admin.<base>       http://<forward_host>    3003   Administration
 # Add new services here (one dict per proxy). DNS-01 challenge validation
 # runs straight through BIND (nsupdate/TSIG), not through NPM.
 PROXY_HOSTS = [
     {
         "name": "cerulean",
-        "port": 3000,
+        "port": 3003,
         "scheme": "http",
         "websocket": True,
         "purpose": "Cerulean dashboard + REST API",
     },
     {
         "name": "app",
-        "port": 3000,
+        "port": 3003,
         "scheme": "http",
         "websocket": True,
         "purpose": "Cerulean application",
     },
     {
         "name": "api",
-        "port": 3000,
+        "port": 3003,
         "scheme": "http",
         "websocket": False,
         "purpose": "Cerulean REST API",
@@ -76,22 +77,29 @@ PROXY_HOSTS = [
         "purpose": "Authentik — SSO and user management",
     },
     {
+        "name": "secrets",
+        "port": 8383,
+        "scheme": "http",
+        "websocket": False,
+        "purpose": "Infisical — secrets management (SecretOps)",
+    },
+    {
         "name": "dns",
-        "port": 3000,
+        "port": 3003,
         "scheme": "http",
         "websocket": True,
         "purpose": "DNS management",
     },
     {
         "name": "certs",
-        "port": 3000,
+        "port": 3003,
         "scheme": "http",
         "websocket": True,
         "purpose": "Certificate management",
     },
     {
         "name": "admin",
-        "port": 3000,
+        "port": 3003,
         "scheme": "http",
         "websocket": True,
         "purpose": "Administration",
