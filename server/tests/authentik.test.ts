@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-// Admin credentials must be set before the config singleton loads (first
-// dynamic import below imports ../src/config transitively).
+// Admin API credentials must be set before the config singleton loads (first
+// dynamic import below imports ../src/config transitively). Authentik 2024.12
+// removed the admin-login endpoint, so the bootstrap token is used as a
+// Bearer token.
 process.env.AUTHENTIK_API_URL = "https://auth.example.test";
 process.env.AUTHENTIK_ADMIN_USER = "akadmin";
 process.env.AUTHENTIK_ADMIN_PASSWORD = "admin-secret";
+process.env.AUTHENTIK_BOOTSTRAP_TOKEN = "bootstrap-token-1";
 
 function jsonResponse(obj: unknown, status = 200): Response {
   return {
@@ -24,9 +27,6 @@ function installMockFetch() {
       const method = init?.method ?? "GET";
       const path = new URL(String(url)).pathname;
       requests.push({ method, path });
-      if (path === "/api/v3/core/auth/admin/" && method === "POST") {
-        return jsonResponse({ token: "admin-token-1" });
-      }
       if (path === "/api/v3/core/groups/acme/users/") {
         return jsonResponse({
           pagination: { count: 2 },
@@ -52,14 +52,18 @@ afterEach(() => {
 });
 
 describe("listGroupMembers", () => {
-  it("logs in with admin credentials and returns the group's users", async () => {
+  it("authenticates with the bootstrap token and returns the group's users", async () => {
     installMockFetch();
     const result = await listGroupMembers("acme");
     expect(result.groupExists).toBe(true);
     expect(result.users.map((u) => u.username)).toEqual(["alice", "bob"]);
     expect(result.users[0].email).toBe("alice@example.com");
+    const groupReq = requests.find(
+      (r) => r.path === "/api/v3/core/groups/acme/users/",
+    );
+    expect(groupReq).toBeTruthy();
     expect(requests.some((r) => r.path === "/api/v3/core/auth/admin/")).toBe(
-      true,
+      false,
     );
   });
 

@@ -21,10 +21,13 @@ export interface Config {
 
   // Admin API credentials (optional) used to inspect Authentik groups/users —
   // e.g. listing a tenant's members (a tenant is an Authentik group).
+  // Authentik 2024.12 removed the admin-login endpoint, so the bootstrap API
+  // token is used as a Bearer token (AUTHENTIK_BOOTSTRAP_TOKEN).
   authentikAdmin: {
     apiUrl: string;
     user: string;
     password: string;
+    bootstrapToken: string;
   };
 
   vault: {
@@ -179,6 +182,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       apiUrl: env.AUTHENTIK_API_URL || issuerUrl,
       user: env.AUTHENTIK_ADMIN_USER || "akadmin",
       password: env.AUTHENTIK_ADMIN_PASSWORD || "",
+      bootstrapToken: env.AUTHENTIK_BOOTSTRAP_TOKEN || "",
     },
 
     vault: {
