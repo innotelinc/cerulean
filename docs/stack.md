@@ -25,7 +25,7 @@ provides, and explicitly does not own.
 
 ## Provides
 
-- Trust services (certificates, DNS, PKI) to Monarch, Zeus, Oasis, Signara, ONYX, Magnate, and Capstone
+- Trust services (certificates, DNS, PKI) to Monarch, Zeus, Oasis, Signara, ONYX, Magnate, Capstone, and NPM Edge
 
 ## Consumes
 
