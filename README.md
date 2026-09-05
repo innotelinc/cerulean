@@ -2,9 +2,9 @@
 
 # 🔵 Cerulean
 
-**Certificate, DNS & trust management — self-hosted.**
+**Authentication, secrets & trust management — self-hosted.**
 
-*Point DNS at it once — never touch a zone file again.*
+*One login for the whole platform — DNS, certificates, secrets, and identity in one place.*
 
 [![CI](https://github.com/innotelinc/cerulean/actions/workflows/ci.yml/badge.svg)](https://github.com/innotelinc/cerulean/actions/workflows/ci.yml)
 [![Release](https://github.com/innotelinc/cerulean/actions/workflows/release.yml/badge.svg)](https://github.com/innotelinc/cerulean/actions/workflows/release.yml)
@@ -13,10 +13,11 @@
 
 </div>
 
-> **About Cerulean** — the self-hosted control plane for certificate lifecycles, DNS
-> automation, and device trust: Let's Encrypt issuance (regular + wildcard) written
-> straight into your own BIND server, live DNS record management, an internal PKI with
-> mTLS device enrollment, discovery and health scoring, a secret vault, Authentik SSO,
+> **About Cerulean** — the self-hosted **authentication & trust stack** for the Innotel
+> platform: **Authentik** (single sign-on — every platform login goes through Cerulean),
+> **Infisical** (secret management), certificate lifecycles and DNS automation written
+> straight into your own BIND server (regular + wildcard Let's Encrypt via DNS-01), an
+> internal PKI with mTLS device enrollment, discovery and health scoring, a secret vault,
 > and multi-tenant isolation — nginx proxy manager wired with zero clicks.
 > **Landing page:** [innotelinc.github.io/cerulean](https://innotelinc.github.io/cerulean)
 
@@ -42,6 +43,8 @@ zone is configurable.
 
 | | | |
 | --- | --- | --- |
+| 🪪 **Single sign-on (Authentik)** | One login for every platform — OIDC authorization-code + PKCE, passkeys (WebAuthn), groups/roles; all platform logins route through Cerulean. |
+| 🔑 **Secret management (Infisical)** | Central secret store for the whole stack; `.env` values may be `infisical://path#key` references; mirrors into the vault. |
 | 🔐 **ACME certificates** | Let's Encrypt, regular + **wildcard**, DNS-01 via your own BIND over `nsupdate` + TSIG. Auto-renewed 30 days before expiry. | 
 | 🌐 **Live DNS management** | Create/list/delete `A`, `AAAA`, `CNAME`, `TXT`, `MX`, `NS`, `SRV` records on zones you control, straight over SSH — routed to **the tenant's own DNS provider** when one is registered. |
 | 🛡 **Internal PKI** | Private root CA issuing **per-device TLS client certificates** (ECDSA P-256, `clientAuth`) — revoke instantly, re-issue freely. |
@@ -62,22 +65,28 @@ zone is configurable.
 # proxy manager proxy host (if NPM_* is configured in .env).
 ./scripts/setup.sh
 
-# Or with Authentik SSO provisioned automatically:
+# Or with the full auth & trust stack provisioned automatically
+# (Authentik SSO + Infisical secrets + Vault — set INFISICAL_ADMIN_PASSWORD
+# in .env to also import stack secrets into Infisical):
 ./scripts/setup.sh --with-authentik
 ```
 
-The dashboard is then at `http://<host>:3000` (or `https://cerulean.innotel.us`
+The portal is then at `http://<host>:3000` (or `https://cerulean.innotel.us`
 once the proxy host is provisioned and a certificate is attached). The generated
 admin password is printed at the end of setup (and stored in
-`CERULEAN_ADMIN_PASSWORD` in `.env`).
+`CERULEAN_ADMIN_PASSWORD` in `.env`). Authentik and Infisical are **the stack's
+auth & secrets layer** — every platform login and every secret reference
+routes through Cerulean.
 
-Optional compose profiles, each opt-in:
+Auth & trust compose profiles (each opt-in):
 
 ```bash
+docker compose --profile authentik up -d                     # Authentik SSO — one login for every platform
+docker compose -f docker-compose.yml -f compose.infisical.yml \
+             --profile infisical up -d                       # Infisical secret management
+docker compose --profile vault up -d                         # dev-mode HashiCorp Vault
+# Plus the existing edge profiles:
 docker compose --profile bind --profile npm up -d  # local BIND + bundled NPM Edge (BIND_MODE=local, NPM_MODE=local)
-docker compose --profile bind up -d                # bundled BIND only (BIND_MODE=local)
-docker compose --profile authentik up -d   # Authentik SSO + user management
-docker compose --profile vault up -d       # dev-mode HashiCorp Vault
 ```
 
 ## How it works

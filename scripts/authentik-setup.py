@@ -11,8 +11,12 @@ setup.sh.
 Required (in .env):
     AUTHENTIK_API_URL          Authentik instance, e.g. http://localhost:9000
                                (defaults to AUTHENTIK_ISSUER_URL)
+    AUTHENTIK_BOOTSTRAP_TOKEN  Authentik bootstrap API token (Bearer auth; the
+                               admin-login endpoint was removed in Authentik
+                               2024.12, so provisioning uses the bootstrap
+                               token instead of AUTHENTIK_ADMIN_PASSWORD)
     AUTHENTIK_ADMIN_USER       Authentik admin username (default: akadmin)
-    AUTHENTIK_ADMIN_PASSWORD   Authentik admin password
+    AUTHENTIK_ADMIN_PASSWORD   Authentik admin password (kept for docs)
     AUTHENTIK_CLIENT_ID        desired OIDC client id (default: cerulean)
     AUTHENTIK_CLIENT_SECRET    OIDC client secret (generate one)
     AUTHENTIK_REDIRECT_URI     Cerulean's OIDC callback URL
@@ -123,6 +127,7 @@ def main():
     api_url = env("AUTHENTIK_API_URL", issuer).rstrip("/")
     admin_user = env("AUTHENTIK_ADMIN_USER", "akadmin")
     admin_password = env("AUTHENTIK_ADMIN_PASSWORD")
+    bootstrap_token = env("AUTHENTIK_BOOTSTRAP_TOKEN")
     client_id = env("AUTHENTIK_CLIENT_ID", "cerulean")
     client_secret = env("AUTHENTIK_CLIENT_SECRET")
     redirect_uri = env("AUTHENTIK_REDIRECT_URI")
@@ -130,7 +135,7 @@ def main():
 
     missing = [k for k, v in [
         ("AUTHENTIK_ISSUER_URL", api_url),
-        ("AUTHENTIK_ADMIN_PASSWORD", admin_password),
+        ("AUTHENTIK_BOOTSTRAP_TOKEN", bootstrap_token),
         ("AUTHENTIK_CLIENT_SECRET", client_secret),
         ("AUTHENTIK_REDIRECT_URI", redirect_uri),
     ] if not v]
@@ -141,11 +146,12 @@ def main():
     print(f"Authentik: {api_url}")
     print(f"Client: {client_id}   Redirect URI: {redirect_uri}")
 
-    token = login(api_url, admin_user, admin_password)
-    ak = Authentik(api_url, token)
+    # Authentik 2024.12 removed the POST /api/v3/core/auth/admin/ endpoint, so
+    # authenticate with the bootstrap API token instead of an admin password.
+    ak = Authentik(api_url, bootstrap_token)
 
     # Authorization flow used by the provider (built-in "implicit consent" flow).
-    flows = ak.list("/flows/authorization/?ordering=-pk")
+    flows = ak.list("/flows/instances/?ordering=-pk")
     auth_flow = next(
         (f for f in flows if f.get("slug") == "default-provider-authorization-implicit-consent"),
         flows[0] if flows else None,
@@ -155,16 +161,26 @@ def main():
         return 1
     auth_flow_pk = auth_flow["pk"]
 
+    # Invalidation flow is required in Authentik 2024.12.
+    invalidation_flow = next(
+        (f for f in ak.list("/flows/instances/?slug=default-provider-invalidation-flow") if f.get("slug")),
+        None,
+    )
+    if not invalidation_flow:
+        print("No default-provider-invalidation-flow found in Authentik.", file=sys.stderr)
+        return 1
+
     # Find the existing provider (by client_id) or create it.
     providers = ak.list(f"/providers/oauth2/?client_id={urllib.parse.quote(client_id)}")
     provider = providers[0] if providers else None
     provider_body = {
         "name": "Cerulean",
         "authorization_flow": auth_flow_pk,
+        "invalidation_flow": invalidation_flow["pk"],
         "client_type": "confidential",
         "client_id": client_id,
         "client_secret": client_secret,
-        "redirect_uris": [redirect_uri],
+        "redirect_uris": [{"matching_mode": "strict", "url": redirect_uri}],
         "sub_mode": "hashed_user_id",
         "issuer_mode": "global",
         "include_claims_in_id_token": True,
@@ -178,11 +194,11 @@ def main():
         provider_pk = created["pk"]
         print(f"  ✓ created OIDC provider (pk {provider_pk})")
 
-    # Ensure the application is bound to the provider.
+    # Ensure the application is bound to the provider (URL key is the slug).
     apps = ak.list(f"/core/applications/?slug={urllib.parse.quote(app_slug)}")
     app_body = {"name": "Cerulean", "slug": app_slug, "provider": provider_pk}
     if apps:
-        ak.update(f"/core/applications/{apps[0]['pk']}/", app_body)
+        ak.update(f"/core/applications/{app_slug}/", app_body)
         print(f"  ✓ updated application '{app_slug}'")
     else:
         ak.create("/core/applications/", app_body)
