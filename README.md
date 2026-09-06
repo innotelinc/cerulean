@@ -354,6 +354,11 @@ docker compose --profile authentik up -d
 ./scripts/setup.sh --with-authentik   # generates client secret + provisions the provider
 ```
 
+The bundled image is `ghcr.io/goauthentik/server:${AUTHENTIK_IMAGE_TAG:-2026.8.1}`
+(server + worker share the same tag). Set `AUTHENTIK_IMAGE_TAG` in `.env` to
+pin a different release; the provisioning scripts were validated against the
+2024.12+ admin-API and bootstrap flows and continue to work on 2026.8.
+
 The OIDC provider and application are created automatically by
 `scripts/authentik-setup.py` (it logs in with `AUTHENTIK_ADMIN_USER` /
 `AUTHENTIK_ADMIN_PASSWORD`). On the very first boot, create the Authentik admin
