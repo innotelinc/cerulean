@@ -42,7 +42,7 @@ services:
   # (AUTHENTIK_ISSUER_URL / AUTHENTIK_CLIENT_ID / AUTHENTIK_CLIENT_SECRET).
   # Reach it at http://<host>:9000, or through the auth.<base> proxy host.
   authentik-server:
-    image: ghcr.io/goauthentik/server:${AUTHENTIK_IMAGE_TAG:-2024.12.2}
+    image: ghcr.io/goauthentik/server:${AUTHENTIK_IMAGE_TAG:-2026.8.1}
     container_name: cerulean-authentik
     profiles: ["authentik"]
     restart: unless-stopped
@@ -74,7 +74,7 @@ services:
         condition: service_healthy
 
   authentik-worker:
-    image: ghcr.io/goauthentik/server:${AUTHENTIK_IMAGE_TAG:-2024.12.2}
+    image: ghcr.io/goauthentik/server:${AUTHENTIK_IMAGE_TAG:-2026.8.1}
     container_name: cerulean-authentik-worker
     profiles: ["authentik"]
     restart: unless-stopped
