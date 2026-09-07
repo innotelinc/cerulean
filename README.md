@@ -13,6 +13,18 @@
 
 </div>
 
+---
+
+## Why Cerulean
+
+| Problem | Cerulean answer |
+| --- | --- |
+| Identity, secrets, and trust scattered across platforms | One stack: Authentik SSO + Infisical secrets + Cerulean DNS/TLS/PKI, all in one place |
+| Every platform running its own login | Cerulean Authentik is the single identity source; disable a user and they lose every platform |
+| Per-platform TLS lifecycle | Cerulean issues ACME certificates + DNS records; NPM Edge fronts public hosts only |
+| Secrets committed to .env or repos | Infisical is the only secrets store; .env is derived and gitignored |
+| Recovery after a host loss is manual | Cerulean stores DNS + PKI + secrets; re-provision a host and the trust plane is recoverable |
+
 > **About Cerulean** — the self-hosted **authentication & trust stack** for the Innotel
 > platform: **Authentik** (single sign-on — every platform login goes through Cerulean),
 > **Infisical** (secret management), certificate lifecycles and DNS automation written
