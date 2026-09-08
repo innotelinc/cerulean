@@ -8,6 +8,9 @@ services:
     build: .
     container_name: cerulean
     restart: unless-stopped
+    # Memory posture (docs/service-audit.md): DNS/cert control plane; light.
+    mem_limit: 768m
+    memswap_limit: 768m
     env_file: .env
     ports:
       - "${CERULEAN_PORT:-3000}:${CERULEAN_PORT:-3000}"
@@ -42,6 +45,10 @@ services:
   # (AUTHENTIK_ISSUER_URL / AUTHENTIK_CLIENT_ID / AUTHENTIK_CLIENT_SECRET).
   # Reach it at http://<host>:9000, or through the auth.<base> proxy host.
   authentik-server:
+    # Memory posture (docs/service-audit.md): shared identity plane for the
+    # whole portfolio — cap generously (measured ~620 MiB) but bounded.
+    mem_limit: 1500m
+    memswap_limit: 1500m
     image: ghcr.io/goauthentik/server:${AUTHENTIK_IMAGE_TAG:-2026.8.1}
     container_name: cerulean-authentik
     profiles: ["authentik"]
@@ -135,6 +142,9 @@ services:
   # mode (ephemeral, single unsealed node) for a self-hosted stack — for
   # anything beyond testing, point VAULT_ADDR at a real Vault instead.
   vault:
+    # Memory posture: secrets store is tiny; cap for safety.
+    mem_limit: 512m
+    memswap_limit: 512m
     image: hashicorp/vault:${VAULT_IMAGE_TAG:-1.17}
     container_name: cerulean-vault
     profiles: ["vault"]
