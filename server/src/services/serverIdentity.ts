@@ -46,6 +46,16 @@ export function currentIdentity(): ServerIdentity {
   };
 }
 
+/** Parse a certificate's SAN list stored as JSON; never throws. */
+function parseDomains(raw: string | null | undefined): string[] {
+  try {
+    const parsed = JSON.parse(raw || "[]") as unknown;
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
 export function ensureIdentity(): ServerIdentity {
   const row = db.getServerIdentity();
   let sid = row?.server_id || config.server.id;
@@ -112,11 +122,16 @@ export async function ensureWildcardPki(): Promise<{ certId: number; domain: str
   const id = ensureIdentity();
   const apex = id.apex; // e.g. srv-abc1234.lab.innotel.us
   const wildcardName = `*.${apex}`;
-  // Reuse existing pki wildcard if still valid > 7 days
+  // Reuse existing pki wildcard if still valid > 7 days AND its SANs cover
+  // the current apex — the identity can change after a cert was minted (e.g.
+  // lab_domain edits), and a stale wildcard must be re-issued rather than kept.
   const existing = id.wildcardCertId ? db.getCertificate(id.wildcardCertId) : undefined;
   if (existing && existing.certificate && existing.expires_at) {
     const daysLeft = (new Date(existing.expires_at).getTime() - Date.now()) / 86400000;
-    if (daysLeft > 7) return { certId: existing.id, domain: apex };
+    const coversApex = parseDomains(existing.domains_json).some(
+      (d) => d === apex || d === `*.${apex}`,
+    );
+    if (daysLeft > 7 && coversApex) return { certId: existing.id, domain: apex };
   }
 
   // Issue a 30-day wildcard from internal PKI. We issue it as a client-style cert

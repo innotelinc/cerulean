@@ -11,6 +11,12 @@ services:
     mem_limit: 768m
     memswap_limit: 768m
     env_file: .env
+    # Technitium runs on the host network (port 53/67/5380), so the app
+    # reaches it via the host gateway rather than 127.0.0.1 (which would be
+    # the app container itself). TECHNITIUM_URL should be
+    # http://host.docker.internal:5380.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "${CERULEAN_PORT:-3000}:${CERULEAN_PORT:-3000}"
     volumes:
@@ -37,7 +43,9 @@ services:
     restart: unless-stopped
     # Host networking: Technitium binds :53 (DNS), :67 (DHCP broadcasts), and
     # :5380 (console) directly on the host — required for DHCP to hear client
-    # broadcasts. Cerulean reaches it at http://127.0.0.1:5380.
+    # broadcasts. The cerulean app reaches it through the host gateway at
+    # http://host.docker.internal:5380 (never 127.0.0.1 — that would be the
+    # app container itself).
     # (Requires port 53 to be free on the host: scripts/setup.sh disables
     # systemd-resolved's stub listener automatically.)
     network_mode: host
@@ -57,8 +65,11 @@ services:
       DNS_SERVER_FORWARDER_PROTOCOL: "${DNS_SERVER_FORWARDER_PROTOCOL:-Udp}"
     volumes:
       - ./data/technitium:/etc/dns
+    # The image ships no wget/curl/nc, so probe the web console over bash's
+    # /dev/tcp instead of an HTTP client. GET / answers 200 once the server
+    # is listening.
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5380/api/user/login 2>&1 | grep -q status || exit 1"]
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/5380 && printf 'GET / HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && grep -qi '^HTTP/1\\.[01] 200' <&3"]
       interval: 15s
       timeout: 5s
       retries: 10
@@ -68,7 +79,7 @@ services:
   authentik-server:
     mem_limit: 1500m
     memswap_limit: 1500m
-    image: ghcr.io/goauthentik/server:${AUTHENTIK_IMAGE_TAG:-2026.8.1}
+    image: ghcr.io/goauthentik/server:${AUTHENTIK_IMAGE_TAG:-2026.8.2}
     container_name: cerulean-authentik
     profiles: ["authentik"]
     restart: unless-stopped
@@ -98,7 +109,7 @@ services:
         condition: service_healthy
 
   authentik-worker:
-    image: ghcr.io/goauthentik/server:${AUTHENTIK_IMAGE_TAG:-2026.8.1}
+    image: ghcr.io/goauthentik/server:${AUTHENTIK_IMAGE_TAG:-2026.8.2}
     container_name: cerulean-authentik-worker
     profiles: ["authentik"]
     restart: unless-stopped

@@ -173,7 +173,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     env.TECHNITIUM_URL ||
     env.TECHNITIUM_API_URL ||
     env.DNS_URL ||
-    "http://cerulean-technitium:5380";
+    // Technitium is host-networked (port 53/67/5380), so the app reaches it
+    // through the host gateway; the compose file maps host.docker.internal
+    // for this. 127.0.0.1 here would be the app container itself.
+    "http://host.docker.internal:5380";
 
   const npmApiUrl =
     npmMode === "local"

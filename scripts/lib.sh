@@ -42,7 +42,9 @@ env_load() {
   CERULEAN_SERVER_ID="$(env_get CERULEAN_SERVER_ID)"
   CERULEAN_LAB_DOMAIN="$(env_get CERULEAN_LAB_DOMAIN lab.innotel.us)"
   # Technitium
-  TECHNITIUM_URL="$(env_get TECHNITIUM_URL http://cerulean-technitium:5380)"
+  # Technitium is host-networked, so the default is the host gateway
+  # (mapped in docker-compose.yml as host.docker.internal), never 127.0.0.1.
+  TECHNITIUM_URL="$(env_get TECHNITIUM_URL http://host.docker.internal:5380)"
   TECHNITIUM_TOKEN="$(env_get TECHNITIUM_TOKEN)"
   TECHNITIUM_PASSWORD="$(env_get TECHNITIUM_PASSWORD)"
   CERULEAN_ZONE="$(env_get CERULEAN_ZONE)"
