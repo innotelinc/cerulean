@@ -226,6 +226,47 @@ export interface BlockingStatus {
   detail: string;
 }
 
+export interface CrsStatus {
+  homeUrl: string;
+  masterUrl: string;
+  desiredRole: "auto" | "master" | "slave";
+  resolvedRole: "master" | "slave" | "isolated-master" | "offline-slave";
+  domain: string;
+  isMaster: boolean;
+  isSlave: boolean;
+  isAirGapped: boolean;
+  lastSyncAt: string | null;
+  lastSyncStatus: string | null;
+  reachable: boolean | null;
+  registryCount: number;
+  localCount: number;
+  error: string | null;
+}
+
+export interface CrsRegistryEntry {
+  serverId: string;
+  labDomain: string;
+  apex: string;
+  wildcard: string;
+  role: string;
+  source: string;
+  firstSeen: string;
+  lastSeen: string;
+  metadata: Record<string, unknown> | null;
+}
+
+export interface ServiceApiKey {
+  id: number;
+  name: string;
+  prefix: string;
+  scopes: string[];
+  tenantId: number | null;
+  createdAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+  token?: string;
+}
+
 export interface OrchestratorStatus {
   server: { serverId: string; labDomain: string; apex: string; wildcard: string; registered: boolean; wildcardCertId: number | null };
   technitium: { reachable: boolean; detail: string; url: string };

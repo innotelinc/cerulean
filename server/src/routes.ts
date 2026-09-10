@@ -33,6 +33,8 @@ import * as enrollment from "./services/enrollment";
 import * as dhcp from "./services/dhcp";
 import * as blocking from "./services/blocking";
 import * as serverIdentity from "./services/serverIdentity";
+import * as crs from "./services/crs";
+import * as serviceAuth from "./services/serviceAuth";
 import {
   createTenant,
   isPlatform,
@@ -1334,6 +1336,313 @@ router.post(
     res.json({ ok: true, written });
   }),
 );
+
+// ── Central Registration Server (CRS) ────────────────────────────────────
+// GET /api/crs/status — public; used by slaves to probe master reachability.
+// No auth required so an offline/air-gapped node can be probed.
+router.get("/crs/status", (_req, res) => {
+  try {
+    // Resolve role lazily if not yet resolved
+    const status = crs.crsStatus();
+    const ident = (() => { try { return serverIdentity.currentIdentity(); } catch { return null; } })();
+    res.json({ ...status, identity: ident });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// POST /api/crs/register — master assigns/honors a serverId. Guarded by
+// CRS shared secret (CRS_TOKEN) when set, or by a service key with crs:* scope.
+router.post(
+  "/crs/register",
+  serviceAuth.crsMasterAuth,
+  asyncHandler(async (req, res) => {
+    const role = crs.getResolvedRole();
+    // If we are not a master (including isolated-master which still accepts writes),
+    // reject — slaves should not be registering peers.
+    const status = crs.crsStatus();
+    if (!status.isMaster) {
+      res.status(409).json({ error: `This node is not a CRS master (resolvedRole=${status.resolvedRole}) — register to ${status.masterUrl} instead`, masterUrl: status.masterUrl });
+      return;
+    }
+    const payload = (req.body || {}) as crs.RegistrationPayload & { server_id?: string; lab_domain?: string };
+    // normalize snake_case aliases
+    if (!payload.serverId && payload.server_id) payload.serverId = String(payload.server_id);
+    if (!payload.labDomain && (payload as unknown as { lab_domain?: string }).lab_domain) payload.labDomain = String((payload as unknown as { lab_domain: string }).lab_domain);
+    if (!payload.serverId && !payload.labDomain && !payload.apex) {
+      // allow empty -> master will mint
+    }
+    try {
+      const result = crs.handleRegistrationRequest(payload);
+      res.status(payload.serverId ? 200 : 201).json(result);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const statusCode = (err as { status?: number }).status || 400;
+      res.status(statusCode).json({ error: msg });
+    }
+  }),
+);
+
+// GET /api/crs/registry — list authoritative registry (master) / replica (slave)
+// Guarded same as register; slaves use this to pull full replica.
+router.get(
+  "/crs/registry",
+  serviceAuth.crsMasterAuth,
+  (_req, res) => {
+    const entries = crs.getRegistry();
+    res.json({ entries, count: entries.length, status: crs.crsStatus() });
+  },
+);
+
+router.get(
+  "/crs/registry/:serverId",
+  serviceAuth.crsMasterAuth,
+  (req, res) => {
+    const sid = String(req.params.serverId || "").trim().toLowerCase();
+    const entry = sid ? crs.getRegistryEntry(sid) : undefined;
+    if (!entry) { res.status(404).json({ error: `serverId "${sid}" not found in CRS registry` }); return; }
+    res.json(entry);
+  },
+);
+
+// POST /api/crs/sync — slave pulls from master now (admin-triggered)
+router.post(
+  "/crs/sync",
+  requireAuth,
+  asyncHandler(async (_req, res) => {
+    const before = crs.crsStatus();
+    await crs.resolveCrsRole(true).catch(() => undefined);
+    const pulled = await crs.syncRegistryFromMaster();
+    const after = crs.crsStatus();
+    res.json({ ok: true, pulled: pulled.pulled, detail: pulled.detail, before, after });
+  }),
+);
+
+// POST /api/crs/register-self — slave registers *this* node to its master now
+router.post(
+  "/crs/register-self",
+  requireAuth,
+  asyncHandler(async (_req, res) => {
+    const result = await crs.registerToMaster();
+    res.json({ ok: true, ...result, status: crs.crsStatus() });
+  }),
+);
+
+// GET /api/crs/resolve — force re-resolve role (probe master)
+router.post(
+  "/crs/resolve",
+  requireAuth,
+  asyncHandler(async (_req, res) => {
+    const resolved = await crs.resolveCrsRole(true);
+    res.json({ resolvedRole: resolved, status: crs.crsStatus() });
+  }),
+);
+
+// ── Service API keys — cross-stack access (platform admins manage keys) ───
+const platformGuard = [requireAuth, resolveTenant] as unknown as import("express").RequestHandler[];
+function requirePlatform(_req: import("express").Request, res: import("express").Response, next: import("express").NextFunction) {
+  if (!isPlatform(res)) { res.status(403).json({ error: "Platform admin required" }); return; }
+  next();
+}
+
+router.get("/service/keys", ...platformGuard, requirePlatform, (_req, res) => {
+  res.json(db.listServiceKeys().map(serviceAuth.serviceKeyToJson));
+});
+
+router.post("/service/keys", ...platformGuard, requirePlatform, (req, res) => {
+  const name = String(req.body?.name || "").trim();
+  if (!name || name.length > 80) { res.status(400).json({ error: "name (1-80 chars) is required" }); return; }
+  const rawScopes = req.body?.scopes;
+  let scopes: string[] = [];
+  if (Array.isArray(rawScopes)) scopes = rawScopes.map(String).map((s) => s.trim().toLowerCase()).filter(Boolean);
+  else if (typeof rawScopes === "string") scopes = rawScopes.split(",").map((s: string) => s.trim().toLowerCase()).filter(Boolean);
+  if (scopes.length === 0) scopes = ["*"];
+  // Validate scopes
+  const allowedPrefixes = new Set(["*", "crs", "dns", "certs", "domains", "dhcp", "blocking", "pki", "npm", "status", "tenant"]);
+  for (const sc of scopes) {
+    const prefix = sc.split(":")[0];
+    if (!allowedPrefixes.has(prefix) && sc !== "*") {
+      res.status(400).json({ error: `Unknown scope "${sc}" — allowed: ${[...allowedPrefixes].join(", ")} (e.g. "dns:*", "certs:write", "*")` });
+      return;
+    }
+  }
+  const tenantId = req.body?.tenantId !== undefined && req.body?.tenantId !== null ? Number(req.body.tenantId) : (req.body?.tenant_id !== undefined ? Number(req.body.tenant_id) : null);
+  if (tenantId !== null && !Number.isInteger(tenantId)) { res.status(400).json({ error: "tenantId must be an integer or null" }); return; }
+  const token = serviceAuth.generateServiceToken();
+  const hash = serviceAuth.hashServiceToken(token);
+  const prefix = serviceAuth.prefixOfServiceToken(token);
+  const row = db.createServiceKey({ name, prefix, hash, scopes, tenantId });
+  db.addActivity("service-key-create", `Created service API key "${name}" (${scopes.join(", ")} ${prefix}…)`);
+  // Return token once — never stored in clear again
+  res.status(201).json({ ...serviceAuth.serviceKeyToJson(row), token });
+});
+
+router.delete("/service/keys/:id", ...platformGuard, requirePlatform, (req, res) => {
+  const id = Number(req.params.id);
+  const row = db.getServiceKey(id);
+  if (!row) { res.status(404).json({ error: "Service key not found" }); return; }
+  db.deleteServiceKey(id);
+  db.addActivity("service-key-delete", `Deleted service API key "${row.name}" (${row.prefix}…)`);
+  res.json({ ok: true });
+});
+
+router.post("/service/keys/:id/revoke", ...platformGuard, requirePlatform, (req, res) => {
+  const id = Number(req.params.id);
+  const row = db.getServiceKey(id);
+  if (!row) { res.status(404).json({ error: "Service key not found" }); return; }
+  if (row.revoked_at) { res.status(409).json({ error: "Already revoked" }); return; }
+  db.revokeServiceKey(id);
+  res.json(serviceAuth.serviceKeyToJson(db.getServiceKey(id)!));
+});
+
+// ── Service-bridge API — other stacks → Cerulean (Bearer ceru_...)
+// These mirror the session-authenticated Cerulean APIs but are reachable with
+// a service API key. Mounted here instead of a sub-router to keep auth explicit.
+// Scopes: "*" allows everything; otherwise prefix matching (e.g. "certs:*" covers
+// "certs:read" and "certs:write").
+
+function serviceBridgeAuth(scopes: string[]) {
+  return serviceAuth.requireServiceAuth(scopes);
+}
+
+// Resolve tenant for service keys: if the key has a tenantId, that wins; otherwise
+// fall back to X-Cerulean-Tenant header or default tenant.
+function serviceTenantId(req: import("express").Request): number {
+  const sk = (req as unknown as { serviceKey?: import("./db").ServiceApiKeyRow }).serviceKey;
+  if (sk?.tenant_id) return sk.tenant_id;
+  const header = String(req.headers["x-cerulean-tenant"] || "").trim();
+  if (header) {
+    const t = db.getTenantBySlug(header);
+    if (t) return t.id;
+  }
+  return 1;
+}
+
+// Public service status: minimal, no tenant scope needed
+router.get("/service/status", serviceBridgeAuth(["status", "*"]), (_req, res) => {
+  const ident = serverIdentity.currentIdentity();
+  res.json({ ok: true, server: ident, crs: crs.crsStatus(), at: new Date().toISOString() });
+});
+
+router.get("/service/crs/status", serviceBridgeAuth(["crs", "crs:read", "crs:*", "*"]), (_req, res) => {
+  res.json({ ...crs.crsStatus(), entries: crs.getRegistry().slice(0, 100) });
+});
+
+router.post("/service/crs/register", serviceBridgeAuth(["crs", "crs:register", "crs:*", "*"]), asyncHandler(async (req, res) => {
+  const status = crs.crsStatus();
+  if (!status.isMaster) { res.status(409).json({ error: `Not a CRS master (role=${status.resolvedRole})`, crsStatus: status }); return; }
+  const payload = (req.body || {}) as crs.RegistrationPayload;
+  const result = crs.handleRegistrationRequest(payload);
+  res.status(201).json(result);
+}));
+
+router.get("/service/crs/registry", serviceBridgeAuth(["crs", "crs:read", "crs:*", "*"]), (_req, res) => {
+  res.json({ entries: crs.getRegistry(), count: crs.getRegistry().length });
+});
+
+router.get("/service/domains", serviceBridgeAuth(["domains", "domains:read", "dns", "dns:read", "*"]), (req, res) => {
+  res.json(db.listDomains(serviceTenantId(req)));
+});
+
+router.post("/service/domains", serviceBridgeAuth(["domains:write", "domains", "dns:write", "dns", "*"]), asyncHandler(async (req, res) => {
+  const name = String(req.body?.name || "").trim().toLowerCase().replace(/\.$/, "");
+  if (!/^[a-z0-9.-]+$/.test(name) || !name.includes(".")) { res.status(400).json({ error: "Invalid domain name" }); return; }
+  const tenantId = serviceTenantId(req);
+  if (db.getDomainByName(name, tenantId)) { res.status(409).json({ error: `Domain ${name} already registered` }); return; }
+  const conn = providerConnectionForTenant(tenantId) as unknown as Record<string, unknown> | null;
+  try { await technitium.ensureZone(name, (conn ?? undefined) as never); } catch (err) { db.addActivity("dns-zone-error", `Technitium ensure zone ${name} failed (service)`, err instanceof Error ? err.message : String(err)); }
+  const domain = db.createDomain({ name, tenantId });
+  db.addActivity("domain-create", `[service] Registered zone ${name}`);
+  res.status(201).json(domain);
+}));
+
+router.get("/service/certificates", serviceBridgeAuth(["certs", "certs:read", "*"]), (req, res) => {
+  res.json(db.listCertificates(serviceTenantId(req)).map(certToJson));
+});
+
+router.post("/service/certificates", serviceBridgeAuth(["certs:write", "certs", "*"]), asyncHandler(async (req, res) => {
+  const ident = serverIdentity.currentIdentity();
+  const rawDomain = String(req.body?.domain || "").trim().toLowerCase().replace(/\.$/, "");
+  const domain = rawDomain || ident.apex;
+  let wildcard = Boolean(req.body?.wildcard);
+  const isDefaultWildcard = !rawDomain;
+  if (isDefaultWildcard) wildcard = true;
+  const name = String(req.body?.name || "").trim() || `${wildcard ? "*." : ""}${domain}`;
+  if (!/^[a-z0-9.-]+$/.test(domain) || !domain.includes(".")) { res.status(400).json({ error: "Invalid domain name" }); return; }
+  const tenantId = serviceTenantId(req);
+  const registered = db.listDomains(tenantId).map((d) => d.name);
+  if (isDefaultWildcard && !registered.includes(domain)) {
+    try { const conn = providerConnectionForTenant(tenantId) as unknown as Record<string, unknown> | null; await technitium.ensureZone(domain, (conn ?? undefined) as never); db.createDomain({ name: domain, tenantId }); } catch {}
+  }
+  const covered = registered.includes(domain) || registered.some((z) => domain === z || domain.endsWith(`.${z}`)) || isDefaultWildcard;
+  if (!covered) { res.status(400).json({ error: `Domain ${domain} not covered by a registered zone` }); return; }
+  const cert = db.createCertificate({ name, domain, wildcard, tenantId, source: isDefaultWildcard ? "pki" : undefined });
+  if (isDefaultWildcard) {
+    try { const pkiRes = await serverIdentity.ensureWildcardPki(); if (pkiRes && pkiRes.certId === cert.id) { res.status(201).json(certToJson(db.getCertificate(cert.id, tenantId)!)); return; } } catch {}
+  }
+  runIssueJob(cert.id).catch(() => undefined);
+  res.status(202).json(certToJson(db.getCertificate(cert.id, tenantId)!));
+}));
+
+router.get("/service/certificates/:id", serviceBridgeAuth(["certs", "certs:read", "*"]), (req, res) => {
+  const cert = db.getCertificate(Number(req.params.id), serviceTenantId(req));
+  if (!cert) { res.status(404).json({ error: "Certificate not found" }); return; }
+  res.json(certToJson(cert));
+});
+
+router.get("/service/certificates/:id/material", serviceBridgeAuth(["certs", "certs:read", "*"]), (req, res) => {
+  const cert = db.getCertificate(Number(req.params.id), serviceTenantId(req));
+  if (!cert) { res.status(404).json({ error: "Certificate not found" }); return; }
+  if (!cert.certificate || !cert.key) { res.status(409).json({ error: "Certificate material not available yet" }); return; }
+  res.json({ certificate: cert.certificate, key: cert.key });
+});
+
+router.get("/service/dns/records", serviceBridgeAuth(["dns", "dns:read", "domains", "*"]), asyncHandler(async (req, res) => {
+  const zone = String(req.query.zone || "").trim().toLowerCase().replace(/\.$/, "");
+  if (!zone) { res.status(400).json({ error: "?zone= is required" }); return; }
+  const tenantId = serviceTenantId(req);
+  const conn = providerConnectionForTenant(tenantId) as unknown as Record<string, unknown> | null;
+  const records = await technitium.listZone(zone, (conn ?? undefined) as never);
+  res.json(records);
+}));
+
+router.post("/service/dns/records", serviceBridgeAuth(["dns:write", "dns", "*"]), asyncHandler(async (req, res) => {
+  const { zone, type, name, value, ttl, priority } = req.body || {};
+  const z = String(zone || "").trim().toLowerCase().replace(/\.$/, "");
+  const rt = String(type || "").toUpperCase();
+  if (!z || !rt || !name || !value) { res.status(400).json({ error: "zone, type, name, value are required" }); return; }
+  const tenantId = serviceTenantId(req);
+  const conn = providerConnectionForTenant(tenantId) as unknown as Record<string, unknown> | null;
+  await technitium.addRecord({ zone: z, type: rt as technitium.RecordType, name: String(name), value: String(value), ttl: Number(ttl || 300), priority: priority !== undefined ? Number(priority) : undefined }, (conn ?? undefined) as never);
+  db.addActivity("record-add", `[service] Added ${rt} ${name}.${z} → ${value} via Technitium`);
+  res.status(201).json({ ok: true });
+}));
+
+router.delete("/service/dns/records", serviceBridgeAuth(["dns:write", "dns", "*"]), asyncHandler(async (req, res) => {
+  const { zone, type, name, value } = req.body || {};
+  const z = String(zone || "").trim().toLowerCase().replace(/\.$/, "");
+  const rt = String(type || "").toUpperCase();
+  if (!z || !rt || !name) { res.status(400).json({ error: "zone, type, name are required" }); return; }
+  const tenantId = serviceTenantId(req);
+  const conn = providerConnectionForTenant(tenantId) as unknown as Record<string, unknown> | null;
+  await technitium.deleteRecord({ zone: z, type: rt, name: String(name), value: value !== undefined ? String(value) : undefined }, (conn ?? undefined) as never);
+  db.addActivity("record-delete", `[service] Removed ${rt} ${name}.${z} via Technitium`);
+  res.json({ ok: true });
+}));
+
+router.get("/service/dhcp/scopes", serviceBridgeAuth(["dhcp", "dhcp:read", "*"]), asyncHandler(async (_req, res) => { res.json(await dhcp.listScopes()); }));
+router.get("/service/dhcp/leases", serviceBridgeAuth(["dhcp", "dhcp:read", "*"]), asyncHandler(async (_req, res) => { res.json(await dhcp.listLeases()); }));
+router.get("/service/blocking/status", serviceBridgeAuth(["blocking", "blocking:read", "*"]), asyncHandler(async (_req, res) => { res.json(await blocking.getStatus()); }));
+
+router.get("/service/pki/status", serviceBridgeAuth(["pki", "pki:read", "*"]), (req, res) => {
+  res.json(pki.pkiStatus(serviceTenantId(req)));
+});
+
+router.post("/service/pki/certificates", serviceBridgeAuth(["pki:write", "pki", "*"]), asyncHandler(async (req, res) => {
+  const tenantId = serviceTenantId(req);
+  const row = await pki.issueClientCertificate({ name: String(req.body?.name || ""), email: req.body?.email ? String(req.body.email) : undefined, validityDays: req.body?.validity_days !== undefined ? Number(req.body.validity_days) : undefined }, tenantId);
+  res.status(201).json(row);
+}));
 
 // ── Maintenance ─────────────────────────────────────────────────────────
 router.post(

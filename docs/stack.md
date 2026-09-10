@@ -29,7 +29,7 @@ the canonical single-responsibility architecture.
 - Authentik — identity, SSO, organizations
 - Infisical — secrets, TLS private keys, CA keys
 - Technitium DNS Server — DNS, DHCP, blocking backend (bundled via `technitium/dns-server`, or remote via `TECHNITIUM_URL`)
-- Optional central registration endpoint (`SERVER_REGISTER_URL`) for `<serverId>` inventory
+- CRS home `https://lab.innotel.us` + regional masters (slaves register & pull replica when online; offline → `isolated-master` self-sufficient; legacy `SERVER_REGISTER_URL` still honored)
 
 ## Explicitly does NOT own
 
@@ -37,7 +37,7 @@ the canonical single-responsibility architecture.
 - Payment processing (Magnate)
 - Storage (ONYX)
 
-> **Current state:** Technitium HTTP API replaces RFC2136/nsupdate/SSH+BIND entirely. Cerulean resolves `infisical://` and `vault://` secret references. Default wildcard is 30-day, offline-first.
+> **Current state:** Technitium HTTP API replaces RFC2136/nsupdate/SSH+BIND. CRS master/slave to `lab.innotel.us` + service-key bridge for other stacks. Service API mirrors domains/certs/DNS/DHCP/blocking/PKI. Default wildcard 30-day, offline-first.
 
 ## Deployment — Technitium
 
@@ -50,6 +50,30 @@ docker compose --profile technitium up -d   # Technitium DNS+DHCP+blocking at ht
 Or point `TECHNITIUM_URL`/`TECHNITIUM_TOKEN` (or `TECHNITIUM_USER`/`TECHNITIUM_PASSWORD`) at a remote Technitium.
 
 Server identity: `CERULEAN_SERVER_ID` (stable `<serverId>`, auto-generated if empty) + `CERULEAN_LAB_DOMAIN` (default `lab.innotel.us`) → zone `<serverId>.lab.innotel.us`.
+
+## CRS — master / slave
+
+Every Cerulean is a **CRS node** (`CRS_ROLE=auto|master|slave`). Home is `https://lab.innotel.us`.
+
+- **auto** (default): try to be a slave to `CRS_MASTER_URL` (= `CRS_HOME_URL`); if unreachable → `isolated-master` (self-sufficient, acts as master locally, still a logical slave to home; re-syncs when online).
+- **master**: must set `CRS_DOMAIN` (e.g. `lab.innotel.us`) — holds all records, assigns serverIds, rejects slaves when not authoritative. Still registers as slave to home best-effort.
+- **slave**: registers to `CRS_MASTER_URL` when online, holds a full replica of every serverId.
+- Air-gapped: no extra flag needed — `auto` → `isolated-master` automatically; optionally set `CRS_AIR_GAPPED=1`.
+
+Public probe: `GET /api/crs/status` (unauthenticated). Register: `POST /api/crs/register` (Bearer `CRS_TOKEN` or `ceru_…` with `crs:register`). Replica: `GET /api/crs/registry`.
+
+## Service API — other stacks → Cerulean
+
+Create a service key as platform admin: `POST /api/service/keys { name, scopes, tenantId }` → `ceru_<prefix>_<secret>` (shown once). Scopes: `*`, `crs:*`, `dns:*`, `certs:*`, `domains:*`, `dhcp:read`, `blocking:read`, `pki:*`, `status`.
+
+Bridge (Bearer `ceru_…`):
+
+- `GET /api/service/status` · `GET /api/service/crs/*` · `POST /api/service/crs/register`
+- `GET|POST /api/service/domains` · `GET|POST|DELETE /api/service/dns/records?zone=`
+- `GET|POST /api/service/certificates` · `GET /api/service/certificates/:id/material`
+- `GET /api/service/dhcp/*` · `GET /api/service/blocking/status` · `GET|POST /api/service/pki/*`
+
+See Orchestrator page → *CRS* and *Service API keys* panels for live state, sync, and key management.
 
 ## Secrets (Infisical)
 
