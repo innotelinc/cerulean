@@ -55,6 +55,38 @@ if [ -z "$LAB_DOMAIN" ]; then
   env_set CERULEAN_LAB_DOMAIN "lab.innotel.us"
 fi
 
+# ── 0b. Free host port 53 (systemd-resolved stub) ───────────────────────────
+# The bundled Technitium binds :53 directly on the host (network_mode: host).
+# systemd-resolved's stub listener (127.0.0.53:53) blocks that bind, so disable
+# it and point the host resolver at the local DNS server instead.
+# Set CERULEAN_KEEP_RESOLVED=1 to skip this (e.g. remote-only Technitium).
+free_port_53() {
+  if [ "${CERULEAN_KEEP_RESOLVED:-0}" = "1" ]; then
+    log "CERULEAN_KEEP_RESOLVED=1 — leaving systemd-resolved alone"
+    return 0
+  fi
+  if ! command -v systemctl >/dev/null 2>&1; then
+    return 0 # not a systemd host — nothing to free
+  fi
+  if ! ss -tulpn 2>/dev/null | grep -q '127\.0\.0\.(53|54):53'; then
+    log "Port 53 already free on host — no resolver changes needed"
+    return 0
+  fi
+  log "systemd-resolved stub holds :53 — disabling it (host DNS moves to Technitium)"
+  systemctl disable --now systemd-resolved >/dev/null 2>&1 || true
+  systemctl mask systemd-resolved >/dev/null 2>&1 || true
+  if [ -f /etc/resolv.conf ] && ! grep -q 'pre-cerulean' /etc/resolv.conf 2>/dev/null; then
+    cp /etc/resolv.conf /etc/resolv.conf.pre-cerulean 2>/dev/null || true
+  fi
+  # Host resolver: local Technitium first, Cloudflare fallback.
+  printf '# Cerulean host resolver (managed by scripts/setup.sh)\nsearch innotel.us\nnameserver 127.0.0.1\nnameserver 1.1.1.1\n' > /etc/resolv.conf
+  ok "Port 53 freed — systemd-resolved disabled+masked, /etc/resolv.conf -> 127.0.0.1"
+  if ! getent hosts innotel.us >/dev/null 2>&1; then
+    warn "Host resolution check failed — verify Technitium is up and :53 is bound"
+  fi
+}
+free_port_53
+
 # ── 1. Technitium DNS ───────────────────────────────────────────────────────
 log "Technitium DNS: ${TECHNITIUM_URL:-http://cerulean-technitium:5380} (HTTP API — no SSH/TSIG)"
 if ! technitium_configured; then
