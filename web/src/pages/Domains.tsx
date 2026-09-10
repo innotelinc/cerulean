@@ -2,24 +2,21 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { Domain, DnsAudit, DnsRecord } from "../types";
 
-const RECORD_TYPES = ["A", "AAAA", "CNAME", "TXT", "MX", "NS", "SRV"];
+const RECORD_TYPES = ["A", "AAAA", "CNAME", "TXT", "MX", "NS", "SRV", "CAA", "PTR", "ANAME"];
 
 export default function Domains() {
   const [domains, setDomains] = useState<Domain[]>([]);
   const [error, setError] = useState("");
   const [toast, setToast] = useState("");
 
-  // add domain form
   const [newName, setNewName] = useState("");
   const [adding, setAdding] = useState(false);
 
-  // records
   const [openId, setOpenId] = useState<number | null>(null);
   const [records, setRecords] = useState<Record<number, DnsRecord[]>>({});
   const [recordsLoading, setRecordsLoading] = useState<Record<number, boolean>>({});
   const [recordsError, setRecordsError] = useState<Record<number, string>>({});
 
-  // dns audit (per domain)
   const [auditFor, setAuditFor] = useState<Record<number, DnsAudit | null>>({});
   const [auditLoading, setAuditLoading] = useState<Record<number, boolean>>({});
 
@@ -36,7 +33,6 @@ export default function Domains() {
     }
   };
 
-  // add record form (per open domain)
   const [recType, setRecType] = useState("A");
   const [recName, setRecName] = useState("");
   const [recValue, setRecValue] = useState("");
@@ -56,9 +52,7 @@ export default function Domains() {
     }
   };
 
-  useEffect(() => {
-    load();
-  }, []);
+  useEffect(() => { load(); }, []);
 
   const addDomain = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -67,10 +61,10 @@ export default function Domains() {
     try {
       await api.createDomain({ name: newName });
       setNewName("");
-      flash(`Domain ${newName} added`);
+      flash(`Zone ${newName} created on Technitium`);
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to add domain");
+      setError(err instanceof Error ? err.message : "Failed to add zone");
     } finally {
       setAdding(false);
     }
@@ -91,7 +85,7 @@ export default function Domains() {
       } catch (err) {
         setRecordsError((r) => ({
           ...r,
-          [id]: err instanceof Error ? err.message : "Zone transfer failed",
+          [id]: err instanceof Error ? err.message : "Failed to fetch zone",
         }));
       } finally {
         setRecordsLoading((r) => ({ ...r, [id]: false }));
@@ -122,7 +116,7 @@ export default function Domains() {
   const removeRecord = async (domainId: number, r: DnsRecord) => {
     if (!window.confirm(`Delete ${r.type} ${r.name} (${r.value})?`)) return;
     try {
-      await api.deleteRecord(domainId, { type: r.type, name: r.name, value: r.type === "TXT" ? r.value : undefined });
+      await api.deleteRecord(domainId, { type: r.type, name: r.name, value: r.value });
       flash("Record deleted");
       const list = await api.listRecords(domainId);
       setRecords((x) => ({ ...x, [domainId]: list }));
@@ -132,13 +126,13 @@ export default function Domains() {
   };
 
   const removeDomain = async (d: Domain) => {
-    if (!window.confirm(`Remove domain ${d.name} from Cerulean? This does not touch DNS records.`)) return;
+    if (!window.confirm(`Remove zone ${d.name} from Cerulean?`)) return;
     try {
       await api.deleteDomain(d.id);
-      flash(`Domain ${d.name} removed`);
+      flash(`Zone ${d.name} removed`);
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to remove domain");
+      setError(err instanceof Error ? err.message : "Failed to remove zone");
     }
   };
 
@@ -146,36 +140,36 @@ export default function Domains() {
     <div>
       <h1>Domains</h1>
       <p className="subtitle">
-        Zones whose DNS we control. Records are managed live on BIND via
-        nsupdate (TSIG).
+        Authoritative zones on Technitium DNS — records managed via HTTP API (no SSH).
       </p>
 
       {error && <p className="error">{error}</p>}
 
       <div className="panel">
-        <div className="panel-title">Register a zone</div>
+        <div className="panel-title">Create a zone</div>
         <form className="form-row" onSubmit={addDomain}>
           <input
-            placeholder="e.g. innotel.us"
+            placeholder="e.g. srv-abc123.lab.innotel.us"
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
             style={{ flex: 1 }}
           />
           <button type="submit" disabled={adding || !newName}>
-            {adding ? "Adding…" : "Add zone"}
+            {adding ? "Creating…" : "Create zone on Technitium"}
           </button>
         </form>
       </div>
 
       <div className="panel">
-        <div className="panel-title">Managed domains</div>
+        <div className="panel-title">Managed zones {domains.length > 0 ? `(${domains.length})` : ""}</div>
         {domains.length === 0 ? (
-          <div className="empty">No zones yet — add {`innotel.us`} above.</div>
+          <div className="empty">No zones yet — create one above or let the orchestrator auto-create <span className="mono">&lt;serverId&gt;.lab.innotel.us</span>.</div>
         ) : (
           domains.map((d) => (
             <div key={d.id} style={{ marginBottom: 10 }}>
               <div className="form-row" style={{ marginBottom: 0 }}>
                 <strong style={{ fontSize: 15 }}>{d.name}</strong>
+                <span className="badge blue">Technitium</span>
                 <div style={{ flex: 1 }} />
                 <button className="secondary small" onClick={() => runAudit(d)} disabled={auditLoading[d.id]}>
                   {auditLoading[d.id] ? "Auditing…" : "Audit DNS"}
@@ -222,7 +216,7 @@ export default function Domains() {
 
               {openId === d.id && (
                 <div style={{ margin: "10px 0 6px" }}>
-                  {recordsLoading[d.id] && <p className="muted">Loading zone records…</p>}
+                  {recordsLoading[d.id] && <p className="muted">Loading zone records from Technitium…</p>}
                   {recordsError[d.id] && <p className="error">{recordsError[d.id]}</p>}
                   {records[d.id] && (
                     <table>
@@ -237,7 +231,7 @@ export default function Domains() {
                       </thead>
                       <tbody>
                         {records[d.id]
-                          .filter((r) => r.type !== "SOA" && r.type !== "NS")
+                          .filter((r) => r.type !== "SOA")
                           .map((r, i) => (
                             <tr key={`${r.name}-${r.type}-${i}`}>
                               <td className="mono">{r.name}</td>
@@ -275,7 +269,7 @@ export default function Domains() {
                         onChange={(e) => setRecName(e.target.value)}
                       />
                       <input
-                        placeholder={recType === "MX" ? "10 mail.innotel.us" : "value"}
+                        placeholder={recType === "MX" ? "10 mail.example" : "value"}
                         value={recValue}
                         onChange={(e) => setRecValue(e.target.value)}
                         style={{ flex: 1 }}
@@ -297,7 +291,7 @@ export default function Domains() {
                         style={{ width: 80 }}
                       />
                       <button type="submit" className="secondary small">
-                        Add record
+                        Add via Technitium
                       </button>
                     </form>
                   )}

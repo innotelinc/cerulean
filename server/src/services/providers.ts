@@ -2,20 +2,14 @@ import { config } from "../config";
 import { db, type DnsProviderRow } from "../db";
 
 /**
- * Per-tenant DNS providers. A tenant can register its own BIND servers
- * (SSH + nsupdate + TSIG) — record operations on the tenant's zones then run
- * against that server instead of the platform-level BIND from .env. The
- * first provider is used by default; one can be flagged as the default.
- *
- * Everything here is tenant-scoped: members manage their own tenant's
- * providers and can never see another tenant's credentials.
+ * Per-tenant DNS providers — now Technitium HTTP API endpoints.
+ * A tenant can register its own Technitium server(s); record ops on that
+ * tenant's zones run against its default provider. Without a provider,
+ * zones fall back to the platform Technitium from .env.
  */
 
 export class ProviderError extends Error {
-  constructor(
-    public readonly status: number,
-    message: string,
-  ) {
+  constructor(public readonly status: number, message: string) {
     super(message);
     this.name = "ProviderError";
   }
@@ -23,58 +17,58 @@ export class ProviderError extends Error {
 
 export interface DnsProviderInput {
   name: string;
-  host: string;
+  host?: string;
   port?: number;
+  url?: string;
+  apiToken?: string;
   user?: string;
-  keyPath?: string;
   password?: string;
+  isDefault?: boolean;
+  // legacy (accepted but ignored)
+  keyPath?: string;
   tsigName?: string;
   tsigSecret?: string;
-  isDefault?: boolean;
 }
 
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
-function validate(input: DnsProviderInput): {
-  name: string;
-  host: string;
-  port: number;
-  user: string;
-} {
-  const name = input.name.trim();
-  if (!NAME_RE.test(name)) {
-    throw new ProviderError(
-      400,
-      "Invalid name — letters, digits, '.', '_' or '-', 1-64 chars",
-    );
+function normalizeUrl(input: DnsProviderInput): { url: string; host: string; port: number } {
+  let url = (input.url || "").trim();
+  if (!url && input.host) {
+    const host = input.host.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/$/, "");
+    const port = input.port ?? 5380;
+    url = `http://${host}:${port}`;
+    return { url, host, port };
   }
-  const host = input.host
-    .trim()
-    .toLowerCase()
-    .replace(/^https?:\/\//, "")
-    .replace(/\/$/, "");
-  const isIpv4 = /^(\d{1,3}\.){3}\d{1,3}$/.test(host);
-  const isHostname =
-    /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/.test(host) && host.includes(".");
-  if (!host || (!isIpv4 && !isHostname)) {
-    throw new ProviderError(400, "Invalid host — hostname or IP address only");
+  if (url) {
+    if (!/^https?:\/\//i.test(url)) url = `http://${url}`;
+    url = url.replace(/\/$/, "");
+    try {
+      const u = new URL(url);
+      return { url, host: u.hostname, port: Number(u.port) || (u.protocol === "https:" ? 443 : 5380) };
+    } catch {
+      throw new ProviderError(400, "Invalid url — must be http(s)://host:port");
+    }
   }
-  const port = input.port ?? 22;
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new ProviderError(400, "port must be 1-65535");
-  }
-  const user = (input.user ?? "root").trim();
-  if (!user) throw new ProviderError(400, "user is required");
-  if (!input.keyPath && !input.password) {
-    throw new ProviderError(
-      400,
-      "Credentials required — set key_path (PEM path on the portal host) or password",
-    );
-  }
-  return { name, host, port, user };
+  // No url/host provided — will use platform Technitium (but provider needs its own URL)
+  throw new ProviderError(400, "url is required (Technitium HTTP API, e.g. http://10.0.0.5:5380)");
 }
 
-/** JSON-safe view: credentials never leave the server in list/detail bodies. */
+function validate(input: DnsProviderInput): { name: string; url: string; host: string; port: number } {
+  const name = input.name.trim();
+  if (!NAME_RE.test(name)) throw new ProviderError(400, "Invalid name — letters, digits, '.', '_' or '-', 1-64 chars");
+  const { url, host, port } = normalizeUrl(input);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new ProviderError(400, "port must be 1-65535");
+  if (!host) throw new ProviderError(400, "Invalid host in url");
+  // Technitium needs either an API token or a user+password pair for the initial login
+  if (!input.apiToken && !(input.user && input.password) && !input.password) {
+    // Allow empty if relying on platform token, but per-tenant provider should have its own creds
+    // We accept token OR password; if neither, we still allow creation but probe will fail — clearer to require one
+    throw new ProviderError(400, "Credentials required — set apiToken (Technitium API token) or user+password");
+  }
+  return { name, url, host, port };
+}
+
 export function providerToJson(row: DnsProviderRow) {
   return {
     id: row.id,
@@ -83,10 +77,13 @@ export function providerToJson(row: DnsProviderRow) {
     kind: row.kind,
     host: row.host,
     port: row.port,
+    url: row.url,
     user: row.user,
-    hasKey: Boolean(row.key_path),
+    hasToken: Boolean(row.api_token),
     hasPassword: Boolean(row.password),
-    hasTsig: Boolean(row.tsig_name && row.tsig_secret),
+    // legacy flags (always false now, kept for UI compat)
+    hasKey: false,
+    hasTsig: false,
     isDefault: row.is_default === 1,
     createdAt: row.created_at,
   };
@@ -96,10 +93,7 @@ export function listProviders(tenantId: number) {
   return db.listDnsProviders(tenantId).map(providerToJson);
 }
 
-export function createProvider(
-  tenantId: number,
-  input: DnsProviderInput,
-): ReturnType<typeof providerToJson> {
+export function createProvider(tenantId: number, input: DnsProviderInput): ReturnType<typeof providerToJson> {
   const v = validate(input);
   if (db.listDnsProviders(tenantId).some((p) => p.name === v.name)) {
     throw new ProviderError(409, `Provider "${v.name}" already exists in this tenant`);
@@ -109,65 +103,44 @@ export function createProvider(
     db.createDnsProvider({
       tenantId,
       name: v.name,
+      kind: "technitium",
       host: v.host,
       port: v.port,
-      user: v.user,
-      keyPath: input.keyPath,
+      url: v.url,
+      apiToken: input.apiToken,
+      user: input.user ?? "admin",
       password: input.password,
-      tsigName: input.tsigName,
-      tsigSecret: input.tsigSecret,
       isDefault: input.isDefault ?? db.listDnsProviders(tenantId).length === 0,
     }),
   );
 }
 
-export function updateProvider(
-  id: number,
-  tenantId: number,
-  input: Partial<DnsProviderInput>,
-): ReturnType<typeof providerToJson> {
+export function updateProvider(id: number, tenantId: number, input: Partial<DnsProviderInput>): ReturnType<typeof providerToJson> {
   const existing = db.getDnsProvider(id, tenantId);
   if (!existing) throw new ProviderError(404, "DNS provider not found");
-  // Merge over the stored row: absent fields keep their stored value, and a
-  // blank secret means "unchanged" (secrets are write-only).
+
   const merged: DnsProviderInput = {
     name: (input.name ?? existing.name).trim(),
+    url: input.url !== undefined ? input.url : existing.url ?? undefined,
     host: input.host ?? existing.host,
     port: input.port ?? existing.port,
+    apiToken: input.apiToken !== undefined ? input.apiToken || (existing.api_token ?? undefined) : existing.api_token ?? undefined,
     user: input.user ?? existing.user,
-    keyPath:
-      input.keyPath !== undefined
-        ? input.keyPath || (existing.key_path ?? undefined)
-        : (existing.key_path ?? undefined),
-    password:
-      input.password !== undefined
-        ? input.password || (existing.password ?? undefined)
-        : (existing.password ?? undefined),
-    tsigName:
-      input.tsigName !== undefined
-        ? input.tsigName || (existing.tsig_name ?? undefined)
-        : (existing.tsig_name ?? undefined),
-    tsigSecret:
-      input.tsigSecret !== undefined
-        ? input.tsigSecret || (existing.tsig_secret ?? undefined)
-        : (existing.tsig_secret ?? undefined),
+    password: input.password !== undefined ? input.password || (existing.password ?? undefined) : existing.password ?? undefined,
     isDefault: input.isDefault ?? existing.is_default === 1,
   };
-  validate(merged);
+  const v = validate(merged);
   if (merged.isDefault) db.clearDnsProviderDefaults(tenantId);
   db.updateDnsProvider(id, tenantId, {
-    name: merged.name,
-    host: merged.host,
-    port: merged.port,
+    name: v.name,
+    host: v.host,
+    port: v.port,
+    url: v.url,
+    apiToken: merged.apiToken,
     user: merged.user,
-    keyPath: merged.keyPath,
     password: merged.password,
-    tsigName: merged.tsigName,
-    tsigSecret: merged.tsigSecret,
     isDefault: merged.isDefault,
   });
-  // The row is guaranteed to exist (checked above), so re-fetch for the
-  // post-update view. Credentials never leave the server.
   return providerToJson(db.getDnsProvider(id, tenantId)!);
 }
 
@@ -175,60 +148,35 @@ export function deleteProvider(id: number, tenantId: number): void {
   db.deleteDnsProvider(id, tenantId);
 }
 
-/**
- * Connection settings for a tenant's zones: its default provider, or the
- * first one registered, or null to fall back to the platform BIND (.env).
- */
 export function providerConnectionForTenant(
   tenantId: number,
-): {
-  host: string;
-  port: number;
-  user: string;
-  keyPath: string;
-  password: string;
-  tsigName: string;
-  tsigSecret: string;
-  providerName: string | null;
-} | null {
+): { url: string; apiToken: string; host: string; port: number; user: string; password: string; providerName: string | null } | null {
   const rows = db.listDnsProviders(tenantId);
-  const row =
-    rows.find((p) => p.is_default === 1) ??
-    rows[0] ??
-    null;
+  const row = rows.find((p) => p.is_default === 1) ?? rows[0] ?? null;
   if (!row) return null;
   return {
+    url: row.url ?? `http://${row.host}:${row.port}`,
+    apiToken: row.api_token ?? "",
     host: row.host,
     port: row.port,
     user: row.user,
-    keyPath: row.key_path ?? "",
     password: row.password ?? "",
-    tsigName: row.tsig_name ?? "",
-    tsigSecret: row.tsig_secret ?? "",
     providerName: row.name,
   };
 }
 
-/** Convenience: platform BIND connection from .env (the fallback target). */
-export function platformConnection(): {
-  host: string;
-  port: number;
-  user: string;
-  keyPath: string;
-  password: string;
-  tsigName: string;
-  tsigSecret: string;
-  providerName: null;
-} {
-  const b = config.bind;
+export function platformConnection(): { url: string; token: string; host: string; port: number; user: string; password: string; providerName: null } {
+  const u = new URL(config.technitium.url);
   return {
-    host: b.host,
-    port: b.port,
-    user: b.user,
-    keyPath: b.keyPath,
-    password: b.password,
-    tsigName: b.tsigName,
-    tsigSecret: b.tsigSecret,
+    url: config.technitium.url,
+    token: config.technitium.token,
+    host: u.hostname,
+    port: Number(u.port) || 5380,
+    user: config.technitium.user,
+    password: config.technitium.password,
     providerName: null,
   };
 }
+
+/** Back-compat alias: some routes still import providerConnectionForTenant */
+export const effectiveTechnitiumConnection = providerConnectionForTenant;

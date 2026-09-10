@@ -4,25 +4,19 @@ import type { DnsProvider } from "../types";
 
 interface ProviderForm {
   name: string;
-  host: string;
-  port: string;
+  url: string;
   user: string;
-  key_path: string;
+  api_token: string;
   password: string;
-  tsig_name: string;
-  tsig_secret: string;
   is_default: boolean;
 }
 
 const emptyForm = (): ProviderForm => ({
   name: "",
-  host: "",
-  port: "22",
-  user: "root",
-  key_path: "",
+  url: "",
+  user: "admin",
+  api_token: "",
   password: "",
-  tsig_name: "",
-  tsig_secret: "",
   is_default: false,
 });
 
@@ -32,7 +26,6 @@ export default function DnsProviders() {
   const [toast, setToast] = useState("");
   const [form, setForm] = useState<ProviderForm>(emptyForm());
   const [saving, setSaving] = useState(false);
-  // inline edit: provider id → form; secrets are blank ("unchanged") unless typed
   const [editing, setEditing] = useState<Record<number, ProviderForm>>({});
 
   const flash = (msg: string) => {
@@ -48,29 +41,23 @@ export default function DnsProviders() {
     }
   };
 
-  useEffect(() => {
-    load();
-  }, []);
+  useEffect(() => { load(); }, []);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
     setError("");
     try {
-      const body = {
+      await api.createDnsProvider({
         name: form.name,
-        host: form.host,
-        port: form.port ? Number(form.port) : undefined,
-        user: form.user,
-        key_path: form.key_path || undefined,
+        url: form.url || undefined,
+        user: form.user || undefined,
+        api_token: form.api_token || undefined,
         password: form.password || undefined,
-        tsig_name: form.tsig_name || undefined,
-        tsig_secret: form.tsig_secret || undefined,
         default: form.is_default,
-      };
-      await api.createDnsProvider(body);
+      });
       setForm(emptyForm());
-      flash("DNS provider added");
+      flash("Technitium DNS provider added");
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to add DNS provider");
@@ -84,13 +71,10 @@ export default function DnsProviders() {
       ...x,
       [p.id]: {
         name: p.name,
-        host: p.host,
-        port: String(p.port),
+        url: p.url ?? "",
         user: p.user,
-        key_path: "",
+        api_token: "",
         password: "",
-        tsig_name: p.hasTsig ? "" : "",
-        tsig_secret: "",
         is_default: p.isDefault,
       },
     }));
@@ -104,20 +88,13 @@ export default function DnsProviders() {
     try {
       await api.updateDnsProvider(p.id, {
         name: f.name,
-        host: f.host,
-        port: f.port ? Number(f.port) : undefined,
-        user: f.user,
-        key_path: f.key_path || undefined,
+        url: f.url || undefined,
+        user: f.user || undefined,
+        api_token: f.api_token || undefined,
         password: f.password || undefined,
-        tsig_name: f.tsig_name || undefined,
-        tsig_secret: f.tsig_secret || undefined,
         default: f.is_default,
       });
-      setEditing((x) => {
-        const next = { ...x };
-        delete next[p.id];
-        return next;
-      });
+      setEditing((x) => { const n = { ...x }; delete n[p.id]; return n; });
       flash("DNS provider updated");
       await load();
     } catch (err) {
@@ -139,7 +116,7 @@ export default function DnsProviders() {
   };
 
   const remove = async (p: DnsProvider) => {
-    if (!window.confirm(`Delete DNS provider ${p.name}? Zones will fall back to the platform BIND.`)) return;
+    if (!window.confirm(`Delete DNS provider ${p.name}? Zones will fall back to the platform Technitium.`)) return;
     try {
       await api.deleteDnsProvider(p.id);
       flash("DNS provider deleted");
@@ -155,7 +132,7 @@ export default function DnsProviders() {
     setEditing((x) => ({ ...x, [id]: { ...x[id], [k]: v } }));
 
   const field = (key: keyof ProviderForm, label: string, formState: ProviderForm, onChange: (v: string) => void, placeholder = "", password = false) => (
-    <label style={{ flex: 1, minWidth: 160 }}>
+    <label style={{ flex: 1, minWidth: 180 }}>
       <span className="muted" style={{ fontSize: 12 }}>{label}</span>
       <input
         type={password ? "password" : "text"}
@@ -171,43 +148,40 @@ export default function DnsProviders() {
     <div>
       <h1>DNS Providers</h1>
       <p className="subtitle">
-        BIND servers that serve this tenant&apos;s zones. Record operations run
-        against the <strong>default</strong> provider; with none configured, zones
-        fall back to the platform BIND from <span className="mono">.env</span>.
+        Technitium servers that serve this tenant's zones via HTTP API. Record operations
+        run against the <strong>default</strong> provider; with none configured, zones fall
+        back to the platform Technitium from <span className="mono">TECHNITIUM_URL</span>.
       </p>
 
       {error && <p className="error">{error}</p>}
 
       <div className="panel">
-        <div className="panel-title">Add a DNS provider</div>
+        <div className="panel-title">Add a Technitium provider</div>
         <form className="form-row" onSubmit={submit} style={{ flexWrap: "wrap", gap: 8 }}>
-          {field("name", "Name", form, (v) => set("name", v), "prod-dns")}
-          {field("host", "Host", form, (v) => set("host", v), "dns.example.com")}
-          {field("port", "SSH port", form, (v) => set("port", v))}
-          {field("user", "SSH user", form, (v) => set("user", v))}
-          {field("key_path", "SSH key path (portal host)", form, (v) => set("key_path", v), "/root/.ssh/id_ed25519")}
-          {field("password", "SSH password (or blank)", form, (v) => set("password", v), "", true)}
-          {field("tsig_name", "TSIG key name", form, (v) => set("tsig_name", v), "cerulean")}
-          {field("tsig_secret", "TSIG secret", form, (v) => set("tsig_secret", v), "", true)}
+          {field("name", "Name", form, (v) => set("name", v), "prod-technitium")}
+          {field("url", "Technitium URL", form, (v) => set("url", v), "http://10.0.0.5:5380")}
+          {field("user", "Admin user", form, (v) => set("user", v), "admin")}
+          {field("api_token", "API token (preferred)", form, (v) => set("api_token", v), "", true)}
+          {field("password", "Password (or blank if using token)", form, (v) => set("password", v), "", true)}
           <label style={{ display: "flex", alignItems: "center", gap: 6, paddingTop: 16 }}>
             <input type="checkbox" checked={form.is_default} onChange={(e) => set("is_default", e.target.checked)} />
             <span style={{ fontSize: 13 }}>Default provider</span>
           </label>
-          <button type="submit" disabled={saving || !form.name || !form.host} style={{ alignSelf: "flex-end" }}>
+          <button type="submit" disabled={saving || !form.name || !form.url} style={{ alignSelf: "flex-end" }}>
             {saving ? "Saving…" : "Add provider"}
           </button>
         </form>
+        <p className="muted" style={{ fontSize: 12 }}>Create an API token in Technitium → Settings → API Tokens, or use the admin user + password.</p>
       </div>
 
       <div className="panel">
         <div className="panel-title">
           Providers for this tenant
-          {providers.length === 0 && <span className="badge amber" style={{ marginLeft: 8 }}>platform BIND active</span>}
+          {providers.length === 0 && <span className="badge amber" style={{ marginLeft: 8 }}>platform Technitium active</span>}
         </div>
         {providers.length === 0 ? (
           <div className="empty">
-            No providers yet — record operations use the platform-level BIND
-            configured in <span className="mono">.env</span>.
+            No providers yet — record operations use the platform-level Technitium in <span className="mono">.env</span>.
           </div>
         ) : (
           providers.map((p) => {
@@ -217,13 +191,13 @@ export default function DnsProviders() {
                 <div className="form-row" style={{ marginBottom: 0 }}>
                   <strong style={{ fontSize: 15 }}>{p.name}</strong>
                   {p.isDefault && <span className="badge green">default</span>}
+                  <span className="badge gray">{p.kind}</span>
                   <span className="mono muted" style={{ fontSize: 13 }}>
-                    {p.user}@{p.host}:{p.port}
+                    {p.url ?? `http://${p.host}:${p.port}`} · {p.user}
                   </span>
                   <div style={{ flex: 1 }} />
-                  {p.hasKey && <span className="badge blue">key</span>}
+                  {p.hasToken && <span className="badge blue">token</span>}
                   {p.hasPassword && <span className="badge amber">password</span>}
-                  {p.hasTsig && <span className="badge blue">tsig</span>}
                   <button className="secondary small" onClick={() => setDefault(p)} disabled={p.isDefault || saving}>
                     {p.isDefault ? "Default" : "Set default"}
                   </button>
@@ -238,13 +212,10 @@ export default function DnsProviders() {
                   <div style={{ marginTop: 8 }}>
                     <div className="form-row" style={{ flexWrap: "wrap", gap: 8, marginBottom: 6 }}>
                       {field("name", "Name", f, (v) => setEdit(p.id, "name", v))}
-                      {field("host", "Host", f, (v) => setEdit(p.id, "host", v))}
-                      {field("port", "SSH port", f, (v) => setEdit(p.id, "port", v))}
-                      {field("user", "SSH user", f, (v) => setEdit(p.id, "user", v))}
-                      {field("key_path", "SSH key path", f, (v) => setEdit(p.id, "key_path", v), p.hasKey ? "(unchanged)" : "/root/.ssh/id_ed25519")}
-                      {field("password", "SSH password", f, (v) => setEdit(p.id, "password", v), p.hasPassword ? "(unchanged)" : "", true)}
-                      {field("tsig_name", "TSIG key name", f, (v) => setEdit(p.id, "tsig_name", v), p.hasTsig ? "(unchanged)" : "cerulean")}
-                      {field("tsig_secret", "TSIG secret", f, (v) => setEdit(p.id, "tsig_secret", v), p.hasTsig ? "(unchanged)" : "", true)}
+                      {field("url", "Technitium URL", f, (v) => setEdit(p.id, "url", v), p.url ?? "http://10.0.0.5:5380")}
+                      {field("user", "Admin user", f, (v) => setEdit(p.id, "user", v))}
+                      {field("api_token", "API token", f, (v) => setEdit(p.id, "api_token", v), p.hasToken ? "(unchanged)" : "", true)}
+                      {field("password", "Password", f, (v) => setEdit(p.id, "password", v), p.hasPassword ? "(unchanged)" : "", true)}
                       <button className="small" onClick={() => saveEdit(p)} disabled={saving}>
                         Save
                       </button>
