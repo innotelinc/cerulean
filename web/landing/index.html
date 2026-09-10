@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Cerulean — Trust, DNS, DHCP & Ad-blocking — plug anywhere</title>
-  <meta name="description" content="Cerulean is a self-hosted master orchestrator: Technitium DNS + DHCP + ad-blocking + Let's Encrypt wildcard (DNS-01 via HTTP API), 30-day offline PKI wildcard *.<serverId>.lab.innotel.us, internal PKI and compliance reporting.">
+  <meta name="description" content="Cerulean is a self-hosted master orchestrator: Technitium DNS + DHCP + ad-blocking + Let's Encrypt wildcard (DNS-01 via HTTP API), 90-day offline PKI wildcard *.<serverId>.lab.innotel.us, internal PKI and compliance reporting.">
   <meta property="og:title" content="Cerulean — Trust, DNS, DHCP & Ad-blocking">
   <meta property="og:description" content="Self-hosted master orchestrator — DNS, DHCP, certs and ad-blocking without internet; Technitium HTTP API, no SSH/TSIG.">
   <meta property="og:type" content="website">
@@ -358,7 +358,7 @@
       <div class="wrap hero-inner">
         <p class="kicker"><span class="pulse" aria-hidden="true"></span> v0.7 · Master orchestrator — plug anywhere</p>
         <h1>Plug it in —<br>it runs <span class="accent">everything</span>.</h1>
-        <p class="lede">Cerulean is the self-sufficient Trust + Network layer: Technitium DNS over HTTP API (no SSH, no TSIG), DHCP, ad-blocking, a 30-day wildcard <code>*.<span style="color:var(--p-text)">&lt;serverId&gt;</span>.lab.innotel.us</code> (PKI offline → Let's Encrypt when online), internal PKI, and DNS health — with Authentik SSO and Infisical secrets.</p>
+        <p class="lede">Cerulean is the self-sufficient Trust + Network layer: Technitium DNS over HTTP API (no SSH, no TSIG), DHCP, ad-blocking, a 90-day wildcard <code>*.<span style="color:var(--p-text)">&lt;serverId&gt;</span>.lab.innotel.us</code> (PKI offline → Let's Encrypt when online), internal PKI, and DNS health — with Authentik SSO and Infisical secrets.</p>
         <div class="cta-row">
           <a class="btn btn-primary" href="https://github.com/innotelinc/cerulean#quick-start">Get started</a>
           <a class="btn btn-secondary" href="https://github.com/innotelinc/cerulean/tree/main/docs">Docs</a>
@@ -368,7 +368,7 @@
           <button class="copy" id="copy-btn" type="button" aria-label="Copy quick start command">copy</button>
         </div>
         <div class="stats">
-          <div class="stat"><b>DNS / DHCP / Block</b><span>Technitium HTTP API — no SSH, no zone files</span></div><div class="stat"><b>30-day wildcard</b><span>*.<span style="color:var(--p-text)">&lt;serverId&gt;</span>.lab.innotel.us — PKI offline, ACME when online</span></div><div class="stat"><b>PKI</b><span>internal CA + mTLS device certificates</span></div><div class="stat"><b>offline-first</b><span>DHCP + DNS + certs without internet</span></div>
+          <div class="stat"><b>DNS / DHCP / Block</b><span>Technitium HTTP API — no SSH, no zone files</span></div><div class="stat"><b>90-day wildcard</b><span>*.<span style="color:var(--p-text)">&lt;serverId&gt;</span>.lab.innotel.us — PKI offline, ACME when online</span></div><div class="stat"><b>PKI</b><span>internal CA + mTLS device certificates</span></div><div class="stat"><b>offline-first</b><span>DHCP + DNS + certs without internet</span></div>
         </div>
       </div>
     </div>
@@ -379,7 +379,7 @@
         <h2>Trust & network, automated end-to-end<span class="accent">.</span></h2>
         <p class="section-sub">Every certificate, zone, lease and block-list driven from one orchestrator — no SSH, no zone files, no spreadsheets.</p>
         <div class="grid grid-3">
-          <div class="card"><span class="icon" aria-hidden="true">🛡️</span><h3>Certificate lifecycle</h3><p>Let's Encrypt via Technitium DNS-01 (+ 30-day PKI wildcard fallback) — auto-renewed and pushed to NPM.</p></div><div class="card"><span class="icon" aria-hidden="true">🌐</span><h3>DNS automation</h3><p>Technitium authoritative zones over HTTP API: add a domain, get its zone wired — per-tenant Technitium supported.</p></div><div class="card"><span class="icon" aria-hidden="true">📡</span><h3>DHCP</h3><p>Scopes, leases and reservations on the same Technitium — Cerulean orchestrates the LAN.</p></div><div class="card"><span class="icon" aria-hidden="true">🚫</span><h3>Ad-blocking</h3><p>Technitium block lists + per-domain block/allow — global toggle and live refresh.</p></div><div class="card"><span class="icon" aria-hidden="true">🔑</span><h3>Internal PKI</h3><p>Private CA for client certificates and the offline wildcard — issue, revoke, monitor from the dashboard.</p></div><div class="card"><span class="icon" aria-hidden="true">📋</span><h3>Compliance & health</h3><p>Trust scoring, DNS audits, and compliance evidence — orchestrator health in one view.</p></div><div class="card"><span class="icon" aria-hidden="true">🔐</span><h3>Authentik SSO</h3><p>Every surface behind one identity provider at <b>auth.cerulean.innotel.us</b>.</p></div><div class="card"><span class="icon" aria-hidden="true">🤫</span><h3>Infisical secrets</h3><p>Technitium tokens and CA keys live in Infisical (SecretOps) — resolved at runtime, never in git.</p></div>
+          <div class="card"><span class="icon" aria-hidden="true">🛡️</span><h3>Certificate lifecycle</h3><p>Let's Encrypt via Technitium DNS-01 (+ 90-day PKI wildcard fallback) — auto-renewed and pushed to NPM.</p></div><div class="card"><span class="icon" aria-hidden="true">🌐</span><h3>DNS automation</h3><p>Technitium authoritative zones over HTTP API: add a domain, get its zone wired — per-tenant Technitium supported.</p></div><div class="card"><span class="icon" aria-hidden="true">📡</span><h3>DHCP</h3><p>Scopes, leases and reservations on the same Technitium — Cerulean orchestrates the LAN.</p></div><div class="card"><span class="icon" aria-hidden="true">🚫</span><h3>Ad-blocking</h3><p>Technitium block lists + per-domain block/allow — global toggle and live refresh.</p></div><div class="card"><span class="icon" aria-hidden="true">🔑</span><h3>Internal PKI</h3><p>Private CA for client certificates and the offline wildcard — issue, revoke, monitor from the dashboard.</p></div><div class="card"><span class="icon" aria-hidden="true">📋</span><h3>Compliance & health</h3><p>Trust scoring, DNS audits, and compliance evidence — orchestrator health in one view.</p></div><div class="card"><span class="icon" aria-hidden="true">🔐</span><h3>Authentik SSO</h3><p>Every surface behind one identity provider at <b>auth.cerulean.innotel.us</b>.</p></div><div class="card"><span class="icon" aria-hidden="true">🤫</span><h3>Infisical secrets</h3><p>Technitium tokens and CA keys live in Infisical (SecretOps) — resolved at runtime, never in git.</p></div>
         </div>
       </div>
     </section>
@@ -392,13 +392,13 @@
         <div class="split">
           <div>
             <div class="grid" style="gap:14px">
-              <div class="card"><span class="icon" aria-hidden="true">📦</span><h3>Cerulean server</h3><p>API + dashboard — the master orchestrator (DHCP · DNS · certs · blocking).</p></div><div class="card"><span class="icon" aria-hidden="true">🌐</span><h3>Technitium DNS Server</h3><p>Authoritative + recursive DNS, DHCP and ad-blocking — driven over HTTP API.</p></div><div class="card"><span class="icon" aria-hidden="true">🛡️</span><h3>ACME + PKI</h3><p>Let's Encrypt (Technitium DNS-01, upgraded from PKI when online) + internal CA — 30-day wildcard included.</p></div><div class="card"><span class="icon" aria-hidden="true">🔑</span><h3>Internal CA</h3><p>Client-certificate issuance for device trust across the ecosystem.</p></div>
+              <div class="card"><span class="icon" aria-hidden="true">📦</span><h3>Cerulean server</h3><p>API + dashboard — the master orchestrator (DHCP · DNS · certs · blocking).</p></div><div class="card"><span class="icon" aria-hidden="true">🌐</span><h3>Technitium DNS Server</h3><p>Authoritative + recursive DNS, DHCP and ad-blocking — driven over HTTP API.</p></div><div class="card"><span class="icon" aria-hidden="true">🛡️</span><h3>ACME + PKI</h3><p>Let's Encrypt (Technitium DNS-01, upgraded from PKI when online) + internal CA — 90-day wildcard included.</p></div><div class="card"><span class="icon" aria-hidden="true">🔑</span><h3>Internal CA</h3><p>Client-certificate issuance for device trust across the ecosystem.</p></div>
             </div>
           </div>
           <pre class="terminal"><span class="cmt"># one-shot setup — bundled Technitium + wildcard + NPM hosts</span>
 $ <span class="p">./scripts/setup.sh --with-technitium</span>
 <span class="ok">>> [technitium] reachable at http://cerulean-technitium:5380</span>
-<span class="ok">>> [server] apex srv-a3f9.lab.innotel.us · wildcard *.srv-a3f9.lab.innotel.us (PKI 30d)</span>
+<span class="ok">>> [server] apex srv-a3f9.lab.innotel.us · wildcard *.srv-a3f9.lab.innotel.us (PKI 90d)</span>
 <span class="ok">>> [acme] wildcard upgraded to Let's Encrypt when online (DNS-01 via Technitium)</span>
 <span class="ok">>> [infisical] CA + Technitium secrets mirrored to Infisical</span>
 $ <span class="p">cerulean</span> cert issue api.example.com
@@ -424,7 +424,7 @@ $ <span class="p">cerulean</span> cert issue api.example.com
         <h2>Roadmap<span class="accent">.</span></h2>
         <p class="section-sub">Shipped as v0.7 — master orchestrator; fleet scoring and deeper edge integration next.</p>
         <div class="roadmap">
-          <div class="mile"><span class="tag">v0.7 <em>\"Orchestrator\"</em></span><p>Technitium master orchestrator: DNS/DHCP/blocking, 30-day offline wildcard, server identity — SSH/BIND removed.</p><span class="state done">done</span></div><div class="mile"><span class="tag">v0.8 <em>\"Trust scoring\"</em></span><p>Compliance reporting, DNS health, fleet-wide trust posture.</p><span class="state next">next</span></div><div class="mile"><span class="tag">v1.0 <em>\"LTS\"</em></span><p>Security audit, hardening, docs, LTS channel.</p><span class="state later">later</span></div>
+          <div class="mile"><span class="tag">v0.7 <em>\"Orchestrator\"</em></span><p>Technitium master orchestrator: DNS/DHCP/blocking, 90-day offline wildcard, server identity — SSH/BIND removed.</p><span class="state done">done</span></div><div class="mile"><span class="tag">v0.8 <em>\"Trust scoring\"</em></span><p>Compliance reporting, DNS health, fleet-wide trust posture.</p><span class="state next">next</span></div><div class="mile"><span class="tag">v1.0 <em>\"LTS\"</em></span><p>Security audit, hardening, docs, LTS channel.</p><span class="state later">later</span></div>
         </div>
       </div>
     </section>

@@ -67,9 +67,10 @@ services:
       - ./data/technitium:/etc/dns
     # The image ships no wget/curl/nc, so probe the web console over bash's
     # /dev/tcp instead of an HTTP client. GET / answers 200 once the server
-    # is listening.
+    # is listening. /dev/tcp is a bash feature, so invoke bash explicitly
+    # (the container's default /bin/sh is dash, which lacks it).
     healthcheck:
-      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/5380 && printf 'GET / HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && grep -qi '^HTTP/1\\.[01] 200' <&3"]
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/5380 && printf \"GET / HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n\" >&3 && grep -qi \"^HTTP/1\\.[01] 200\" <&3'"]
       interval: 15s
       timeout: 5s
       retries: 10

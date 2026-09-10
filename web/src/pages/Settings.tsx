@@ -42,6 +42,11 @@ export default function Settings() {
   const dot = (s: string) =>
     s === "ok" ? <span className="status-dot ok" /> : s === "not-configured" || s === "off" ? <span className="status-dot warn" /> : <span className="status-dot err" />;
 
+  // Infisical is the stack's secret store when enabled; HashiCorp Vault otherwise.
+  const secretVault = status?.infisical?.enabled
+    ? { status: status.infisical.status, addr: status.infisical.addr }
+    : { status: status?.vault.status ?? "not-configured", addr: status?.vault.addr ?? "" };
+
   return (
     <div>
       <h1>Settings</h1>
@@ -92,9 +97,9 @@ export default function Settings() {
                   <td className="muted mono">{status.auth.issuerUrl || "set AUTHENTIK_* in .env"}</td>
                 </tr>
                 <tr>
-                  <td>{dot(status.vault.status)} Secret vault (HashiCorp Vault)</td>
-                  <td className="mono">{status.vault.status}</td>
-                  <td className="muted mono">{status.vault.addr || "set VAULT_ADDR/VAULT_TOKEN in .env"}</td>
+                  <td>{dot(secretVault.status)} Secret vault {status.infisical?.enabled ? "(Infisical)" : "(HashiCorp Vault)"}</td>
+                  <td className="mono">{secretVault.status}</td>
+                  <td className="muted mono">{secretVault.addr || (status.infisical?.enabled ? "set INFISICAL_ADDR/INFISICAL_TOKEN in .env" : "set VAULT_ADDR/VAULT_TOKEN in .env")}</td>
                 </tr>
               </tbody>
             </table>
@@ -123,7 +128,7 @@ export default function Settings() {
               Cerulean writes DNS-01 challenge TXT records via Technitium&apos;s HTTP API
               (<span className="mono">/api/zones/records/add</span>) and polls Technitium as authoritative
               before Let&apos;s Encrypt validates. No SSH, no TSIG, no <span className="mono">nsupdate</span>.
-              The 30-day wildcard is issued offline via internal PKI first, then upgraded to ACME when online.
+              The 90-day wildcard is issued offline via internal PKI first, then upgraded to ACME when online.
             </p>
           </div>
         </>
