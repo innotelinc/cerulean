@@ -19,6 +19,9 @@ Optional:
                        requires ports 80/443 to reach NPM). Default 0 = create
                        hosts without SSL; attach a Cerulean-issued certificate
                        from the portal once issued.
+    TECHNITIUM_URL / NPM_HOST_IP  when set, A records for the subdomains are
+                       created via Technitium HTTP API (/api/zones/records/add)
+                       so the proxy hosts actually resolve.
 """
 
 import json
@@ -28,25 +31,10 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
+import urllib.parse
 
 
 # ── The complete proxy host map ─────────────────────────────────────────────
-# Every service that should be reachable through nginx proxy manager, one
-# subdomain each. `name` is the subdomain under NPM_BASE_DOMAIN, `port` is the
-# upstream port nginx proxy manager forwards to, `scheme` the upstream scheme.
-#
-#   subdomain          upstream                 port   purpose
-#   ─────────────────  ───────────────────────  ─────  ─────────────────────────
-#   cerulean.<base>    http://<forward_host>    3003   Cerulean dashboard + API
-#   app.<base>         http://<forward_host>    3003   Cerulean application
-#   api.<base>         http://<forward_host>    3003   Cerulean REST API
-#   auth.<base>        http://<forward_host>    9000   Authentik (SSO / users)
-#   secrets.<base>     http://<forward_host>    8383   Infisical (SecretOps)
-#   dns.<base>         http://<forward_host>    3003   DNS management
-#   certs.<base>       http://<forward_host>    3003   Certificate management
-#   admin.<base>       http://<forward_host>    3003   Administration
-# Add new services here (one dict per proxy). DNS-01 challenge validation
-# runs straight through BIND (nsupdate/TSIG), not through NPM.
 PROXY_HOSTS = [
     {
         "name": "cerulean",
@@ -113,7 +101,6 @@ def env(key, default=""):
 
 
 def load_env_file(path):
-    """Load KEY=VALUE lines from a .env file into os.environ (no override)."""
     if not os.path.isfile(path):
         return
     with open(path, encoding="utf-8") as fh:
@@ -131,10 +118,9 @@ def load_env_file(path):
 
 
 def detect_lan_ip():
-    """Best-effort: this host's primary LAN IPv4 (reachable from NPM)."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        sock.connect(("8.8.8.8", 80))  # picks the default route, sends nothing
+        sock.connect(("8.8.8.8", 80))
         return sock.getsockname()[0]
     except OSError:
         pass
@@ -201,54 +187,58 @@ class Npm:
         return self._request("PUT", f"/nginx/proxy-hosts/{host_id}", payload)
 
 
-# ── BIND A-record provisioning ──────────────────────────────────────────────
-# When NPM_HOST_IP (the nginx proxy manager host's LAN IP) and the BIND_SSH_*
-# values are set, each subdomain below gets an A record pointing at NPM so the
-# proxy hosts actually resolve. Uses the TSIG key installed by setup-bind.sh
-# (/etc/bind/cerulean.keys) via nsupdate over SSH.
-
-def _ssh_command(cmd):
-    """Build the ssh invocation; returns argv or None if not configured."""
-    key = os.environ.get("BIND_SSH_KEY_PATH", "")
-    pw = os.environ.get("BIND_SSH_PASSWORD", "")
-    user = os.environ.get("BIND_SSH_USER", "root")
-    host = os.environ.get("BIND_SSH_HOST", "")
-    port = os.environ.get("BIND_SSH_PORT", "22")
-    if not host or not (key or pw):
+# ── Technitium A-record provisioning ────────────────────────────────────────
+def _technitium_token(technitium_url):
+    token = env("TECHNITIUM_TOKEN") or env("TECHNITIUM_API_TOKEN")
+    if token:
+        return token.strip()
+    user = env("TECHNITIUM_USER") or env("TECHNITIUM_ADMIN_USER") or "admin"
+    pw = env("TECHNITIUM_PASSWORD") or env("TECHNITIUM_ADMIN_PASSWORD") or ""
+    if not pw:
         return None
-    argv = [
-        "ssh", "-p", port,
-        "-o", "StrictHostKeyChecking=accept-new",
-        "-o", "ConnectTimeout=15",
-    ]
-    if key:
-        argv += ["-i", key]
-    else:
-        argv = ["sshpass", "-p", pw] + argv
-    argv += [f"{user}@{host}", cmd]
-    return argv
-
-
-def ensure_a_record(domain, ip, zone):
-    """Create/update an A record for `domain` pointing at `ip` on BIND."""
-    key_name = os.environ.get("BIND_TSIG_NAME", "cerulean").rstrip(".")
-    secret = os.environ.get("BIND_TSIG_SECRET", "")
-    if not secret:
-        return False
-    cmd = (
-        f"printf '%s\\n' 'key \"{key_name}\" {{ algorithm hmac-sha256; "
-        f"secret \"{secret}\"; }};' > /tmp/cerulean-tsig.key && "
-        f"printf 'server 127.0.0.1\\nzone {zone}.\\nupdate delete {domain}. A\\n"
-        f"update add {domain}. 300 A {ip}\\nsend\\n' | nsupdate -k /tmp/cerulean-tsig.key "
-        f"; rc=$?; rm -f /tmp/cerulean-tsig.key; exit $rc"
-    )
-    argv = _ssh_command(cmd)
-    if argv is None:
-        return False
+    qs = urllib.parse.urlencode({"user": user, "pass": pw})
+    url = f"{technitium_url.rstrip('/')}/api/user/login?{qs}"
     try:
-        subprocess.run(argv, check=True, capture_output=True, timeout=60)
-        return True
-    except (OSError, subprocess.SubprocessError):
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+            if data.get("status") == "ok":
+                return data.get("token")
+    except Exception:
+        pass
+    return None
+
+
+def ensure_a_record_technitium(domain, ip, zone, technitium_url):
+    """Create/ensure an A record via Technitium HTTP API. Returns bool."""
+    tok = _technitium_token(technitium_url)
+    if not tok:
+        return False
+    # Ensure zone exists
+    params = urllib.parse.urlencode({"zone": zone, "type": "Primary"})
+    try:
+        req = urllib.request.Request(f"{technitium_url.rstrip('/')}/api/zones/create?{params}")
+        req.add_header("Authorization", f"Bearer {tok}")
+        urllib.request.urlopen(req, timeout=10).read()
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace") if e.fp else ""
+        if "already exists" not in body.lower() and e.code not in (409, 400):
+            pass  # continue to record add; zone may already exist
+    except Exception:
+        pass
+    # Add / ensure A record (idempotent: duplicate add is tolerated by Technitium or we treat as ok)
+    params = urllib.parse.urlencode({"domain": domain, "zone": zone, "type": "A", "ttl": "300", "ipAddress": ip})
+    try:
+        req = urllib.request.Request(f"{technitium_url.rstrip('/')}/api/zones/records/add?{params}")
+        req.add_header("Authorization", f"Bearer {tok}")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+            return data.get("status") in ("ok", None)  # some versions return ok, some no status on success
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace") if e.fp else ""
+        if "already exists" in body.lower() or "duplicate" in body.lower():
+            return True
+        return False
+    except Exception:
         return False
 
 
@@ -286,19 +276,7 @@ def main():
     for path in (os.path.join(here, "..", ".env"), ".env"):
         load_env_file(path)
 
-    # NPM_MODE=local is supported only alongside BIND_MODE=local. In local
-    # mode the complete NPM Edge component is bundled by Cerulean and the
-    # host-side script reaches its admin API at localhost:81. Remote-BIND
-    # deployments must use an external NPM endpoint explicitly.
     npm_mode = env("NPM_MODE", "remote").lower()
-    bind_mode = env("BIND_MODE", "remote").lower()
-    if npm_mode == "local" and bind_mode != "local":
-        print(
-            "NPM_MODE=local requires BIND_MODE=local; use NPM_MODE=remote "
-            "with an external NPM instance for remote BIND.",
-            file=sys.stderr,
-        )
-        return 2
     api_url = (
         env("NPM_API_URL")
         if npm_mode == "remote"
@@ -314,6 +292,11 @@ def main():
         return 2
 
     base_domain = env("NPM_BASE_DOMAIN", env("CERULEAN_ZONE", "innotel.us")).rstrip(".")
+    # When using default wildcard, prefer serverId lab domain
+    if not env("CERULEAN_ZONE") and env("CERULEAN_SERVER_ID"):
+        lab = env("CERULEAN_LAB_DOMAIN", "lab.innotel.us").strip().strip(".")
+        if lab and base_domain == "innotel.us":
+            base_domain = f"{env('CERULEAN_SERVER_ID')}.{lab}"
     forward_host = env("NPM_FORWARD_HOST")
     if not forward_host:
         forward_host = detect_lan_ip()
@@ -328,15 +311,16 @@ def main():
     ssl_via_npm = env("NPM_PROXY_SSL", "0").lower() in ("1", "true", "yes")
     letsencrypt_email = env("ACME_EMAIL", email)
     npm_host_ip = env("NPM_HOST_IP")
-    bind_zone = env("BIND_ZONES", env("CERULEAN_ZONE", base_domain)).split(",")[0].strip()
+    technitium_url = env("TECHNITIUM_URL", env("TECHNITIUM_API_URL", "http://cerulean-technitium:5380")).rstrip("/")
+    # Derive a zone that will host the proxy A records
+    zone = base_domain
 
-    # Optionally point the subdomains at NPM in BIND (requires BIND_SSH_* +
-    # BIND_TSIG_SECRET; skips silently when not configured).
     if npm_host_ip:
-        print(f"DNS: ensuring A records for {len(PROXY_HOSTS)} subdomains → {npm_host_ip} (BIND zone {bind_zone})")
+        print(f"DNS: ensuring A records for {len(PROXY_HOSTS)} subdomains → {npm_host_ip} (Technitium zone {zone} @ {technitium_url})")
     else:
         print("DNS: NPM_HOST_IP not set — skipping A-record creation (add A records")
         print("     pointing at the NPM host, or create them in Cerulean → Domains → Records).")
+        print(f"     To auto-create via Technitium, set NPM_HOST_IP and TECHNITIUM_URL/TECHNITIUM_TOKEN in .env.")
 
     npm = Npm(api_url, email, password)
     existing = npm.list_hosts()
@@ -348,8 +332,8 @@ def main():
     for entry in PROXY_HOSTS:
         payload, domain = host_payload(entry, base_domain, forward_host, ssl_via_npm, letsencrypt_email)
         if npm_host_ip and base_domain in domain:
-            ok = ensure_a_record(domain, npm_host_ip, bind_zone)
-            print(f"  DNS {'✓' if ok else '✗'} A {domain} → {npm_host_ip}")
+            ok = ensure_a_record_technitium(domain, npm_host_ip, zone, technitium_url)
+            print(f"  DNS {'✓' if ok else '✗'} A {domain} → {npm_host_ip} (Technitium)")
         found = next(
             (h for h in existing if domain in (h.get("domain_names") or [])),
             None,
@@ -358,8 +342,6 @@ def main():
             npm.create_host(payload)
             print(f"  ✓ created  {domain} → {payload['forward_scheme']}://{forward_host}:{payload['forward_port']}")
         else:
-            # Preserve any certificate already attached (e.g. a Cerulean export),
-            # so an update never silently drops SSL.
             if found.get("certificate_id"):
                 payload["certificate_id"] = found["certificate_id"]
                 payload["ssl_forced"] = found.get("ssl_forced", True)

@@ -4,7 +4,7 @@
 
 **Authentication, secrets & trust management — self-hosted.**
 
-*One login for the whole platform — DNS, certificates, secrets, and identity in one place.*
+*One login for the whole platform — DNS, DHCP, certificates, ad-blocking, secrets, and identity in one place.*
 
 [![CI](https://github.com/innotelinc/cerulean/actions/workflows/ci.yml/badge.svg)](https://github.com/innotelinc/cerulean/actions/workflows/ci.yml)
 [![Conformity](https://github.com/innotelinc/cerulean/actions/workflows/conform.yml/badge.svg)](https://github.com/innotelinc/cerulean/actions/workflows/conform.yml)
@@ -25,28 +25,41 @@
 | Per-platform TLS lifecycle | Cerulean issues ACME certificates + DNS records; NPM Edge fronts public hosts only |
 | Secrets committed to .env or repos | Infisical is the only secrets store; .env is derived and gitignored |
 | Recovery after a host loss is manual | Cerulean stores DNS + PKI + secrets; re-provision a host and the trust plane is recoverable |
+| Box must work offline / anywhere | Master orchestrator: DHCP, DNS, 30-day wildcard (*.<serverId>.lab.innotel.us) and ad-blocking without internet |
 
 > **About Cerulean** — the self-hosted **authentication & trust stack** for the Innotel
 > platform: **Authentik** (single sign-on — every platform login goes through Cerulean),
 > **Infisical** (secret management), certificate lifecycles and DNS automation written
-> straight into your own BIND server (regular + wildcard Let's Encrypt via DNS-01), an
-> internal PKI with mTLS device enrollment, discovery and health scoring, a secret vault,
-> and multi-tenant isolation — nginx proxy manager wired with zero clicks.
+> straight into **Technitium DNS Server** via HTTP API (regular + wildcard Let's Encrypt via DNS-01),
+> an **internal PKI** with mTLS device enrollment, **DHCP** and **ad-blocking** from the same DNS,
+> discovery and health scoring, a secret vault,
+> and multi-tenant isolation — **self-sufficient** with a 30-day wildcard
+> (`*.<serverId>.lab.innotel.us` / `<serverId>.lab.innotel.us`) that works offline and
+> is upgraded to ACME when online. nginx proxy manager wired with zero clicks.
 > **Landing page:** [innotelinc.github.io/cerulean](https://innotelinc.github.io/cerulean)
 
 ---
 
 Cerulean centralizes certificate lifecycles, DNS automation, and device trust in
 one self-hosted platform. It issues **Let's Encrypt certificates (regular and
-wildcard)** via DNS-01 challenges written straight into **your own BIND server**
-over SSH (nsupdate + TSIG), manages **DNS records live on BIND**, and pushes
-**certificates to nginx proxy manager** with zero clicks. It runs its own
+wildcard)** via DNS-01 challenges written straight into **Technitium DNS Server**
+over HTTP API (`/api/zones/records/*`), manages **DNS records live on Technitium**,
+runs **DHCP scopes** and **ad-blocking** from the same server, and pushes
+**certificates to nginx proxy manager** with zero clicks. Without internet it still
+serves DNS/DHCP and a **30-day wildcard PKI certificate** for its own
+`<serverId>.lab.innotel.us`; when online that wildcard is upgraded to Let's Encrypt
+via the same Technitium DNS-01 flow. It runs its own
 **internal PKI** for device certificates and mTLS auto-allow, discovers
 certificates across your environment, audits DNS health, scores certificate
 health, mirrors secrets into a **vault**, signs users in through **Authentik**,
 and scopes everything per **organization/tenant**. On a fresh host it even
 provisions every nginx proxy host automatically — the stack is wired before you
 open a browser.
+
+Each installation gets a stable **`<serverId>`** (e.g. `srv-a3f9-4821`) at first boot.
+Its default zone is `<serverId>.lab.innotel.us` with wildcard `*.<serverId>.lab.innotel.us`;
+if `SERVER_REGISTER_URL` is set it registers there on boot (best-effort, offline-tolerant).
+Set `CERULEAN_SERVER_ID` in `.env` for a pre-assigned ID.
 
 The reference deployment routes `*.cerulean.innotel.us` through nginx proxy
 manager to the portal and its services — but every endpoint, credential, and
@@ -58,11 +71,14 @@ zone is configurable.
 | --- | --- | --- |
 | 🪪 **Single sign-on (Authentik)** | One login for every platform — OIDC authorization-code + PKCE, passkeys (WebAuthn), groups/roles; all platform logins route through Cerulean. |
 | 🔑 **Secret management (Infisical)** | Central secret store for the whole stack; `.env` values may be `infisical://path#key` references; mirrors into the vault. |
-| 🔐 **ACME certificates** | Let's Encrypt, regular + **wildcard**, DNS-01 via your own BIND over `nsupdate` + TSIG. Auto-renewed 30 days before expiry. | 
-| 🌐 **Live DNS management** | Create/list/delete `A`, `AAAA`, `CNAME`, `TXT`, `MX`, `NS`, `SRV` records on zones you control, straight over SSH — routed to **the tenant's own DNS provider** when one is registered. |
-| 🛡 **Internal PKI** | Private root CA issuing **per-device TLS client certificates** (ECDSA P-256, `clientAuth`) — revoke instantly, re-issue freely. |
+| 🔐 **ACME certificates** | Let's Encrypt, regular + **wildcard**, DNS-01 via Technitium HTTP API. Auto-renewed 30 days before expiry. Default wildcard `*.<serverId>.lab.innotel.us` is 30-day PKI offline, upgraded to ACME when online. | 
+| 🌐 **Live DNS management** | Create/list/delete `A`, `AAAA`, `CNAME`, `TXT`, `MX`, `NS`, `SRV`, `CAA`, `PTR` records on zones you control via Technitium API — routed to **the tenant's own Technitium** when one is registered. |
+| 📡 **DHCP (Technitium)** | Scopes, leases and reservations on the same Technitium — Cerulean is the LAN's DHCP orchestrator. |
+| 🚫 **Ad-blocking (Technitium)** | Global toggle, block-list URLs, and per-domain allow/block — all via Technitium. |
+| 🔒 **Plug-anywhere / offline-first** | If the platform is running it can be the master orchestrator — DNS, DHCP, certs, blocking — without internet. Server ID + wildcard cert make it self-sufficient. |
+| 🛡 **Internal PKI** | Private root CA issuing **per-device TLS client certificates** (ECDSA P-256, `clientAuth`) — revoke instantly, re-issue freely. Also mints the 30-day server wildcard. |
 | 📱 **Device trust** | Devices enroll with keys that never leave them (CSR signing) or via MDM-pushed Apple profiles (root CA + SCEP). nginx **auto-allows** any device holding a Cerulean certificate. |
-| 🏢 **Multi-tenant** | Certificates, domains, PKI, and vault secrets scoped per organization. Tenants can bring their **own BIND servers**; tenant identity rides on Authentik groups; platform admins manage tenants in the dashboard. |
+| 🏢 **Multi-tenant** | Certificates, domains, PKI, and vault secrets scoped per organization. Tenants can bring their **own Technitium servers**; tenant identity rides on Authentik groups; platform admins manage tenants in the dashboard. |
 | ⇄ **nginx proxy manager** | One-click cert export, automatic attach on issue/renew, and full proxy-host provisioning on a fresh host. |
 | ⌕ **Discovery & audit** | Sweep NPM and local PEM directories into a central inventory; audit NS delegation, SOA, propagation, and CAA per domain. |
 | 💯 **Health scoring** | Every issued and discovered certificate gets a 0–100 score and A–F grade across validity, key strength, algorithm, SANs, material. |
@@ -73,20 +89,22 @@ zone is configurable.
 ## Quick start
 
 ```bash
-# One-shot setup: generates the admin password + TSIG key, configures BIND,
-# installs dependencies, builds, starts the stack, and provisions every nginx
-# proxy manager proxy host (if NPM_* is configured in .env).
+# One-shot setup: generates the admin password, ensures Technitium, installs
+# dependencies, builds, starts the stack, and provisions every nginx proxy
+# manager proxy host (if NPM_* is configured in .env).
 ./scripts/setup.sh
 
-# Or with the full auth & trust stack provisioned automatically
+# Bundled Technitium (authoritative DNS + DHCP + blocking) — offline-ready
+docker compose --profile technitium up -d
+# With the full auth & trust stack provisioned automatically
 # (Authentik SSO + Infisical secrets + Vault — set INFISICAL_ADMIN_PASSWORD
 # in .env to also import stack secrets into Infisical):
 ./scripts/setup.sh --with-authentik
 ```
 
-The portal is then at `http://<host>:3000` (or `https://cerulean.innotel.us`
-once the proxy host is provisioned and a certificate is attached). The generated
-admin password is printed at the end of setup (and stored in
+The portal is then at `http://<host>:3000` (or `https://<serverId>.lab.innotel.us`
+once the Technitium zone + wildcard are active and a proxy host is provisioned).
+The generated admin password is printed at the end of setup (and stored in
 `CERULEAN_ADMIN_PASSWORD` in `.env`). Authentik and Infisical are **the stack's
 auth & secrets layer** — every platform login and every secret reference
 routes through Cerulean.
@@ -98,8 +116,10 @@ docker compose --profile authentik up -d                     # Authentik SSO —
 docker compose -f docker-compose.yml -f compose.infisical.yml \
              --profile infisical up -d                       # Infisical secret management
 docker compose --profile vault up -d                         # dev-mode HashiCorp Vault
-# Plus the existing edge profiles:
-docker compose --profile bind --profile npm up -d  # local BIND + bundled NPM Edge (BIND_MODE=local, NPM_MODE=local)
+# DNS/DHCP/blocking plane:
+docker compose --profile technitium up -d                    # Technitium DNS + DHCP + ad-blocking (recommended)
+# Edge:
+docker compose --profile npm up -d                           # bundled NPM Edge (NPM_MODE=local)
 ```
 
 ## How it works
@@ -108,17 +128,19 @@ docker compose --profile bind --profile npm up -d  # local BIND + bundled NPM Ed
                     ┌─────────────────────────────────────────┐
                     │              Cerulean portal            │
                     │  (dashboard + REST API, Node/TypeScript)│
+                    │  master orchestrator: DHCP · DNS · PKI  │
                     └────────────┬──────────────┬─────────────┘
                                  │              │
-                  SSH + nsupdate │              │ HTTP API (token)
-                    (TSIG key)   │              │
+                 HTTP API (token)│              │ HTTP API (token)
                                  ▼              ▼
-                    ┌─────────────┐        ┌──────────────────────┐
-                    │ BIND server │        │ nginx proxy manager  │
-                    │ 192.168.1.80│        │ 192.168.1.71:81      │
-                    └─────────────┘        └──────────────────────┘
-                           ▲
-                           └── authoritative for innotel.us ──┘
+                    ┌─────────────────┐    ┌──────────────────────┐
+                    │ Technitium DNS  │    │ nginx proxy manager  │
+                    │ :53 · :5380     │    │ 192.168.1.71:81      │
+                    │ DHCP :67 · block│    └──────────────────────┘
+                    └─────────────────┘               ▲
+                           ▲                          │
+                           └── authoritative for <serverId>.lab.innotel.us ──┘
+                    wildcard *.<serverId>.lab.innotel.us (PKI 30d → ACME when online)
 ```
 
 ## Documentation
@@ -126,8 +148,8 @@ docker compose --profile bind --profile npm up -d  # local BIND + bundled NPM Ed
 | Guide | What it covers |
 | --- | --- |
 | [Device enrollment & mTLS](docs/device-enrollment.md) | Internal CA, CSR + SCEP/MDM enrollment, nginx auto-allow, Authentik passkeys |
-| [First-time setup](#first-time-setup) | BIND, nginx proxy manager, the proxy-host map |
-| [Using Cerulean](#using-cerulean) | Domains, certificates, discovery, PKI — day to day |
+| [First-time setup](#first-time-setup) | Technitium, server identity, nginx proxy manager, the proxy-host map |
+| [Using Cerulean](#using-cerulean) | Domains, certificates, DHCP, blocking, discovery, PKI — day to day |
 | [REST API](#rest-api) | Every endpoint, with examples |
 | [Multi-tenant (SSO)](#multi-tenant-sso) | Organizations, Authentik groups, isolation model |
 | [Authentik (SSO)](#authentik-sso) | Provisioning the provider + passkeys |
@@ -137,64 +159,49 @@ docker compose --profile bind --profile npm up -d  # local BIND + bundled NPM Ed
 
 ## First-time setup
 
-### 1. BIND (SSH + nsupdate)
+### 1. Technitium DNS Server (HTTP API) — DHCP & ad-blocking included
 
-Two modes, picked with `BIND_MODE` in `.env`:
+Cerulean's DNS plane is now **Technitium** over HTTP API — no SSH, no TSIG, no `nsupdate`.
 
-- **`BIND_MODE=remote`** (default) — point at an existing BIND server. This
-  is what the rest of this section describes.
-- **`BIND_MODE=local`** — run the **bundled BIND + sshd container** from this
-  stack: `docker compose --profile bind up -d`. Cerulean reaches it at the
-  compose service name `cerulean-bind` over SSH, exactly like a remote box
-  (nsupdate + TSIG, dig AXFR). On first start the container generates its
-  TSIG key and root SSH password and prints them to its logs — copy them into
-  `BIND_TSIG_SECRET` / `BIND_SSH_PASSWORD` in `.env` (or set them before
-  starting). Zones come from `BIND_ZONES` / `CERULEAN_ZONE`.
+- **Bundled (recommended):** `docker compose --profile technitium up -d` runs
+  `technitium/dns-server` as `cerulean-technitium` (ports 53/tcp+udp, 5380 for
+  the web console, 67/udp for DHCP). Cerulean reaches it at
+  `http://cerulean-technitium:5380`. Set `TECHNITIUM_ADMIN_PASSWORD` in `.env`
+  for the web console password; `TECHNITIUM_TOKEN` for an API token
+  (or use `TECHNITIUM_USER`/`TECHNITIUM_PASSWORD`). The container stores
+  state in `./data/technitium` (`/etc/dns`).
+- **Remote:** point `TECHNITIUM_URL` at your Technitium (e.g. `http://10.0.0.5:5380`)
+  and set `TECHNITIUM_TOKEN` (create under Settings → API Tokens) or
+  `TECHNITIUM_USER`/`TECHNITIUM_PASSWORD`.
 
-For `BIND_MODE=remote`, `./scripts/setup.sh` runs `./scripts/setup-bind.sh`
-for you. It SSHs to the BIND server and **automatically**: generates a TSIG
-key, installs it (`/etc/bind/cerulean.keys` + an `include` in `named.conf`),
-and patches each zone in `BIND_ZONES` with `allow-update` and
-`allow-transfer` — with a backup of your config before editing and a
-`named-checkconf` rollback if anything is invalid, then reloads BIND and
-writes the key into `.env`.
+DNS-01 for Let's Encrypt is fully automatic: Cerulean writes `_acme-challenge`
+TXT records via `/api/zones/records/add`, waits for Technitium to serve them,
+then cleans up. Tenants that register their own Technitium under **DNS Providers**
+have their zones run against that tenant's server.
 
-What it needs from you: `.env` with `BIND_SSH_HOST`, `BIND_SSH_USER` and
-(`BIND_SSH_KEY_PATH` or `BIND_SSH_PASSWORD`), plus the ability for the portal
-host to reach BIND over SSH. If you'd rather configure BIND by hand, the
-three things it adds are:
+**Server identity & offline wildcard.** On first boot Cerulean mints a stable
+`<serverId>` (or uses `CERULEAN_SERVER_ID` from `.env`) and owns
+`<serverId>.lab.innotel.us` + `*.<serverId>.lab.innotel.us`. A 30-day wildcard
+is issued immediately from the **internal PKI** (works offline) and attached to NPM;
+when online it is upgraded to a public Let's Encrypt cert via Technitium DNS-01.
+Change the lab suffix with `CERULEAN_LAB_DOMAIN`; optionally register with
+`SERVER_REGISTER_URL` (POST `{serverId, apex, wildcard}`) for central inventory.
 
-```named
-key "cerulean" { algorithm hmac-sha256; secret "<generated>"; };
-```
-
-```named
-allow-update { key "cerulean"; };        /* in each managed zone */
-allow-transfer { <portal-ip>; };          /* so Cerulean can list records (AXFR) */
-```
+**DHCP & ad-blocking** are toggled in Orchestrator. DHCP scopes live in Technitium
+(`Scope name`, range, subnet, router, DNS); ad-blocking uses Technitium's
+block lists + per-domain block/allow zones. Both work without internet once
+configured.
 
 ### 2. nginx proxy manager
 
-Two modes, picked with `NPM_MODE` in `.env`:
-
-- **`NPM_MODE=remote`** (default) — drive an existing external NPM server via its API. This is the only supported NPM mode when `BIND_MODE=remote`.
-- **`NPM_MODE=local`** — available only with `BIND_MODE=local`; it enables the complete NPM Edge component from the sibling `npm/` repository: NPM, MariaDB, and `backup-ui`. Start both opt-in profiles together with `docker compose --profile bind --profile npm up -d`. Cerulean talks to NPM at `http://cerulean-npm:81`; host-side provisioning uses the local admin port.
-
-For local mode, the NPM component is imported from `../npm/compose.cerulean.yml`; it includes MariaDB and `backup-ui`, and persists its state in the NPM repository's `data/`, `mysql/`, `letsencrypt/`, and `backups/` directories. Do not use the local profile with a remote BIND server.
+- **`NPM_MODE=remote`** (default) — drive an existing external NPM server via its API.
+- **`NPM_MODE=local`** — use the bundled NPM Edge from `../npm/compose.cerulean.yml`
+  (NPM + MariaDB + backup-ui). Start with `docker compose --profile npm up -d`.
+  Cerulean talks to it at `http://cerulean-npm:81`.
 
 Set `NPM_EMAIL` and `NPM_PASSWORD` in `.env`. In remote mode also set
-`NPM_API_URL` to the external NPM API. In local mode, Cerulean uses
-`http://cerulean-npm:81` internally and the host-side provisioner uses the
-configured local admin port. Set `NPM_FORWARD_HOST` (the portal host's LAN IP,
-as seen from NPM — auto-detected if blank). Cerulean authenticates against NPM's
-`/api/tokens` endpoint and can then:
-
-- import any Cerulean certificate as a **custom certificate**, and
-- create **proxy hosts** that use it.
-
-`./scripts/setup.sh` runs `./scripts/npm-proxy-hosts.py` automatically when
-NPM is configured, so a fresh host comes up with every proxy host already
-created.
+`NPM_API_URL`. Set `NPM_FORWARD_HOST` (portal host's LAN IP, auto-detected if blank).
+`./scripts/setup.sh` runs `./scripts/npm-proxy-hosts.py` automatically when NPM is configured.
 
 ### 3. nginx proxy manager proxy hosts (the map)
 
@@ -212,49 +219,25 @@ preserved):
 | `certs.cerulean.innotel.us` | `http` | `NPM_FORWARD_HOST` | **3000** | Certificate management |
 | `admin.cerulean.innotel.us` | `http` | `NPM_FORWARD_HOST` | **3000** | Administration |
 
-For the subdomains to resolve, add an A record per row pointing at the NPM
-host's IP — set `NPM_HOST_IP` in `.env` and `npm-proxy-hosts.py` creates them
-on BIND automatically (requires `BIND_SSH_*` + `BIND_TSIG_SECRET`), or create
-them in Cerulean under Domains → Records.
-
-To add another service, append an entry to `PROXY_HOSTS` in
-`scripts/npm-proxy-hosts.py` and re-run it.
+For the subdomains to resolve, add `A` records pointing at the NPM host's IP —
+set `NPM_HOST_IP` in `.env` and `npm-proxy-hosts.py` creates them via Technitium API,
+or create them in Cerulean under Domains → Records.
 
 By default hosts are created without SSL (`certificate_id: 0`). The moment you
-issue a certificate for `cerulean.innotel.us` (or any provisioned host's
-domain), Cerulean **automatically imports it into NPM and attaches it to the
-matching proxy host** — renewals refresh the same NPM certificate in place. A
-wildcard certificate for `*.innotel.us` is attached to every matching subdomain
-host (e.g. `cerulean.innotel.us`) as well, but never replaces a certificate a
-host already has — set `NPM_WILDCARD_ATTACH=0` in `.env` to restrict attaches
-to exact-domain matches. If you'd rather have NPM request its own Let's Encrypt
-certificate via HTTP-01, set `NPM_PROXY_SSL=1` instead.
+issue a certificate for a provisioned host's domain, Cerulean **automatically imports it into NPM and attaches it**. A
+wildcard certificate for `*.innotel.us` (or `*.<serverId>.lab.innotel.us`) is attached to every matching subdomain
+host as well, but never replaces a certificate a host already has.
 
 ## Using Cerulean
 
-1. **Domains** — add `innotel.us`. Expand a domain to browse and edit its
-   records live on BIND, or hit *Audit DNS* to run a health audit (NS
-   delegation, SOA consistency, propagation, CAA).
-2. **Certificates** — pick a domain, tick *Wildcard* for a
-   `*.innotel.us` certificate, and hit *Issue*. Status is
-   shown live; expiry is tracked and certificates auto-renew. Each certificate
-   carries a **health score** (0–100, A–F) covering validity, key strength,
-   signature algorithm, and SAN coverage.
-3. **Discovery & Audit** — scan for certificates that exist on nginx proxy
-   manager or in local PEM directories, review their health, and run DNS
-   audits for every registered domain from one page.
-4. **nginx proxy manager** — proxies are provisioned automatically by
-   `setup.sh`; once a certificate is issued for a host's domain it is attached
-   to the host automatically (wildcards cover matching subdomains). The
-   *Export to NPM* button is still there for manual exports.
-5. **PKI & Devices** — initialize the root CA, issue a device certificate (or
-   enroll one with a CSR so its key never leaves the device), download
-   material or an MDM enrollment profile, and revoke instantly — see
-   `docs/device-enrollment.md` for the full MDM/SCEP/mTLS runbook.
-6. **Tenants** *(platform admins)* — create/rename organizations and view
-   their members live from Authentik.
-7. **Settings** — integration health, vault sync, renewal sweep, and a
-   full configuration summary.
+1. **Orchestrator** — check Technitium reachability, server identity (`<serverId>.lab.innotel.us`), wildcard cert (PKI/ACME), DHCP scopes & leases, and ad-blocking in one place; register or rotate the wildcard there.
+2. **Domains** — add a zone (auto-created on Technitium). Expand to browse and edit records live via API, or hit *Audit DNS*.
+3. **Certificates** — pick a domain or leave empty for the default `*.<serverId>.lab.innotel.us` (30-day PKI, offline), tick *Wildcard*, and hit *Issue*. ACME uses Technitium DNS-01; each cert carries a health score (0–100, A–F).
+4. **Discovery & Audit** — scan for certificates that exist on nginx proxy manager or in local PEM directories, review their health, and run DNS audits for every registered domain.
+5. **nginx proxy manager** — proxies are provisioned automatically by `setup.sh`; once a certificate is issued for a host's domain it is attached automatically. *Export to NPM* is still there for manual exports.
+6. **PKI & Devices** — initialize the root CA, issue a device certificate (or enroll via CSR/MDM), download material or an enrollment profile, and revoke instantly.
+7. **Tenants** *(platform admins)* — create/rename organizations and view their members live from Authentik.
+8. **Settings** — orchestrator posture, integration health, vault sync, renewal sweep, and configuration summary.
 
 ## Multi-tenant (SSO)
 
@@ -267,21 +250,17 @@ admins who manage tenants from the **Tenants** page or `GET/POST /api/tenants`.
 Existing single-tenant data lives in the built-in `default` tenant — upgrading
 requires no migration work.
 
-**Per-tenant DNS providers.** A tenant that runs its own BIND can register it
-under **DNS Providers** (SSH endpoint, auth, and TSIG key; secrets are
-write-only and never leave the server). Record operations on the tenant's
-zones — AXFR listing and nsupdate adds/deletes — run against its **default**
-provider; tenants with no provider fall back to the platform-level BIND from
+**Per-tenant DNS providers.** A tenant that runs its own Technitium can register it
+under **DNS Providers** (URL + API token or user/password; secrets are
+write-only). Record operations on the tenant's zones run against its **default**
+provider; tenants with no provider fall back to the platform-level Technitium from
 `.env`, so nothing breaks when a provider is removed.
 
 ## REST API
 
 All endpoints require `Authorization: Bearer <token>` (obtain a token via
 `POST /api/auth/login`). Tenant-owned data (domains, certificates, PKI,
-discovery) is scoped to your tenant: members of an Authentik group whose slug
-matches a tenant see only that tenant's data, platform admins operate on the
-`default` tenant by default and send `X-Cerulean-Tenant: <slug>` to act in
-another.
+discovery) is scoped to your tenant.
 
 | Method | Path | Description |
 | --- | --- | --- |
@@ -289,20 +268,32 @@ another.
 | GET | `/api/auth/config` | Public — auth methods available (local + OIDC) |
 | GET | `/api/auth/me` | Current session user + tenant context |
 | GET | `/api/auth/oidc/authorize` · `/callback` | Authentik sign-in flow |
-| GET | `/api/status` | Integration health + config summary |
+| GET | `/api/status` | Integration health + config summary (Technitium, DHCP, blocking, server) |
+| GET/POST | `/api/server/identity` | Server identity (GET) / update `serverId`/`labDomain` (POST) |
+| POST | `/api/server/register` | Register `<serverId>` with `SERVER_REGISTER_URL` (offline-tolerant) |
+| POST | `/api/server/wildcard/renew` | Ensure/rotate 30-day wildcard (PKI → ACME upgrade) |
+| GET | `/api/orchestrator/status` | Full orchestrator status (DNS, DHCP, blocking) |
 | GET | `/api/discovery/certificates` | Discovered certificate inventory |
 | POST | `/api/discovery/scan` | Run a discovery sweep |
 | GET | `/api/audit/dns` · `/api/audit/dns/history` | DNS health audits |
 | GET | `/api/certificates/:id/health` | Certificate health breakdown |
 | POST | `/api/vault/sync` | Mirror secrets into the vault |
-| GET/POST/DELETE | `/api/domains[/:id]` | Manage registered domains |
-| GET/POST/PATCH/DELETE | `/api/dns/providers[/:id]` | Per-tenant BIND providers (secrets write-only) |
-| GET | `/api/domains/:id/records` | List zone records (AXFR) |
-| POST/DELETE | `/api/domains/:id/records` | Add / delete a DNS record |
-| GET/POST | `/api/certificates` | List certificates / start issuance |
+| GET/POST/DELETE | `/api/domains[/:id]` | Manage registered domains (Technitium zones) |
+| GET/POST/PATCH/DELETE | `/api/dns/providers[/:id]` | Per-tenant Technitium providers (secrets write-only) |
+| GET | `/api/domains/:id/records` | List zone records (Technitium API) |
+| POST/DELETE | `/api/domains/:id/records` | Add / delete a DNS record (Technitium) |
+| GET/POST | `/api/dhcp/scopes` | List / create DHCP scopes |
+| DELETE/POST | `/api/dhcp/scopes/:name` | Delete / enable / disable a scope |
+| GET | `/api/dhcp/leases` | DHCP leases |
+| POST/DELETE | `/api/dhcp/scopes/:name/reserved` | Reserved leases |
+| GET/POST | `/api/blocking/status` · `/api/blocking` | Blocking status / toggle + block-list URLs |
+| GET/POST/DELETE | `/api/blocking/blocked` | Per-domain block list |
+| GET/POST/DELETE | `/api/blocking/allowed` | Per-domain allow list (exceptions) |
+| POST | `/api/blocking/refresh` | Force refresh block lists |
+| GET/POST | `/api/certificates` | List certificates / start issuance (empty `domain` = default `*.<serverId>.lab.innotel.us`) |
 | GET | `/api/certificates/:id` | Certificate status |
 | GET | `/api/certificates/:id/material` | Fullchain PEM + private key |
-| POST | `/api/certificates/:id/renew` | Renew now |
+| POST | `/api/certificates/:id/renew` | Renew now (Technitium DNS-01) |
 | GET | `/api/pki/status` | Internal CA + client-certificate status |
 | POST | `/api/pki/init` | Generate the internal root CA (idempotent) |
 | GET | `/api/pki/ca` | Root CA certificate (PEM, for trust install) |
@@ -321,41 +312,36 @@ another.
 | POST | `/api/npm/hosts` | Create a proxy host |
 | GET | `/api/activities` | Audit log |
 
-Example — issue a wildcard certificate and export it:
+Example — issue a wildcard and export it (Technitium DNS-01):
 
 ```bash
 TOKEN=$(curl -s -X POST localhost:3000/api/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"password":"your-admin-password"}' | jq -r .token)
 
+# Default 30-day wildcard for this box (*.<serverId>.lab.innotel.us) — works offline (PKI)
 curl -s -X POST localhost:3000/api/certificates \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"domain":"innotel.us","wildcard":true}'
+  -d '{}'
+
+# Or an explicit domain's wildcard via Technitium
+curl -s -X POST localhost:3000/api/certificates \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"domain":"example.com","wildcard":true}'
 
 curl -s -X POST localhost:3000/api/npm/export-cert \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"certificate_id":1}'
 ```
 
-Example — issue a device TLS client certificate and download its material:
-
-```bash
-curl -s -X POST localhost:3000/api/pki/certificates \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"name":"laptop-1","email":"admin@innotel.us"}'
-
-curl -s localhost:3000/api/pki/certificates/1/material \
-  -H "Authorization: Bearer $TOKEN"   # → { certificate, key, ca }
-```
-
 ## Project layout
 
 ```
-server/          Express + TypeScript API (ACME, BIND/nsupdate, NPM, PKI)
-web/             React + Vite dashboard
-scripts/         setup helpers (BIND TSIG key generation, NPM proxy provisioning)
+server/          Express + TypeScript API (Technitium HTTP API, ACME, DHCP, blocking, PKI)
+web/             React + Vite dashboard (Orchestrator, Technitium, DHCP, blocking, certs)
+scripts/         setup helpers (Technitium, NPM proxy provisioning)
 docs/            deeper setup guides
-data/            runtime data (SQLite DB, gitignored)
+data/            runtime data (SQLite DB, gitignored) — incl. data/technitium
 ```
 
 ## Authentik (SSO)
@@ -369,8 +355,7 @@ docker compose --profile authentik up -d
 
 The bundled image is `ghcr.io/goauthentik/server:${AUTHENTIK_IMAGE_TAG:-2026.8.1}`
 (server + worker share the same tag). Set `AUTHENTIK_IMAGE_TAG` in `.env` to
-pin a different release; the provisioning scripts were validated against the
-2024.12+ admin-API and bootstrap flows and continue to work on 2026.8.
+pin a different release.
 
 The OIDC provider and application are created automatically by
 `scripts/authentik-setup.py` (it logs in with `AUTHENTIK_ADMIN_USER` /
@@ -397,7 +382,7 @@ plaintext:
 
 ```
 NPM_PASSWORD=infisical://NPM_PASSWORD
-BIND_SSH_PASSWORD=infisical://BIND_SSH_PASSWORD
+TECHNITIUM_TOKEN=infisical://TECHNITIUM_TOKEN
 ```
 
 The server also mirrors certificate private keys and ACME account keys into Infisical on
@@ -412,29 +397,21 @@ bash scripts/infisical-setup.sh
 
 Legacy deployments can keep using Vault: with `VAULT_ADDR` and `VAULT_TOKEN` set, the
 server mirrors the same material into Vault (KV v2) and resolves `vault://path#key`
-references (a dev-mode Vault ships as `docker compose --profile vault up -d`):
-
-```
-NPM_PASSWORD=vault://cerulean/npm#password
-BIND_SSH_PASSWORD=vault://cerulean/bind#password
-```
+references (a dev-mode Vault ships as `docker compose --profile vault up -d`).
 
 ## Release pipeline
 
 Every `v*` tag triggers the release workflow: tests + typecheck on every
 push/PR (`ci.yml`), a multi-arch Docker image published to GHCR, and a GitHub
-release with release artifacts — source tarballs (full, server, web), a
-software bill of materials (SPDX), and `SHA256SUMS.txt` checksums.
+release with release artifacts.
 
 ## Security notes
 
 - Real credentials live only in `.env`, which is **gitignored** — never commit
-  them. `.env.example` holds placeholders. Prefer `vault://` references for
-  anything sensitive.
-- `scripts/npm-proxy-hosts.py` reads `NPM_*` from `.env` and talks to NPM's API
-  with a short-lived token; it never writes credentials anywhere.
-- Change the NPM and BIND passwords if they have ever been shared in chat or
-  logs. Prefer SSH keys over passwords for BIND.
+  them. `.env.example` holds placeholders. Prefer `vault://`/`infisical://` references.
+- `scripts/npm-proxy-hosts.py` reads `NPM_*`/`TECHNITIUM_*` from `.env` and talks to
+  NPM/Technitium APIs with short-lived tokens; it never writes credentials anywhere.
+- Change the NPM and Technitium passwords if they have ever been shared in chat or logs.
 
 ## License
 
@@ -442,10 +419,9 @@ MIT — see [LICENSE](LICENSE).
 
 ## 🏛️ Platform stack
 
-Cerulean is the ecosystem's **TrustOps** platform — certificate lifecycle, DNS automation, PKI, and trust scoring in the
-[**Innotel Platform Stack**](https://github.com/innotelinc/innotel-platform-stack) — the
-canonical single-responsibility architecture where Authentik owns identity, Infisical owns
-secrets, Cerulean owns trust, ONYX owns storage, Magnate owns revenue, NPM Edge owns the edge, and every other
-platform is a business function that consumes them. See
-[docs/stack.md](docs/stack.md) for this platform's owns/consumes boundaries and its
-Infisical secret setup.
+Cerulean is the ecosystem's **TrustOps** platform — certificate lifecycle, DNS automation, DHCP, ad-blocking, PKI, and trust scoring in the
+[**Innotel Platform Stack**](https://github.com/innotelinc/innotel-platform-stack) —
+where Authentik owns identity, Infisical owns secrets, Cerulean owns trust and is the
+offline-first **master orchestrator** (Technitium DNS + DHCP + blocking), ONYX owns storage,
+Magnate owns revenue, NPM Edge owns the edge. See
+[docs/stack.md](docs/stack.md) for this platform's owns/consumes boundaries.

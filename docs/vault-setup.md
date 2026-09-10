@@ -7,7 +7,7 @@ Cerulean integrates with **HashiCorp Vault** (KV v2 engine) in two ways:
    sensitive material exists off-host.
 2. **`vault://` references** — any `.env` value may be a
    `vault://<path>#<key>` reference instead of plaintext. The server resolves
-   it at use time (NPM password, BIND SSH password, ...).
+   it at use time (NPM password, Technitium token, ...).
 
 ## Enabling
 
@@ -44,14 +44,14 @@ acme/<email>            ACME account private key
 
 ```dotenv
 NPM_PASSWORD=vault://cerulean/npm#password
-BIND_SSH_PASSWORD=vault://cerulean/bind#password
+TECHNITIUM_TOKEN=vault://cerulean/technitium#token
 ```
 
 Create the secrets with the Vault CLI:
 
 ```bash
 vault kv put cerulean/npm password='the-real-password'
-vault kv put cerulean/bind password='the-ssh-password'
+vault kv put cerulean/technitium token='the-technitium-api-token'
 ```
 
 `vault://<path>` without `#key` returns the first value of the secret. The

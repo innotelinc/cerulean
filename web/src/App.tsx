@@ -9,13 +9,15 @@ import Pki from "./pages/Pki";
 import Tenants from "./pages/Tenants";
 import Discovery from "./pages/Discovery";
 import Settings from "./pages/Settings";
+import Orchestrator from "./pages/Orchestrator";
 import Login from "./pages/Login";
 import type { SessionUser } from "./types";
 
-type Page = "dashboard" | "domains" | "dnsproviders" | "certificates" | "pki" | "tenants" | "npm" | "discovery" | "settings";
+type Page = "dashboard" | "orchestrator" | "domains" | "dnsproviders" | "certificates" | "pki" | "tenants" | "npm" | "discovery" | "settings";
 
 const NAV: { page: Page; label: string; icon: string; platformOnly?: boolean }[] = [
   { page: "dashboard", label: "Dashboard", icon: "◈" },
+  { page: "orchestrator", label: "Orchestrator", icon: "⬢" },
   { page: "domains", label: "Domains", icon: "◉" },
   { page: "dnsproviders", label: "DNS Providers", icon: "☁" },
   { page: "certificates", label: "Certificates", icon: "🔒" },
@@ -117,6 +119,7 @@ export default function App() {
       </aside>
       <main className="content">
         {page === "dashboard" && <Dashboard goTo={setPage} />}
+        {page === "orchestrator" && <Orchestrator />}
         {page === "domains" && <Domains />}
         {page === "dnsproviders" && <DnsProviders />}
         {page === "certificates" && <Certificates />}

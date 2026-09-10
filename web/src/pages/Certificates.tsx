@@ -9,12 +9,10 @@ export default function Certificates() {
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // issue form
   const [name, setName] = useState("");
   const [domain, setDomain] = useState("");
   const [wildcard, setWildcard] = useState(false);
 
-  // detail modal
   const [detail, setDetail] = useState<Certificate | null>(null);
   const [material, setMaterial] = useState<{ certificate: string; key: string } | null>(null);
   const [health, setHealth] = useState<import("../types").CertHealth | null>(null);
@@ -35,11 +33,8 @@ export default function Certificates() {
     }
   }, []);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  useEffect(() => { load(); }, [load]);
 
-  // Poll while anything is issuing
   useEffect(() => {
     if (!certs.some((c) => c.status === "issuing")) return;
     const t = setInterval(load, 3000);
@@ -48,18 +43,22 @@ export default function Certificates() {
 
   const issue = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!domain) return;
     setBusy(true);
     setError("");
     try {
-      await api.createCertificate({
+      const res = await api.createCertificate({
         name: name || undefined,
-        domain,
+        domain: domain || undefined,
         wildcard,
       });
+      flash(res.status === "issued" ? `Issued ${wildcard ? "wildcard " : ""}${res.domain} (${res.source ?? "pki"})` : `Issuance started for ${res.domain}`);
       setName("");
       setWildcard(false);
-      flash(`Issuance started for ${wildcard ? "*." : ""}${domain}`);
+      if (!domain) {
+        // default wildcard issued synchronously — no domain chosen
+      } else {
+        // keep domain for convenience
+      }
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start issuance");
@@ -94,17 +93,9 @@ export default function Certificates() {
     setDetail(c);
     setMaterial(null);
     setHealth(null);
-    try {
-      setHealth(await api.certHealth(c.id));
-    } catch {
-      setHealth(null);
-    }
+    try { setHealth(await api.certHealth(c.id)); } catch { setHealth(null); }
     if (c.hasMaterial) {
-      try {
-        setMaterial(await api.certMaterial(c.id));
-      } catch {
-        setMaterial(null);
-      }
+      try { setMaterial(await api.certMaterial(c.id)); } catch { setMaterial(null); }
     }
   };
 
@@ -118,48 +109,30 @@ export default function Certificates() {
   };
 
   const statusBadge = (c: Certificate) => {
-    if (c.status === "issued") return <span className="badge green">issued</span>;
+    if (c.status === "issued") return <span className="badge green">issued {c.source ? `· ${c.source}` : ""}</span>;
     if (c.status === "error") return <span className="badge red">error</span>;
     return <span className="badge amber">issuing…</span>;
   };
 
   const healthBadge = (c: Certificate) => {
     const { grade, score } = c.health || { grade: "?", score: 0 };
-    const cls =
-      grade === "A" || grade === "B"
-        ? "badge green"
-        : grade === "C"
-          ? "badge amber"
-          : "badge red";
-    return (
-      <span className={cls}>
-        {grade} {score}
-      </span>
-    );
+    const cls = grade === "A" || grade === "B" ? "badge green" : grade === "C" ? "badge amber" : "badge red";
+    return <span className={cls}>{grade} {score}</span>;
   };
 
   const expiryCell = (c: Certificate) => {
     if (!c.expiresAt) return <span className="muted">—</span>;
-    const days = Math.round(
-      (new Date(c.expiresAt).getTime() - Date.now()) / 86400000,
-    );
-    const cls = days < 30 ? "red" : "muted";
-    return (
-      <span className={cls}>
-        {new Date(c.expiresAt).toLocaleDateString()}
-        {c.status === "issued" && (
-          <span className="muted"> ({days} days)</span>
-        )}
-      </span>
-    );
+    const days = Math.round((new Date(c.expiresAt).getTime() - Date.now()) / 86400000);
+    const cls = days < 7 ? "red" : days < 30 ? "" : "muted";
+    return <span className={cls}>{new Date(c.expiresAt).toLocaleDateString()}<span className="muted"> ({days}d)</span></span>;
   };
 
   return (
     <div>
       <h1>Certificates</h1>
       <p className="subtitle">
-        Let's Encrypt certificates issued via DNS-01 (BIND nsupdate + TSIG),
-        regular and wildcard.
+        DNS-01 via Technitium HTTP API — regular or wildcard. Leave domain empty for the server&apos;s default
+        <span className="mono"> *.*.lab.innotel.us</span> (30-day, PKI offline → ACME when online).
       </p>
 
       {error && <p className="error">{error}</p>}
@@ -168,12 +141,12 @@ export default function Certificates() {
         <div className="panel-title">Issue a certificate</div>
         <form className="form-row" onSubmit={issue}>
           <input
-            placeholder="certificate name (optional)"
+            placeholder="name (optional)"
             value={name}
             onChange={(e) => setName(e.target.value)}
           />
           <select value={domain} onChange={(e) => setDomain(e.target.value)}>
-            <option value="">— choose domain —</option>
+            <option value="">— default wildcard (*.&lt;serverId&gt;.lab.innotel.us) —</option>
             {domains.map((d) => (
               <option key={d.id} value={d.name}>
                 {d.name}
@@ -183,27 +156,27 @@ export default function Certificates() {
           <label className="checkbox-row">
             <input
               type="checkbox"
-              checked={wildcard}
+              checked={wildcard || !domain}
               onChange={(e) => setWildcard(e.target.checked)}
+              disabled={!domain}
             />
             Wildcard (*.{domain || "domain"})
           </label>
-          <button type="submit" disabled={busy || !domain}>
-            {busy ? "Starting…" : "Issue"}
+          <button type="submit" disabled={busy}>
+            {busy ? "Starting…" : domain ? "Issue" : "Issue default wildcard"}
           </button>
         </form>
-        {wildcard && (
+        {(wildcard || !domain) && (
           <p className="muted" style={{ marginTop: 0 }}>
-            Wildcard certificates cover {domain || "the domain"} and all
-            subdomains (e.g. <span className="mono">*.{domain || "domain"}</span>).
+            Wildcard covers apex + subdomains (<span className="mono">*.*.lab.innotel.us</span>). Default wildcard is 30-day PKI (offline) and auto-upgraded to ACME.
           </p>
         )}
       </div>
 
       <div className="panel">
-        <div className="panel-title">Issued certificates</div>
+        <div className="panel-title">Certificates</div>
         {certs.length === 0 ? (
-          <div className="empty">No certificates yet</div>
+          <div className="empty">No certificates yet — issue one above.</div>
         ) : (
           <table>
             <thead>
@@ -219,27 +192,17 @@ export default function Certificates() {
             <tbody>
               {certs.map((c) => (
                 <tr key={c.id}>
-                  <td>
-                    <strong>{c.name}</strong>
-                  </td>
+                  <td><strong>{c.name}</strong></td>
                   <td className="mono">{c.domains.join(", ")}</td>
                   <td>{statusBadge(c)}</td>
                   <td>{c.status === "issued" ? healthBadge(c) : <span className="muted">—</span>}</td>
                   <td>{expiryCell(c)}</td>
                   <td>
                     <div className="actions">
-                      <button className="secondary small" onClick={() => showDetail(c)}>
-                        View
-                      </button>
-                      <button className="secondary small" onClick={() => renew(c)} disabled={c.status === "issuing"}>
-                        Renew
-                      </button>
-                      <button className="secondary small" onClick={() => exportToNpm(c)} disabled={!c.hasMaterial}>
-                        → NPM
-                      </button>
-                      <button className="danger small" onClick={() => remove(c)}>
-                        ✕
-                      </button>
+                      <button className="secondary small" onClick={() => showDetail(c)}>View</button>
+                      <button className="secondary small" onClick={() => renew(c)} disabled={c.status === "issuing"}>Renew</button>
+                      <button className="secondary small" onClick={() => exportToNpm(c)} disabled={!c.hasMaterial}>→ NPM</button>
+                      <button className="danger small" onClick={() => remove(c)}>✕</button>
                     </div>
                   </td>
                 </tr>
@@ -250,65 +213,24 @@ export default function Certificates() {
       </div>
 
       {detail && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.6)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 50,
-          }}
-          onClick={() => setDetail(null)}
-        >
-          <div
-            className="panel"
-            style={{ width: 760, maxHeight: "80vh", overflow: "auto", margin: 0 }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="panel-title">
-              {detail.name} — {detail.domains.join(", ")}
-              {detail.status === "error" && (
-                <p className="error" style={{ marginTop: 8 }}>
-                  {detail.error}
-                </p>
-              )}
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }} onClick={() => setDetail(null)}>
+          <div className="panel" style={{ width: 760, maxHeight: "80vh", overflow: "auto", margin: 0 }} onClick={(e) => e.stopPropagation()}>
+            <div className="panel-title">{detail.name} — {detail.domains.join(", ")} {detail.source && <span className="badge blue">{detail.source}</span>}
+              {detail.status === "error" && <p className="error" style={{ marginTop: 8 }}>{detail.error}</p>}
             </div>
             <p className="muted">
-              Issued: {detail.issuedAt ? new Date(detail.issuedAt).toLocaleString() : "—"} · Expires:{" "}
-              {detail.expiresAt ? new Date(detail.expiresAt).toLocaleString() : "—"} · Auto-renew:{" "}
-              {detail.autoRenew ? "on" : "off"}
+              Issued: {detail.issuedAt ? new Date(detail.issuedAt).toLocaleString() : "—"} · Expires: {detail.expiresAt ? new Date(detail.expiresAt).toLocaleString() : "—"} · Auto-renew: {detail.autoRenew ? "on" : "off"} · Source: {detail.source ?? "—"}
             </p>
             {health && (
               <div style={{ margin: "8px 0" }}>
-                <p className="panel-title" style={{ marginBottom: 6 }}>
-                  Health: {health.grade} ({health.score}/100)
-                </p>
-                <table>
-                  <tbody>
-                    {health.checks.map((c) => (
-                      <tr key={c.name}>
-                        <td style={{ width: 140 }}>
-                          <span
-                            className={`status-dot ${c.status === "ok" ? "ok" : c.status === "warn" ? "warn" : "err"}`}
-                          />
-                          {c.name}
-                        </td>
-                        <td className="muted">{c.detail}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <p className="panel-title" style={{ marginBottom: 6 }}>Health: {health.grade} ({health.score}/100)</p>
+                <table><tbody>{health.checks.map((c) => (
+                  <tr key={c.name}><td style={{ width: 140 }}><span className={`status-dot ${c.status === "ok" ? "ok" : c.status === "warn" ? "warn" : "err"}`} />{c.name}</td><td className="muted">{c.detail}</td></tr>
+                ))}</tbody></table>
               </div>
             )}
             {material ? (
-              <>
-                <p className="panel-title" style={{ marginBottom: 6 }}>Fullchain (PEM)</p>
-                <textarea readOnly value={material.certificate} />
-                <p className="panel-title" style={{ marginBottom: 6 }}>Private key (PEM)</p>
-                <textarea readOnly value={material.key} />
-              </>
+              <><p className="panel-title" style={{ marginBottom: 6 }}>Fullchain (PEM)</p><textarea readOnly value={material.certificate} /><p className="panel-title" style={{ marginBottom: 6 }}>Private key (PEM)</p><textarea readOnly value={material.key} /></>
             ) : (
               <p className="muted">Certificate material not available.</p>
             )}

@@ -3,10 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Cerulean — Certificate, DNS & Trust Platform</title>
-  <meta name="description" content="Cerulean is a self-hosted trust platform: Let's Encrypt (regular + wildcard) into BIND via RFC 2136, an internal PKI, DNS management and compliance reporting.">
-  <meta property="og:title" content="Cerulean — Certificate, DNS & Trust Platform">
-  <meta property="og:description" content="Self-hosted certificate, DNS & trust management — point DNS at it once.">
+  <title>Cerulean — Trust, DNS, DHCP & Ad-blocking — plug anywhere</title>
+  <meta name="description" content="Cerulean is a self-hosted master orchestrator: Technitium DNS + DHCP + ad-blocking + Let's Encrypt wildcard (DNS-01 via HTTP API), 30-day offline PKI wildcard *.<serverId>.lab.innotel.us, internal PKI and compliance reporting.">
+  <meta property="og:title" content="Cerulean — Trust, DNS, DHCP & Ad-blocking">
+  <meta property="og:description" content="Self-hosted master orchestrator — DNS, DHCP, certs and ad-blocking without internet; Technitium HTTP API, no SSH/TSIG.">
   <meta property="og:type" content="website">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230b0d10'/%3E%3Ctext x='32' y='44' font-size='34' text-anchor='middle'%3E🔵%3C/text%3E%3C/svg%3E">
   <style>
@@ -356,19 +356,19 @@
     <!-- Hero -->
     <div class="hero">
       <div class="wrap hero-inner">
-        <p class="kicker"><span class="pulse" aria-hidden="true"></span> v0.6.0 · TrustOps live</p>
-        <h1>Point DNS at it once —<br>never touch a <span class="accent">zone file</span> again.</h1>
-        <p class="lede">Cerulean owns the Trust layer of the Innotel Platform Stack: certificate lifecycle and ACME automation, wildcard Let's Encrypt into BIND via TSIG-signed dynamic updates, an internal CA for client certificates, DNS health and compliance reporting — with Authentik SSO and Infisical secrets.</p>
+        <p class="kicker"><span class="pulse" aria-hidden="true"></span> v0.7 · Master orchestrator — plug anywhere</p>
+        <h1>Plug it in —<br>it runs <span class="accent">everything</span>.</h1>
+        <p class="lede">Cerulean is the self-sufficient Trust + Network layer: Technitium DNS over HTTP API (no SSH, no TSIG), DHCP, ad-blocking, a 30-day wildcard <code>*.<span style="color:var(--p-text)">&lt;serverId&gt;</span>.lab.innotel.us</code> (PKI offline → Let's Encrypt when online), internal PKI, and DNS health — with Authentik SSO and Infisical secrets.</p>
         <div class="cta-row">
           <a class="btn btn-primary" href="https://github.com/innotelinc/cerulean#quick-start">Get started</a>
           <a class="btn btn-secondary" href="https://github.com/innotelinc/cerulean/tree/main/docs">Docs</a>
         </div>
         <div class="quickstart">
-          <code><span class="c">$</span> git clone https://github.com/innotelinc/cerulean.git && cd cerulean && cp .env.example .env && ./scripts/setup.sh</code>
+          <code><span class="c">$</span> git clone https://github.com/innotelinc/cerulean.git && cd cerulean && cp .env.example .env && ./scripts/setup.sh --with-technitium</code>
           <button class="copy" id="copy-btn" type="button" aria-label="Copy quick start command">copy</button>
         </div>
         <div class="stats">
-          <div class="stat"><b>ACME</b><span>Let's Encrypt regular + wildcard</span></div><div class="stat"><b>RFC 2136</b><span>TSIG-signed dynamic DNS updates</span></div><div class="stat"><b>PKI</b><span>internal CA + client certificates</span></div><div class="stat"><b>1 command</b><span>BIND configured, stack provisioned</span></div>
+          <div class="stat"><b>DNS / DHCP / Block</b><span>Technitium HTTP API — no SSH, no zone files</span></div><div class="stat"><b>30-day wildcard</b><span>*.<span style="color:var(--p-text)">&lt;serverId&gt;</span>.lab.innotel.us — PKI offline, ACME when online</span></div><div class="stat"><b>PKI</b><span>internal CA + mTLS device certificates</span></div><div class="stat"><b>offline-first</b><span>DHCP + DNS + certs without internet</span></div>
         </div>
       </div>
     </div>
@@ -376,10 +376,10 @@
     <!-- Features -->
     <section id="features">
       <div class="wrap">
-        <h2>Trust, automated end to end<span class="accent">.</span></h2>
-        <p class="section-sub">Every certificate, zone and client cert issued, rotated and reported — no SSH sessions, no spreadsheets.</p>
+        <h2>Trust & network, automated end-to-end<span class="accent">.</span></h2>
+        <p class="section-sub">Every certificate, zone, lease and block-list driven from one orchestrator — no SSH, no zone files, no spreadsheets.</p>
         <div class="grid grid-3">
-          <div class="card"><span class="icon" aria-hidden="true">🛡️</span><h3>Certificate lifecycle</h3><p>Let's Encrypt issuance — regular and wildcard via DNS-01 — with automatic renewal and deployment.</p></div><div class="card"><span class="icon" aria-hidden="true">🌐</span><h3>DNS automation</h3><p>Authoritative BIND management through TSIG (RFC 2136): add a domain, get its zone wired.</p></div><div class="card"><span class="icon" aria-hidden="true">🔑</span><h3>Internal PKI</h3><p>A private CA for client certificates — issue, revoke and monitor device certs from the dashboard.</p></div><div class="card"><span class="icon" aria-hidden="true">📋</span><h3>Compliance reporting</h3><p>Trust scoring, DNS health checks and compliance evidence for audits.</p></div><div class="card"><span class="icon" aria-hidden="true">🔐</span><h3>Authentik SSO</h3><p>Every surface behind one identity provider at <b>auth.cerulean.innotel.us</b>.</p></div><div class="card"><span class="icon" aria-hidden="true">🤫</span><h3>Infisical secrets</h3><p>TSIG keys and CA keys live in Infisical (SecretOps) — resolved at runtime, never in git.</p></div>
+          <div class="card"><span class="icon" aria-hidden="true">🛡️</span><h3>Certificate lifecycle</h3><p>Let's Encrypt via Technitium DNS-01 (+ 30-day PKI wildcard fallback) — auto-renewed and pushed to NPM.</p></div><div class="card"><span class="icon" aria-hidden="true">🌐</span><h3>DNS automation</h3><p>Technitium authoritative zones over HTTP API: add a domain, get its zone wired — per-tenant Technitium supported.</p></div><div class="card"><span class="icon" aria-hidden="true">📡</span><h3>DHCP</h3><p>Scopes, leases and reservations on the same Technitium — Cerulean orchestrates the LAN.</p></div><div class="card"><span class="icon" aria-hidden="true">🚫</span><h3>Ad-blocking</h3><p>Technitium block lists + per-domain block/allow — global toggle and live refresh.</p></div><div class="card"><span class="icon" aria-hidden="true">🔑</span><h3>Internal PKI</h3><p>Private CA for client certificates and the offline wildcard — issue, revoke, monitor from the dashboard.</p></div><div class="card"><span class="icon" aria-hidden="true">📋</span><h3>Compliance & health</h3><p>Trust scoring, DNS audits, and compliance evidence — orchestrator health in one view.</p></div><div class="card"><span class="icon" aria-hidden="true">🔐</span><h3>Authentik SSO</h3><p>Every surface behind one identity provider at <b>auth.cerulean.innotel.us</b>.</p></div><div class="card"><span class="icon" aria-hidden="true">🤫</span><h3>Infisical secrets</h3><p>Technitium tokens and CA keys live in Infisical (SecretOps) — resolved at runtime, never in git.</p></div>
         </div>
       </div>
     </section>
@@ -387,19 +387,20 @@
     <!-- Stack -->
     <section id="stack">
       <div class="wrap">
-        <h2>The Trust layer of the stack<span class="accent">.</span></h2>
-        <p class="section-sub">Cerulean consumes Authentik (identity) and Infisical (secrets) and provides trust services to every other platform.</p>
+        <h2>The Trust + Network layer of the stack<span class="accent">.</span></h2>
+        <p class="section-sub">Cerulean consumes Authentik (identity) and Infisical (secrets) and provides DNS/DHCP/blocking/certificates to every other platform.</p>
         <div class="split">
           <div>
             <div class="grid" style="gap:14px">
-              <div class="card"><span class="icon" aria-hidden="true">📦</span><h3>Cerulean server</h3><p>API + dashboard — certificate, DNS and PKI control plane.</p></div><div class="card"><span class="icon" aria-hidden="true">🌐</span><h3>BIND</h3><p>Authoritative DNS, updated via TSIG-signed dynamic updates.</p></div><div class="card"><span class="icon" aria-hidden="true">🛡️</span><h3>ACME client</h3><p>Let's Encrypt issuance, wildcard via DNS-01, auto-renewal.</p></div><div class="card"><span class="icon" aria-hidden="true">🔑</span><h3>Internal CA</h3><p>Client-certificate issuance for device trust across the ecosystem.</p></div>
+              <div class="card"><span class="icon" aria-hidden="true">📦</span><h3>Cerulean server</h3><p>API + dashboard — the master orchestrator (DHCP · DNS · certs · blocking).</p></div><div class="card"><span class="icon" aria-hidden="true">🌐</span><h3>Technitium DNS Server</h3><p>Authoritative + recursive DNS, DHCP and ad-blocking — driven over HTTP API.</p></div><div class="card"><span class="icon" aria-hidden="true">🛡️</span><h3>ACME + PKI</h3><p>Let's Encrypt (Technitium DNS-01, upgraded from PKI when online) + internal CA — 30-day wildcard included.</p></div><div class="card"><span class="icon" aria-hidden="true">🔑</span><h3>Internal CA</h3><p>Client-certificate issuance for device trust across the ecosystem.</p></div>
             </div>
           </div>
-          <pre class="terminal"><span class="cmt"># one-shot setup: TSIG key + BIND + stack</span>
-$ <span class="p">./scripts/setup.sh</span>
-<span class="ok">>> [bind] generated TSIG key, configured zones</span>
-<span class="ok">>> [acme] wildcard *.innotel.us issued (DNS-01)</span>
-<span class="ok">>> [infisical] CA + TSIG secrets mirrored to Infisical</span>
+          <pre class="terminal"><span class="cmt"># one-shot setup — bundled Technitium + wildcard + NPM hosts</span>
+$ <span class="p">./scripts/setup.sh --with-technitium</span>
+<span class="ok">>> [technitium] reachable at http://cerulean-technitium:5380</span>
+<span class="ok">>> [server] apex srv-a3f9.lab.innotel.us · wildcard *.srv-a3f9.lab.innotel.us (PKI 30d)</span>
+<span class="ok">>> [acme] wildcard upgraded to Let's Encrypt when online (DNS-01 via Technitium)</span>
+<span class="ok">>> [infisical] CA + Technitium secrets mirrored to Infisical</span>
 $ <span class="p">cerulean</span> cert issue api.example.com
 <span class="ok">certificate issued · auto-renewal armed</span></pre>
         </div>
@@ -409,10 +410,10 @@ $ <span class="p">cerulean</span> cert issue api.example.com
     <!-- Platform surfaces -->
     <section id="platform">
       <div class="wrap">
-        <h2>Every trust surface, one dashboard<span class="accent">.</span></h2>
-        <p class="section-sub">Canonical subdomains under cerulean.innotel.us, wildcard-TLS'd and SSO'd by default.</p>
+        <h2>Every surface, one dashboard<span class="accent">.</span></h2>
+        <p class="section-sub">Canonical subdomains under <code>&lt;serverId&gt;.lab.innotel.us</code>, wildcard-TLS'd and SSO'd by default.</p>
         <div class="surfaces">
-          <a class="surface" href="https://cerulean.innotel.us"><b>Portal</b><small>cerulean.innotel.us · dashboard + REST API</small><span class="live">live</span></a><a class="surface" href="https://app.cerulean.innotel.us"><b>App</b><small>app.cerulean.innotel.us · application</small><span class="live">live</span></a><a class="surface" href="https://api.cerulean.innotel.us"><b>API</b><small>api.cerulean.innotel.us · REST API</small><span class="live">live</span></a><a class="surface" href="https://auth.cerulean.innotel.us"><b>Identity</b><small>auth.cerulean.innotel.us · Authentik SSO — one login for every platform</small><span class="live">live</span></a><a class="surface" href="https://secrets.cerulean.innotel.us"><b>Secrets</b><small>secrets.cerulean.innotel.us · Infisical SecretOps</small><span class="live">live</span></a><a class="surface" href="https://dns.cerulean.innotel.us"><b>DNS</b><small>dns.cerulean.innotel.us · zone management</small><span class="live">live</span></a><a class="surface" href="https://certs.cerulean.innotel.us"><b>Certificates</b><small>certs.cerulean.innotel.us · ACME + PKI</small><span class="live">live</span></a>
+          <a class="surface" href="https://cerulean.innotel.us"><b>Portal</b><small>cerulean.innotel.us · dashboard + REST API</small><span class="live">live</span></a><a class="surface" href="https://app.cerulean.innotel.us"><b>App</b><small>app.cerulean.innotel.us · application</small><span class="live">live</span></a><a class="surface" href="https://api.cerulean.innotel.us"><b>API</b><small>api.cerulean.innotel.us · REST API</small><span class="live">live</span></a><a class="surface" href="https://auth.cerulean.innotel.us"><b>Identity</b><small>auth.cerulean.innotel.us · Authentik SSO — one login for every platform</small><span class="live">live</span></a><a class="surface" href="https://secrets.cerulean.innotel.us"><b>Secrets</b><small>secrets.cerulean.innotel.us · Infisical SecretOps</small><span class="live">live</span></a><a class="surface" href="https://dns.cerulean.innotel.us"><b>DNS</b><small>dns.cerulean.innotel.us · Technitium zone management</small><span class="live">live</span></a><a class="surface" href="https://certs.cerulean.innotel.us"><b>Certificates</b><small>certs.cerulean.innotel.us · ACME + PKI</small><span class="live">live</span></a>
         </div>
       </div>
     </section>
@@ -421,9 +422,9 @@ $ <span class="p">cerulean</span> cert issue api.example.com
     <section id="roadmap">
       <div class="wrap">
         <h2>Roadmap<span class="accent">.</span></h2>
-        <p class="section-sub">Shipped as v0.6.0; trust scoring and deeper fleet integration are next.</p>
+        <p class="section-sub">Shipped as v0.7 — master orchestrator; fleet scoring and deeper edge integration next.</p>
         <div class="roadmap">
-          <div class="mile"><span class="tag">v0.6.0 <em>"TrustOps"</em></span><p>ACME + wildcard DNS-01, BIND automation, internal PKI, Infisical mirror.</p><span class="state done">done</span></div><div class="mile"><span class="tag">v0.7.0 <em>"Trust scoring"</em></span><p>Compliance reporting, DNS health, fleet-wide trust posture.</p><span class="state next">next</span></div><div class="mile"><span class="tag">v1.0 <em>"LTS"</em></span><p>Security audit, hardening, docs, LTS channel.</p><span class="state later">later</span></div>
+          <div class="mile"><span class="tag">v0.7 <em>\"Orchestrator\"</em></span><p>Technitium master orchestrator: DNS/DHCP/blocking, 30-day offline wildcard, server identity — SSH/BIND removed.</p><span class="state done">done</span></div><div class="mile"><span class="tag">v0.8 <em>\"Trust scoring\"</em></span><p>Compliance reporting, DNS health, fleet-wide trust posture.</p><span class="state next">next</span></div><div class="mile"><span class="tag">v1.0 <em>\"LTS\"</em></span><p>Security audit, hardening, docs, LTS channel.</p><span class="state later">later</span></div>
         </div>
       </div>
     </section>
@@ -431,7 +432,7 @@ $ <span class="p">cerulean</span> cert issue api.example.com
 
   <footer>
     <div class="wrap foot-inner">
-      <span>Cerulean — Certificate, DNS & Trust Platform · MIT License</span>
+      <span>Cerulean — Trust, DNS, DHCP & Ad-blocking · MIT License</span>
       <span class="foot-links">
         <a href="https://github.com/innotelinc/cerulean">GitHub</a>
         <a href="https://innotelinc.github.io/cerulean">Pages</a>
@@ -445,7 +446,7 @@ $ <span class="p">cerulean</span> cert issue api.example.com
   <script>
     // Copy-to-clipboard for the quick-start one-liner (progressive enhancement).
     document.getElementById('copy-btn').addEventListener('click', function () {
-      var cmd = 'git clone https://github.com/innotelinc/cerulean.git && cd cerulean && cp .env.example .env && ./scripts/setup.sh';
+      var cmd = 'git clone https://github.com/innotelinc/cerulean.git && cd cerulean && cp .env.example .env && ./scripts/setup.sh --with-technitium';
       var self = this;
       function done() {
         self.textContent = 'copied';

@@ -10,7 +10,6 @@ app.use(express.json({ limit: "2mb" }));
 
 app.use("/api", routes);
 
-// Serve the built dashboard (web/dist) if present.
 const webDist = path.resolve(__dirname, "../../web/dist");
 if (fs.existsSync(webDist)) {
   app.use(express.static(webDist));
@@ -19,21 +18,21 @@ if (fs.existsSync(webDist)) {
   });
 }
 
-// Error handler
-app.use(
-  (
-    err: Error,
-    _req: express.Request,
-    res: express.Response,
-    _next: express.NextFunction,
-  ) => {
-    console.error(err);
-    res.status(500).json({ error: err.message || "Internal server error" });
-  },
-);
+app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error(err);
+  res.status(500).json({ error: err.message || "Internal server error" });
+});
 
 app.listen(config.port, () => {
-  console.log(`Cerulean portal listening on http://0.0.0.0:${config.port}`);
+  const id = (() => {
+    try { return require("./services/serverIdentity").ensureIdentity(); } catch { return null; }
+  })();
+  if (id) {
+    console.log(`Cerulean master orchestrator ${id.serverId} → ${id.apex} (+ ${id.wildcard}) @ http://0.0.0.0:${config.port}`);
+    console.log(`  DNS: Technitium ${config.technitium.url}  DHCP:${config.orchestrator.dhcpEnabled ? " on" : " off"}  Blocking:${config.orchestrator.blockingEnabled ? " on" : " off"}`);
+  } else {
+    console.log(`Cerulean portal listening on http://0.0.0.0:${config.port} (Technitium: ${config.technitium.url})`);
+  }
 });
 
 startScheduler();

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""cerulean-integration — provision NPM hosts, BIND A records, and a
+"""cerulean-integration — provision NPM hosts, Technitium A records, and a
 Cerulean-issued wildcard certificate for a project's subdomains.
 
 Usage:
@@ -11,7 +11,7 @@ Configuration (env vars, or a repo .env):
     CERULEAN_ADMIN_PASSWORD Cerulean local-admin password (required)
     CERULEAN_BASE_DOMAIN    hostname suffix for subdomains + cert domain
                             (default innotel.us)
-    CERULEAN_ZONE           BIND zone hosting the A records (optional —
+    CERULEAN_ZONE           Technitium zone hosting the A records (optional —
                             resolved automatically when unset)
     NPM_FORWARD_HOST        upstream IP/host NPM forwards to (default:
                             auto-detected LAN IP)
@@ -113,7 +113,7 @@ def run(cfg) -> int:
             return 1
         print(f"zone: {zone} (Cerulean domain id {zone_domain.get('id')})")
 
-    # 1. DNS A records (BIND via Cerulean's DNS API)
+    # 1. DNS A records (Technitium via Cerulean's DNS API)
     if not cfg.skip_dns:
         if zone_domain is None:
             print("error: --skip-dns requires the zone domain (remove --skip-hosts)", file=sys.stderr)

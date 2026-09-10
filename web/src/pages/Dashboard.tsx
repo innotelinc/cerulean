@@ -5,7 +5,7 @@ import type { Activity, Certificate, Domain, StatusResponse } from "../types";
 export default function Dashboard({
   goTo,
 }: {
-  goTo: (page: "domains" | "certificates" | "pki" | "npm" | "settings") => void;
+  goTo: (page: "domains" | "certificates" | "pki" | "npm" | "settings" | "orchestrator") => void;
 }) {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [domains, setDomains] = useState<Domain[]>([]);
@@ -42,19 +42,21 @@ export default function Dashboard({
   const issuing = certs.filter((c) => c.status === "issuing").length;
 
   const statusDot = (s: string) =>
-    s === "ok" ? "ok" : s === "not-configured" ? "warn" : "err";
+    s === "ok" ? "ok" : s === "not-configured" || s === "off" ? "warn" : "err";
 
   return (
     <div>
       <h1>Dashboard</h1>
-      <p className="subtitle">Cerulean — certificate &amp; DNS management for {status?.config.zone || "your zone"}</p>
+      <p className="subtitle">
+        Master orchestrator {status?.server.serverId ? `${status.server.serverId} · ${status.server.apex} (+ ${status.server.wildcard})` : "— certificate & DNS"}
+      </p>
 
       {error && <p className="error">{error}</p>}
 
       <div className="cards">
         <div className="card">
           <div className="num">{domains.length}</div>
-          <div className="label">Domains managed</div>
+          <div className="label">Zones managed</div>
         </div>
         <div className="card">
           <div className="num">{issued.length}</div>
@@ -74,10 +76,14 @@ export default function Dashboard({
           <div className="num">{issuing}</div>
           <div className="label">In progress</div>
         </div>
+        <div className="card">
+          <div className="num">{status?.dhcp.scopes ?? 0}</div>
+          <div className="label">DHCP scopes · {status?.dhcp.leases ?? 0} leases</div>
+        </div>
       </div>
 
       <div className="panel">
-        <div className="panel-title">Integration status</div>
+        <div className="panel-title">Master orchestrator</div>
         {!status ? (
           <p className="muted">Loading…</p>
         ) : (
@@ -85,11 +91,27 @@ export default function Dashboard({
             <tbody>
               <tr>
                 <td style={{ width: 220 }}>
-                  <span className={`status-dot ${statusDot(status.bind.status)}`} />
-                  BIND (SSH + nsupdate)
+                  <span className={`status-dot ${statusDot(status.technitium.status)}`} />
+                  Technitium DNS
                 </td>
-                <td className="muted">{status.bind.status}</td>
-                <td className="muted mono">{status.bind.detail}</td>
+                <td className="muted">{status.technitium.status}</td>
+                <td className="muted mono">{status.technitium.url}</td>
+              </tr>
+              <tr>
+                <td>
+                  <span className={`status-dot ${statusDot(status.dhcp.status)}`} />
+                  DHCP
+                </td>
+                <td className="muted">{status.dhcp.enabled ? status.dhcp.status : "disabled"}</td>
+                <td className="muted mono">{status.dhcp.detail} {status.dhcp.scopes ? `· ${status.dhcp.scopes} scopes` : ""}</td>
+              </tr>
+              <tr>
+                <td>
+                  <span className={`status-dot ${statusDot(status.blocking.status)}`} />
+                  Ad-blocking
+                </td>
+                <td className="muted">{status.blocking.enabled ? status.blocking.status : "disabled"}</td>
+                <td className="muted mono">{status.blocking.detail} {status.blocking.blockedZones ? `· ${status.blocking.blockedZones} blocked` : ""}</td>
               </tr>
               <tr>
                 <td>
@@ -97,7 +119,7 @@ export default function Dashboard({
                   nginx proxy manager
                 </td>
                 <td className="muted">{status.npm.status}</td>
-                <td className="muted mono">{status.config.npmApiUrl}</td>
+                <td className="muted mono">{status.config.npmApiUrl || "—"}</td>
               </tr>
               <tr>
                 <td>
@@ -105,7 +127,7 @@ export default function Dashboard({
                   Authentik (OIDC)
                 </td>
                 <td className="muted">{status.auth.oidcEnabled ? "configured" : "not-configured"}</td>
-                <td className="muted mono">{status.auth.issuerUrl}</td>
+                <td className="muted mono">{status.auth.issuerUrl || "—"}</td>
               </tr>
               <tr>
                 <td>
@@ -113,7 +135,7 @@ export default function Dashboard({
                   Secret vault
                 </td>
                 <td className="muted">{status.vault.status}</td>
-                <td className="muted mono">{status.vault.addr}</td>
+                <td className="muted mono">{status.vault.addr || "—"}</td>
               </tr>
               <tr>
                 <td>
@@ -123,6 +145,14 @@ export default function Dashboard({
                 <td className="muted">{status.pki.initialized ? "ready" : "not-initialized"}</td>
                 <td className="muted mono">{status.pki.commonName || "—"}</td>
               </tr>
+              <tr>
+                <td>
+                  <span className={`status-dot ${status.server.registered ? "ok" : "warn"}`} />
+                  Server {status.server.serverId}
+                </td>
+                <td className="muted">{status.server.registered ? "registered" : "standalone"}</td>
+                <td className="muted mono">{status.server.apex} · wildcard {status.server.wildcardValidityDays}d {status.server.autoWildcard ? "(auto)" : ""}</td>
+              </tr>
             </tbody>
           </table>
         )}
@@ -131,9 +161,10 @@ export default function Dashboard({
       <div className="panel">
         <div className="panel-title">Quick actions</div>
         <div className="actions">
-          <button onClick={() => goTo("domains")}>Manage DNS records</button>
+          <button onClick={() => goTo("orchestrator")}>Orchestrator · DHCP · Blocking</button>
+          <button onClick={() => goTo("domains")}>Manage DNS zones</button>
           <button onClick={() => goTo("certificates")}>Issue a certificate</button>
-          <button onClick={() => goTo("pki")}>Manage device certificates</button>
+          <button onClick={() => goTo("pki")}>Device certificates</button>
           <button onClick={() => goTo("npm")}>Export to nginx proxy manager</button>
         </div>
       </div>
