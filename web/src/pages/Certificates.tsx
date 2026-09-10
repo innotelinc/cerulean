@@ -132,7 +132,7 @@ export default function Certificates() {
       <h1>Certificates</h1>
       <p className="subtitle">
         DNS-01 via Technitium HTTP API — regular or wildcard. Leave domain empty for the server&apos;s default
-        <span className="mono"> *.*.lab.innotel.us</span> (30-day, PKI offline → ACME when online).
+        <span className="mono"> *.*.lab.innotel.us</span> (90-day, PKI offline → ACME when online).
       </p>
 
       {error && <p className="error">{error}</p>}
@@ -168,7 +168,7 @@ export default function Certificates() {
         </form>
         {(wildcard || !domain) && (
           <p className="muted" style={{ marginTop: 0 }}>
-            Wildcard covers apex + subdomains (<span className="mono">*.*.lab.innotel.us</span>). Default wildcard is 30-day PKI (offline) and auto-upgraded to ACME.
+            Wildcard covers apex + subdomains (<span className="mono">*.*.lab.innotel.us</span>). Default wildcard is 90-day PKI (offline) and auto-upgraded to ACME.
           </p>
         )}
       </div>

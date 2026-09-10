@@ -2,7 +2,7 @@
 
 **Classification: TrustOps — Master Orchestrator (Technitium)**
 
-Certificate lifecycle, DNS automation, DHCP, ad-blocking, and device trust — ACME, PKI, discovery, deployment, and trust scoring for the whole ecosystem. When running, Cerulean is **self-sufficient**: Technitium DNS + DHCP + blocking + 30-day wildcard (`*.<serverId>.lab.innotel.us`) without internet; upgraded to ACME when online.
+Certificate lifecycle, DNS automation, DHCP, ad-blocking, and device trust — ACME, PKI, discovery, deployment, and trust scoring for the whole ecosystem. When running, Cerulean is **self-sufficient**: Technitium DNS + DHCP + blocking + 90-day wildcard (`*.<serverId>.lab.innotel.us`) without internet; upgraded to ACME when online.
 
 This page declares Cerulean's role in the
 [**Innotel Platform Stack**](https://github.com/innotelinc/innotel-platform-stack) —
@@ -10,7 +10,7 @@ the canonical single-responsibility architecture.
 
 ## Owns
 
-- Certificate lifecycle (ACME DNS-01 via Technitium HTTP API; default 30-day wildcard PKI offline → ACME when online)
+- Certificate lifecycle (ACME DNS-01 via Technitium HTTP API; default 90-day wildcard PKI offline → ACME when online)
 - DNS automation (Technitium authoritative zones via `/api/zones/*`)
 - DHCP (Technitium scopes/leases via `/api/dhcp/*`)
 - Ad-blocking (Technitium block lists + per-domain block/allow)
@@ -37,7 +37,7 @@ the canonical single-responsibility architecture.
 - Payment processing (Magnate)
 - Storage (ONYX)
 
-> **Current state:** Technitium HTTP API replaces RFC2136/nsupdate/SSH+BIND. CRS master/slave to `lab.innotel.us` + service-key bridge for other stacks. Service API mirrors domains/certs/DNS/DHCP/blocking/PKI. Default wildcard 30-day, offline-first.
+> **Current state:** Technitium HTTP API replaces RFC2136/nsupdate/SSH+BIND. CRS master/slave to `lab.innotel.us` + service-key bridge for other stacks. Service API mirrors domains/certs/DNS/DHCP/blocking/PKI. Default wildcard 90-day, offline-first.
 
 ## Deployment — Technitium
 

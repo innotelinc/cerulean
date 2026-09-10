@@ -2,7 +2,7 @@
   "name": "cerulean",
   "version": "0.1.0",
   "private": true,
-  "description": "Cerulean — plug-anywhere master orchestrator: Technitium DNS/DHCP/ad-blocking, Let's Encrypt wildcard (30-day PKI offline → ACME when online) via Technitium DNS-01, nginx proxy manager, Authentik SSO, vault, discovery and health scoring.",
+  "description": "Cerulean — plug-anywhere master orchestrator: Technitium DNS/DHCP/ad-blocking, Let's Encrypt wildcard (90-day PKI offline → ACME when online) via Technitium DNS-01, nginx proxy manager, Authentik SSO, vault, discovery and health scoring.",
   "workspaces": [
     "server",
     "web"

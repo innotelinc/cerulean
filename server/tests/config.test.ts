@@ -31,11 +31,14 @@ describe("loadConfig — Technitium + server identity", () => {
     expect(cfg2.technitium.url).toBe("http://host.docker.internal:5380");
   });
 
-  it("caps wildcard validity to 1..90", () => {
+  it("caps wildcard validity to 1..90 and defaults to 90", () => {
     const cfg = loadConfig({ ...baseEnv, SERVER_WILDCARD_VALIDITY_DAYS: "200" });
     expect(cfg.server.wildcardValidityDays).toBe(90);
     const cfg2 = loadConfig({ ...baseEnv, SERVER_WILDCARD_VALIDITY_DAYS: "0" });
     expect(cfg2.server.wildcardValidityDays).toBe(1);
+    // Default is 90 days for the master/slave wildcard cert
+    const cfg3 = loadConfig(baseEnv);
+    expect(cfg3.server.wildcardValidityDays).toBe(90);
   });
 
   it("defaults labDomain to lab.innotel.us", () => {

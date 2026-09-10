@@ -25,7 +25,7 @@
 | Per-platform TLS lifecycle | Cerulean issues ACME certificates + DNS records; NPM Edge fronts public hosts only |
 | Secrets committed to .env or repos | Infisical is the only secrets store; .env is derived and gitignored |
 | Recovery after a host loss is manual | Cerulean stores DNS + PKI + secrets; re-provision a host and the trust plane is recoverable |
-| Box must work offline / anywhere | Master orchestrator: DHCP, DNS, 30-day wildcard (*.<serverId>.lab.innotel.us) and ad-blocking without internet |
+| Box must work offline / anywhere | Master orchestrator: DHCP, DNS, 90-day wildcard (*.<serverId>.lab.innotel.us) and ad-blocking without internet |
 
 > **About Cerulean** — the self-hosted **authentication & trust stack** for the Innotel
 > platform: **Authentik** (single sign-on — every platform login goes through Cerulean),
@@ -33,7 +33,7 @@
 > straight into **Technitium DNS Server** via HTTP API (regular + wildcard Let's Encrypt via DNS-01),
 > an **internal PKI** with mTLS device enrollment, **DHCP** and **ad-blocking** from the same DNS,
 > discovery and health scoring, a secret vault,
-> and multi-tenant isolation — **self-sufficient** with a 30-day wildcard
+> and multi-tenant isolation — **self-sufficient** with a 90-day wildcard
 > (`*.<serverId>.lab.innotel.us` / `<serverId>.lab.innotel.us`) that works offline and
 > is upgraded to ACME when online. nginx proxy manager wired with zero clicks.
 > **Landing page:** [innotelinc.github.io/cerulean](https://innotelinc.github.io/cerulean)
@@ -46,7 +46,7 @@ wildcard)** via DNS-01 challenges written straight into **Technitium DNS Server*
 over HTTP API (`/api/zones/records/*`), manages **DNS records live on Technitium**,
 runs **DHCP scopes** and **ad-blocking** from the same server, and pushes
 **certificates to nginx proxy manager** with zero clicks. Without internet it still
-serves DNS/DHCP and a **30-day wildcard PKI certificate** for its own
+serves DNS/DHCP and a **90-day wildcard PKI certificate** for its own
 `<serverId>.lab.innotel.us`; when online that wildcard is upgraded to Let's Encrypt
 via the same Technitium DNS-01 flow. It runs its own
 **internal PKI** for device certificates and mTLS auto-allow, discovers
@@ -71,12 +71,12 @@ zone is configurable.
 | --- | --- | --- |
 | 🪪 **Single sign-on (Authentik)** | One login for every platform — OIDC authorization-code + PKCE, passkeys (WebAuthn), groups/roles; all platform logins route through Cerulean. |
 | 🔑 **Secret management (Infisical)** | Central secret store for the whole stack; `.env` values may be `infisical://path#key` references; mirrors into the vault. |
-| 🔐 **ACME certificates** | Let's Encrypt, regular + **wildcard**, DNS-01 via Technitium HTTP API. Auto-renewed 30 days before expiry. Default wildcard `*.<serverId>.lab.innotel.us` is 30-day PKI offline, upgraded to ACME when online. | 
+| 🔐 **ACME certificates** | Let's Encrypt, regular + **wildcard**, DNS-01 via Technitium HTTP API. Auto-renewed 30 days before expiry. Default wildcard `*.<serverId>.lab.innotel.us` is 90-day PKI offline, upgraded to ACME when online. | 
 | 🌐 **Live DNS management** | Create/list/delete `A`, `AAAA`, `CNAME`, `TXT`, `MX`, `NS`, `SRV`, `CAA`, `PTR` records on zones you control via Technitium API — routed to **the tenant's own Technitium** when one is registered. |
 | 📡 **DHCP (Technitium)** | Scopes, leases and reservations on the same Technitium — Cerulean is the LAN's DHCP orchestrator. |
 | 🚫 **Ad-blocking (Technitium)** | Global toggle, block-list URLs, and per-domain allow/block — all via Technitium. |
 | 🔒 **Plug-anywhere / offline-first** | If the platform is running it can be the master orchestrator — DNS, DHCP, certs, blocking — without internet. Server ID + wildcard cert make it self-sufficient. |
-| 🛡 **Internal PKI** | Private root CA issuing **per-device TLS client certificates** (ECDSA P-256, `clientAuth`) — revoke instantly, re-issue freely. Also mints the 30-day server wildcard. |
+| 🛡 **Internal PKI** | Private root CA issuing **per-device TLS client certificates** (ECDSA P-256, `clientAuth`) — revoke instantly, re-issue freely. Also mints the 90-day server wildcard. |
 | 📱 **Device trust** | Devices enroll with keys that never leave them (CSR signing) or via MDM-pushed Apple profiles (root CA + SCEP). nginx **auto-allows** any device holding a Cerulean certificate. |
 | 🏢 **Multi-tenant** | Certificates, domains, PKI, and vault secrets scoped per organization. Tenants can bring their **own Technitium servers**; tenant identity rides on Authentik groups; platform admins manage tenants in the dashboard. |
 | ⇄ **nginx proxy manager** | One-click cert export, automatic attach on issue/renew, and full proxy-host provisioning on a fresh host. |
@@ -140,7 +140,7 @@ docker compose --profile npm up -d                           # bundled NPM Edge 
                     └─────────────────┘               ▲
                            ▲                          │
                            └── authoritative for <serverId>.lab.innotel.us ──┘
-                    wildcard *.<serverId>.lab.innotel.us (PKI 30d → ACME when online)
+                    wildcard *.<serverId>.lab.innotel.us (PKI 90d → ACME when online)
 ```
 
 ## Documentation
@@ -181,7 +181,7 @@ have their zones run against that tenant's server.
 
 **Server identity & offline wildcard.** On first boot Cerulean mints a stable
 `<serverId>` (or uses `CERULEAN_SERVER_ID` from `.env`) and owns
-`<serverId>.lab.innotel.us` + `*.<serverId>.lab.innotel.us`. A 30-day wildcard
+`<serverId>.lab.innotel.us` + `*.<serverId>.lab.innotel.us`. A 90-day wildcard
 is issued immediately from the **internal PKI** (works offline) and attached to NPM;
 when online it is upgraded to a public Let's Encrypt cert via Technitium DNS-01.
 Change the lab suffix with `CERULEAN_LAB_DOMAIN`; optionally register with
@@ -232,7 +232,7 @@ host as well, but never replaces a certificate a host already has.
 
 1. **Orchestrator** — check Technitium reachability, server identity (`<serverId>.lab.innotel.us`), wildcard cert (PKI/ACME), DHCP scopes & leases, and ad-blocking in one place; register or rotate the wildcard there.
 2. **Domains** — add a zone (auto-created on Technitium). Expand to browse and edit records live via API, or hit *Audit DNS*.
-3. **Certificates** — pick a domain or leave empty for the default `*.<serverId>.lab.innotel.us` (30-day PKI, offline), tick *Wildcard*, and hit *Issue*. ACME uses Technitium DNS-01; each cert carries a health score (0–100, A–F).
+3. **Certificates** — pick a domain or leave empty for the default `*.<serverId>.lab.innotel.us` (90-day PKI, offline), tick *Wildcard*, and hit *Issue*. ACME uses Technitium DNS-01; each cert carries a health score (0–100, A–F).
 4. **Discovery & Audit** — scan for certificates that exist on nginx proxy manager or in local PEM directories, review their health, and run DNS audits for every registered domain.
 5. **nginx proxy manager** — proxies are provisioned automatically by `setup.sh`; once a certificate is issued for a host's domain it is attached automatically. *Export to NPM* is still there for manual exports.
 6. **PKI & Devices** — initialize the root CA, issue a device certificate (or enroll via CSR/MDM), download material or an enrollment profile, and revoke instantly.
@@ -271,7 +271,7 @@ discovery) is scoped to your tenant.
 | GET | `/api/status` | Integration health + config summary (Technitium, DHCP, blocking, server) |
 | GET/POST | `/api/server/identity` | Server identity (GET) / update `serverId`/`labDomain` (POST) |
 | POST | `/api/server/register` | Register `<serverId>` with `SERVER_REGISTER_URL` (offline-tolerant) |
-| POST | `/api/server/wildcard/renew` | Ensure/rotate 30-day wildcard (PKI → ACME upgrade) |
+| POST | `/api/server/wildcard/renew` | Ensure/rotate wildcard (PKI → ACME upgrade) |
 | GET | `/api/orchestrator/status` | Full orchestrator status (DNS, DHCP, blocking) |
 | GET | `/api/discovery/certificates` | Discovered certificate inventory |
 | POST | `/api/discovery/scan` | Run a discovery sweep |
@@ -319,7 +319,7 @@ TOKEN=$(curl -s -X POST localhost:3000/api/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"password":"your-admin-password"}' | jq -r .token)
 
-# Default 30-day wildcard for this box (*.<serverId>.lab.innotel.us) — works offline (PKI)
+# Default 90-day wildcard for this box (*.<serverId>.lab.innotel.us) — works offline (PKI)
 curl -s -X POST localhost:3000/api/certificates \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{}'

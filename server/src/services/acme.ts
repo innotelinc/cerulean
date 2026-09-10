@@ -104,7 +104,7 @@ export async function issueCertificate(input: {
   const probe = await technitium.testConnection(conn as never);
   if (!probe.ok) {
     throw new Error(
-      `Technitium DNS is unreachable: ${probe.detail} — check TECHNITIUM_URL / TECHNITIUM_TOKEN in .env (offline mode: 30-day PKI wildcard is still served)`,
+      `Technitium DNS is unreachable: ${probe.detail} — check TECHNITIUM_URL / TECHNITIUM_TOKEN in .env (offline mode: the PKI wildcard is still served)`,
     );
   }
 

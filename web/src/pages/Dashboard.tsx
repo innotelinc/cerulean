@@ -34,6 +34,11 @@ export default function Dashboard({
     load();
   }, []);
 
+  // Infisical is the stack's secret store when enabled; HashiCorp Vault otherwise.
+  const secretVault = status?.infisical?.enabled
+    ? { status: status.infisical.status, addr: status.infisical.addr }
+    : { status: status?.vault.status ?? "not-configured", addr: status?.vault.addr ?? "" };
+
   const issued = certs.filter((c) => c.status === "issued");
   const expiring = issued.filter((c) => {
     if (!c.expiresAt) return false;
@@ -131,11 +136,11 @@ export default function Dashboard({
               </tr>
               <tr>
                 <td>
-                  <span className={`status-dot ${statusDot(status.vault.status)}`} />
+                  <span className={`status-dot ${statusDot(secretVault.status)}`} />
                   Secret vault
                 </td>
-                <td className="muted">{status.vault.status}</td>
-                <td className="muted mono">{status.vault.addr || "—"}</td>
+                <td className="muted">{secretVault.status}</td>
+                <td className="muted mono">{secretVault.addr || "—"}</td>
               </tr>
               <tr>
                 <td>
