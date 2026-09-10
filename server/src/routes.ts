@@ -46,6 +46,7 @@ import {
 } from "./services/tenants";
 import {
   adminConfigured as authentikAdminConfigured,
+  ensureGroup,
   listGroupMembers,
 } from "./services/authentik";
 
@@ -1068,23 +1069,43 @@ router.get("/tenants", tenantGuard, (_req, res) => {
   res.json(db.listTenants());
 });
 
-router.post("/tenants", tenantGuard, (req, res) => {
-  if (!isPlatform(res)) {
-    res.status(403).json({ error: "Platform admin required" });
-    return;
-  }
-  try {
-    const tenant = createTenant({ slug: String(req.body?.slug ?? ""), name: String(req.body?.name ?? "") });
-    db.addActivity("tenant-create", `Created tenant "${tenant.name}" (${tenant.slug})`);
-    res.status(201).json(tenant);
-  } catch (err) {
-    if (err instanceof TenantError) {
-      res.status(err.status).json({ error: err.message });
+router.post(
+  "/tenants",
+  tenantGuard,
+  asyncHandler(async (req, res) => {
+    if (!isPlatform(res)) {
+      res.status(403).json({ error: "Platform admin required" });
       return;
     }
-    throw err;
-  }
-});
+    try {
+      const tenant = createTenant({ slug: String(req.body?.slug ?? ""), name: String(req.body?.name ?? "") });
+      db.addActivity("tenant-create", `Created tenant "${tenant.name}" (${tenant.slug})`);
+      // Tenant membership rides on the Authentik group named after the slug,
+      // so create it up-front — otherwise the tenant exists but only platform
+      // admins (never its own members) can sign in to it.
+      let warning: string | undefined;
+      if (authentikAdminConfigured()) {
+        try {
+          const group = await ensureGroup(tenant.slug);
+          if (group.created) {
+            db.addActivity("tenant-group-create", `Created Authentik group "${tenant.slug}"`);
+          }
+        } catch (err) {
+          warning = `Tenant created, but its Authentik group could not be created: ${err instanceof Error ? err.message : "unknown error"}`;
+        }
+      } else {
+        warning = `Tenant created, but Authentik admin credentials are not configured — create the group "${tenant.slug}" in Authentik and add members`;
+      }
+      res.status(201).json(warning ? { ...tenant, warning } : tenant);
+    } catch (err) {
+      if (err instanceof TenantError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
 
 router.patch("/tenants/:id", tenantGuard, (req, res) => {
   if (!isPlatform(res)) {

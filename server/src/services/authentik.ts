@@ -23,6 +23,11 @@ export interface GroupMembersResult {
   groupExists: boolean;
 }
 
+export interface EnsureGroupResult {
+  name: string;
+  created: boolean;
+}
+
 /** True when Authentik admin credentials are configured in .env. */
 export function adminConfigured(): boolean {
   return Boolean(
@@ -91,4 +96,37 @@ export async function listGroupMembers(name: string): Promise<GroupMembersResult
     name: u.name ?? u.username,
   }));
   return { users, groupExists: true };
+}
+
+/**
+ * Ensure the Authentik group backing a tenant exists (idempotent). Tenant
+ * membership rides on the group named after the tenant slug, so a tenant
+ * created without its group exists but only platform admins can reach it.
+ */
+export async function ensureGroup(name: string): Promise<EnsureGroupResult> {
+  if (!name.trim()) throw new Error("Group name is required");
+  const token = await adminToken();
+  const base = config.authentikAdmin.apiUrl.replace(/\/$/, "");
+  const headers = { Authorization: `Bearer ${token}` };
+
+  const lookup = await fetch(
+    `${base}/api/v3/core/groups/?name=${encodeURIComponent(name)}`,
+    { headers, signal: AbortSignal.timeout(20_000) },
+  );
+  if (!lookup.ok) {
+    throw new Error(`Authentik group query failed (HTTP ${lookup.status})`);
+  }
+  const found = (await lookup.json()) as { results?: unknown[] };
+  if ((found.results ?? []).length) return { name, created: false };
+
+  const create = await fetch(`${base}/api/v3/core/groups/`, {
+    method: "POST",
+    headers: { ...headers, "Content-Type": "application/json" },
+    body: JSON.stringify({ name, is_superuser: false }),
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!create.ok) {
+    throw new Error(`Authentik group create failed (HTTP ${create.status})`);
+  }
+  return { name, created: true };
 }

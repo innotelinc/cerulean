@@ -19,6 +19,7 @@ function jsonResponse(obj: unknown, status = 200): Response {
 }
 
 const requests: { method: string; path: string; query: string }[] = [];
+const createdGroups: { name: string; is_superuser: boolean }[] = [];
 
 function installMockFetch() {
   vi.stubGlobal(
@@ -29,6 +30,14 @@ function installMockFetch() {
       requests.push({ method, path: parsed.pathname, query: parsed.search });
       // Tenant slug → exact group-name lookup (groups have no slug in
       // Authentik 2025.x+).
+      if (parsed.pathname === "/api/v3/core/groups/" && method === "POST") {
+        const body = JSON.parse(String(init?.body)) as {
+          name: string;
+          is_superuser: boolean;
+        };
+        createdGroups.push(body);
+        return jsonResponse({ pk: "1f0f6d5a-0000-4000-8000-0000000000ff", ...body }, 201);
+      }
       if (parsed.pathname === "/api/v3/core/groups/") {
         if (parsed.searchParams.get("name") === "acme") {
           return jsonResponse({
@@ -57,11 +66,12 @@ function installMockFetch() {
   );
 }
 
-const { listGroupMembers } = await import("../src/services/authentik");
+const { ensureGroup, listGroupMembers } = await import("../src/services/authentik");
 
 afterEach(() => {
   vi.unstubAllGlobals();
   requests.length = 0;
+  createdGroups.length = 0;
 });
 
 describe("listGroupMembers", () => {
@@ -94,5 +104,27 @@ describe("listGroupMembers", () => {
     expect(result.groupExists).toBe(false);
     expect(result.users).toEqual([]);
     expect(requests.some((r) => r.path === "/api/v3/core/users/")).toBe(false);
+  });
+});
+
+describe("ensureGroup", () => {
+  it("creates the Authentik group when it is missing", async () => {
+    installMockFetch();
+    const result = await ensureGroup("zeta");
+    expect(result).toEqual({ name: "zeta", created: true });
+    expect(createdGroups).toEqual([{ name: "zeta", is_superuser: false }]);
+  });
+
+  it("is a no-op when the group already exists", async () => {
+    installMockFetch();
+    const result = await ensureGroup("acme");
+    expect(result).toEqual({ name: "acme", created: false });
+    expect(createdGroups).toEqual([]);
+  });
+
+  it("rejects a blank name without calling Authentik", async () => {
+    installMockFetch();
+    await expect(ensureGroup("   ")).rejects.toThrow(/required/i);
+    expect(requests).toEqual([]);
   });
 });
