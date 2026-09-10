@@ -93,6 +93,10 @@ class VaultClient {
   }
 
   async writeKV(path: string, data: Record<string, unknown>): Promise<void> {
+    // Infisical-only deployments still run the sync loop for the Infisical
+    // mirror; skip the HashiCorp Vault write itself (it would fail without
+    // VAULT_ADDR/VAULT_TOKEN).
+    if (!this.isEnabled()) return;
     const { status } = await this.request("POST", path, { data });
     if (status !== 200 && status !== 204) {
       throw new Error(`Vault write ${path} failed (HTTP ${status})`);
@@ -165,7 +169,9 @@ class VaultClient {
    * and ACME account keys. Returns the paths written.
    */
   async sync(): Promise<{ written: string[] }> {
-    if (!this.isEnabled()) {
+    // Infisical is the stack's secret store when enabled; HashiCorp Vault
+    // otherwise. The sync loop below mirrors into both when configured.
+    if (!this.isEnabled() && !infisical.isEnabled()) {
       return { written: [] };
     }
     // Lazy import keeps the sqlite-backed db out of the module-load graph for

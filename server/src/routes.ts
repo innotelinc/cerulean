@@ -678,7 +678,7 @@ router.post(
   }),
 );
 
-// ── Certificates — Technitium DNS-01 + 30-day wildcard default ───────────
+// ── Certificates — Technitium DNS-01 + 90-day wildcard default ───────────
 router.get("/certificates", tenantGuard, (_req, res) => {
   res.json(db.listCertificates(tenantOf(res).id).map(certToJson));
 });
@@ -687,12 +687,12 @@ router.post(
   "/certificates",
   tenantGuard,
   asyncHandler(async (req, res) => {
-    // Default domain: <serverId>.lab.innotel.us with wildcard, 30-day PKI if no domain given
+    // Default domain: <serverId>.lab.innotel.us with wildcard, PKI if no domain given
     const ident = serverIdentity.currentIdentity();
     const rawDomain = String(req.body?.domain || "").trim().toLowerCase().replace(/\.$/, "");
     const domain = rawDomain || ident.apex;
     let wildcard = Boolean(req.body?.wildcard);
-    // No domain supplied → use server apex + wildcard (30-day cert per spec)
+    // No domain supplied → use server apex + wildcard (cert per spec)
     const isDefaultWildcard = !rawDomain;
     if (isDefaultWildcard) wildcard = true;
     const name = String(req.body?.name || "").trim() || `${wildcard ? "*." : ""}${domain}`;
@@ -1348,12 +1348,13 @@ router.post(
   "/vault/sync",
   requireAuth,
   asyncHandler(async (_req, res) => {
-    if (!vault.isEnabled()) {
-      res.status(409).json({ error: "Vault is not configured — set VAULT_ADDR and VAULT_TOKEN in .env" });
+    // Infisical is the stack's secret store when enabled; HashiCorp Vault otherwise.
+    if (!vault.isEnabled() && !infisical.isEnabled()) {
+      res.status(409).json({ error: "Secret vault is not configured — set VAULT_ADDR/VAULT_TOKEN or INFISICAL_ADDR/INFISICAL_TOKEN in .env" });
       return;
     }
     const { written } = await vault.sync();
-    db.addActivity("vault-sync", `Synced ${written.length} secret(s) to the vault (manual)`);
+    db.addActivity("vault-sync", `Synced ${written.length} secret(s) to the secret vault (manual)`);
     res.json({ ok: true, written });
   }),
 );

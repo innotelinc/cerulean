@@ -3,7 +3,7 @@ import { issueCertificate, renewCertificate } from "./services/acme";
 import { npm } from "./services/npm";
 import { runDiscovery } from "./services/discovery";
 import { auditDomain } from "./services/audit";
-import { vault } from "./services/vault";
+import { vault, infisical } from "./services/vault";
 
 async function syncCertToNpmQuietly(certId: number, domain: string): Promise<void> {
   try {
@@ -34,7 +34,7 @@ export async function runIssueJob(certId: number): Promise<void> {
 export async function renewalSweep(days = 30): Promise<void> {
   const expiring = db.listExpiringSoon(days);
   for (const cert of expiring) {
-    // 30-day PKI wildcards renew via PKI rotation, not ACME (offline-safe)
+    // PKI wildcards renew via PKI rotation, not ACME (offline-safe)
     if (cert.source === "pki") {
       try {
         const { ensureWildcardPki } = await import("./services/serverIdentity");
@@ -75,7 +75,8 @@ async function auditSweep(): Promise<void> {
 }
 
 async function vaultSyncSweep(): Promise<void> {
-  if (!vault.isEnabled()) return;
+  // Infisical is the stack's secret store when enabled; HashiCorp Vault otherwise.
+  if (!vault.isEnabled() && !infisical.isEnabled()) return;
   try {
     const { written } = await vault.sync();
     if (written.length) db.addActivity("vault-sync", `Synced ${written.length} secret(s) to the vault`, written.join(", "));
@@ -110,7 +111,7 @@ async function orchestratorSweep(): Promise<void> {
       // Fallback to legacy server registration path
       await registerServer().catch(() => undefined);
     }
-    // Ensure a 30-day wildcard exists via PKI first (offline), then try ACME upgrade
+    // Ensure a wildcard exists via PKI first (offline), then try ACME upgrade
     await ensureWildcardPki().catch(() => undefined);
     await tryUpgradeWildcardToAcme().catch(() => undefined);
   } catch (err) {
@@ -140,7 +141,7 @@ export function startScheduler(): void {
   renewalSweep().catch(() => undefined);
   setInterval(() => { renewalSweep().catch(() => undefined); }, 12 * 60 * 60 * 1000);
 
-  // Wildcard rotation check every 6 hours (covers the 30-day short cert)
+  // Wildcard rotation check every 6 hours (covers the short-lived wildcard cert)
   setInterval(() => { orchestratorSweep().catch(() => undefined); }, 6 * 60 * 60 * 1000);
 
   // CRS replica pull every 15 minutes (slaves + isolated masters)

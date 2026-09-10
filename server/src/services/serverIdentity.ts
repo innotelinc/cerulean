@@ -10,7 +10,7 @@
  *   <serverId>.lab.innotel.us (and the wildcard cert for that scope).
  *
  * Offline-first: if the platform is running, it can DHCP/DNS/block/certs
- * without internet. 30-day wildcard is dual-issued:
+ * without internet. The 90-day wildcard is dual-issued:
  *   1. Immediately via internal PKI (offline, self-sufficient), stored as a
  *      certificate row with source="pki" and pushed to NPM.
  *   2. Best-effort ACME DNS-01 via Technitium when online; on success it
@@ -113,9 +113,9 @@ export async function registerServer(): Promise<{ registered: boolean; detail: s
 }
 
 /**
- * Issue or renew the host's own 30-day wildcard (*.<id>.lab.innotel.us) via the
+ * Issue or renew the host's own 90-day wildcard (*.<id>.lab.innotel.us) via the
  * internal PKI so offline operation still has a valid cert. The cert row is
- * tagged source="pki" and expiresAt reflects the 30-day validity.
+ * tagged source="pki" and expiresAt reflects the configured validity.
  */
 export async function ensureWildcardPki(): Promise<{ certId: number; domain: string } | null> {
   if (!config.server.autoWildcard) return null;
@@ -134,7 +134,7 @@ export async function ensureWildcardPki(): Promise<{ certId: number; domain: str
     if (daysLeft > 7 && coversApex) return { certId: existing.id, domain: apex };
   }
 
-  // Issue a 30-day wildcard from internal PKI. We issue it as a client-style cert
+  // Issue a 90-day wildcard from internal PKI. We issue it as a client-style cert
   // but with serverAuth EKU and SANs apex, *.<apex>. Reuse PKI machinery via pki.
   // Fallback: generate a TLS server cert signed by the internal root CA.
   const validity = config.server.wildcardValidityDays;
@@ -159,18 +159,30 @@ export async function ensureWildcardPki(): Promise<{ certId: number; domain: str
     db.updateCertificateStatus(created.id, "issued");
     db.setServerWildcardCert(created.id);
     certRow = created;
-    db.addActivity("wildcard-pki", `Issued 30-day PKI wildcard for ${wildcardName}`, `certId=${created.id} expires=${certMaterial.expiresAt}`);
+    db.addActivity("wildcard-pki", `Issued ${validity}-day PKI wildcard for ${wildcardName}`, `certId=${created.id} expires=${certMaterial.expiresAt}`);
   }
 
   // Ensure Technitium zone exists for apex (offline-first)
   try {
     const { ensureZone } = await import("./technitium");
     await ensureZone(apex);
-    // Auto-add apex A record pointing at NPM/this host if NPM_FORWARD_HOST set (best-effort)
-    const fwd = process.env.NPM_FORWARD_HOST?.trim() || process.env.TECHNITIUM_FORWARD_HOST?.trim();
-    if (fwd) {
-      const { addRecord } = await import("./technitium");
-      try { await addRecord({ zone: apex, type: "A", name: "@", value: fwd, ttl: 300 }); } catch { /* already exists */ }
+    // Auto-add apex A record pointing at the NPM host if NPM_HOST_IP is set
+    // (best-effort). NPM_HOST_IP is the IP clients should resolve the apex to
+    // (the nginx proxy manager edge); NPM_FORWARD_HOST is the *upstream* the
+    // proxy forwards to, which must never be published as an A record. Skip if
+    // an A record for the apex already exists so re-runs never duplicate it.
+    const edgeIp = process.env.NPM_HOST_IP?.trim() || process.env.TECHNITIUM_FORWARD_HOST?.trim();
+    if (edgeIp) {
+      const { addRecord, listZone } = await import("./technitium");
+      try {
+        const existing = await listZone(apex);
+        const hasApexA = existing.some(
+          (r) => r.type === "A" && (r.name === apex || r.name === "@"),
+        );
+        if (!hasApexA) {
+          await addRecord({ zone: apex, type: "A", name: "@", value: edgeIp, ttl: 300 });
+        }
+      } catch { /* zone/record errors are non-fatal */ }
     }
   } catch { /* technitium not yet reachable — cert still usable for NPM */ }
 
@@ -273,7 +285,7 @@ export async function tryUpgradeWildcardToAcme(): Promise<{ upgraded: boolean; d
   const shouldTry = !row || row.source !== "acme" || (() => {
     if (!row?.expires_at) return true;
     const days = (new Date(row.expires_at).getTime() - Date.now()) / 86400000;
-    return days < 14; // renew window for 30-day cert
+    return days < 14; // renew window for the short-lived wildcard cert
   })();
   if (!shouldTry) return { upgraded: false, detail: "acme wildcard still fresh" };
 

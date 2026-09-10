@@ -273,7 +273,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       registerUrl: env.SERVER_REGISTER_URL || env.CERULEAN_REGISTER_URL || "",
       registerToken: env.SERVER_REGISTER_TOKEN || env.CERULEAN_REGISTER_TOKEN || "",
       wildcardValidityDays: Math.min(
-        Math.max(Number(env.SERVER_WILDCARD_VALIDITY_DAYS || env.WILDCARD_CERT_VALIDITY_DAYS || 30), 1),
+        Math.max(Number(env.SERVER_WILDCARD_VALIDITY_DAYS || env.WILDCARD_CERT_VALIDITY_DAYS || 90), 1),
         90,
       ),
       autoWildcard: bool(env.SERVER_AUTO_WILDCARD, true),
