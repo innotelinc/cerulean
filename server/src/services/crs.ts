@@ -224,10 +224,16 @@ export async function resolveCrsRole(forceProbe = false): Promise<CrsResolvedRol
   const master = masterUrl();
 
   if (desired === "master") {
-    // Master always, even if isolated. We still record reachability to home/master for UI.
+    // Master always, even if isolated. We still record reachability to
+    // home/master for UI — a master is never "unreachable" as a master, so
+    // an unreachable home is reported as isolation, not as a master failure.
     if (forceProbe || lastProbe.ok === null) {
       const p = await probeMaster(home);
-      lastProbe = { ok: p.ok, at: nowIso(), detail: p.detail };
+      lastProbe = {
+        ok: p.ok,
+        at: nowIso(),
+        detail: p.ok ? p.detail : `home ${home} unreachable — isolated master (${p.detail})`,
+      };
     }
     resolvedRole = "master";
     persistCrsState();

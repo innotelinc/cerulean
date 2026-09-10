@@ -22,11 +22,13 @@ describe("loadConfig — Technitium + server identity", () => {
     expect(cfg.zone).toBe("custom.example");
   });
 
-  it("uses Technitium URL from env, defaults when missing", () => {
+  it("uses Technitium URL from env, defaults to the host gateway when missing", () => {
     const cfg = loadConfig(baseEnv);
     expect(cfg.technitium.url).toBe("http://technitium.test:5380");
+    // Technitium is host-networked, so the app reaches it through the host
+    // gateway (host.docker.internal), never 127.0.0.1/container name.
     const cfg2 = loadConfig({ CERULEAN_ADMIN_PASSWORD: "pw", CERULEAN_SERVER_ID: "srv-abc1234" });
-    expect(cfg2.technitium.url).toBe("http://cerulean-technitium:5380");
+    expect(cfg2.technitium.url).toBe("http://host.docker.internal:5380");
   });
 
   it("caps wildcard validity to 1..90", () => {
