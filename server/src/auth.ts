@@ -7,6 +7,8 @@ export interface SessionUser {
   email: string;
   name: string;
   groups: string[];
+  /** Authentik superuser flag (from the ID token `is_superuser` claim). */
+  isSuperuser: boolean;
   provider: "local" | "authentik";
 }
 
@@ -46,6 +48,7 @@ export function login(password: string): string | null {
     email: "",
     name: "admin",
     groups: ["admin"],
+    isSuperuser: true,
     provider: "local",
   });
 }
