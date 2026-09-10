@@ -3,7 +3,7 @@ import { issueCertificate, renewCertificate } from "./services/acme";
 import { npm } from "./services/npm";
 import { runDiscovery } from "./services/discovery";
 import { auditDomain } from "./services/audit";
-import { vault, infisical } from "./services/vault";
+import { vault } from "./services/vault";
 
 async function syncCertToNpmQuietly(certId: number, domain: string): Promise<void> {
   try {
@@ -75,11 +75,10 @@ async function auditSweep(): Promise<void> {
 }
 
 async function vaultSyncSweep(): Promise<void> {
-  // Infisical is the stack's secret store when enabled; HashiCorp Vault otherwise.
-  if (!vault.isEnabled() && !infisical.isEnabled()) return;
+  if (!vault.isEnabled()) return;
   try {
     const { written } = await vault.sync();
-    if (written.length) db.addActivity("vault-sync", `Synced ${written.length} secret(s) to the vault`, written.join(", "));
+    if (written.length) db.addActivity("vault-sync", `Synced ${written.length} secret(s) to HashiCorp Vault`, written.join(", "));
   } catch (err) {
     db.addActivity("vault-error", "Vault sync failed", err instanceof Error ? err.message : String(err));
   }
