@@ -27,6 +27,24 @@ interface DnsChallengeState {
   records: { name: string; value: string }[];
 }
 
+/**
+ * Resolve the authoritative nameserver to poll for TXT propagation.
+ * Prefer TECHNITIUM_URL host (Docker service name → resolved to bridge IP)
+ * and fall back to 127.0.0.1:5353 only on the host. Inside Cerulean,
+ * cerulean-technitium resolves via Docker DNS to 172.22.0.2:53.
+ */
+function technitiumNameserver(): string {
+  // If TECHNITIUM_URL host resolves, dns.ts will resolve it — keep original
+  // hostname and let dnsResolveTxt do the lookup. Returning the hostname is
+  // intentional so Docker DNS (127.0.0.11) can return the bridge IP.
+  try {
+    const u = new URL(config.technitium.url);
+    const host = u.hostname;
+    if (host) return host;
+  } catch { /* fallback */ }
+  return "127.0.0.1";
+}
+
 async function setChallengeRecord(
   state: DnsChallengeState,
   name: string,
@@ -34,14 +52,7 @@ async function setChallengeRecord(
   conn?: Record<string, unknown>,
 ): Promise<void> {
   await technitium.setTxtRecord(state.zone, name, value, 60, conn as never);
-  // Poll Technitium itself as authoritative until TXT is served
-  const host = (() => {
-    try {
-      const u = new URL(config.technitium.url);
-      return u.hostname;
-    } catch { return "127.0.0.1"; }
-  })();
-  await waitForTxt(host, name, value);
+  await waitForTxt(technitiumNameserver(), name, value);
 }
 
 async function removeChallengeRecord(
@@ -58,7 +69,7 @@ async function waitForTxt(
   name: string,
   value: string,
   timeoutMs = 60_000,
-  intervalMs = 3_000,
+  intervalMs = 2_000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -71,7 +82,7 @@ async function waitForTxt(
     } catch { /* not yet */ }
     await sleep(intervalMs);
   }
-  throw new Error(`Timed out waiting for TXT record ${name} to appear on ${serverIp}`);
+  throw new Error(`Timed out waiting for TXT record ${name} to appear on ${serverIp} (is Technitium DNS reachable from Cerulean? check TECHNITIUM_URL=${config.technitium.url})`);
 }
 
 /**

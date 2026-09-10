@@ -44,7 +44,7 @@ the canonical single-responsibility architecture.
 Bundled (recommended, offline-ready):
 
 ```bash
-docker compose --profile technitium up -d   # Technitium DNS+DHCP+blocking at http://<host>:5380 (port 53 for DNS, 67/udp for DHCP)
+docker compose --profile technitium up -d   # Technitium DNS+DHCP+blocking at http://<host>:5380 (host networking: binds :53 DNS + :67/udp DHCP directly; setup.sh frees :53 by disabling systemd-resolved)
 ```
 
 Or point `TECHNITIUM_URL`/`TECHNITIUM_TOKEN` (or `TECHNITIUM_USER`/`TECHNITIUM_PASSWORD`) at a remote Technitium.
