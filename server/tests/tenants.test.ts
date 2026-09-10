@@ -73,6 +73,7 @@ type User = {
   email: string;
   name: string;
   groups: string[];
+  isSuperuser: boolean;
   provider: "local" | "authentik";
 };
 
@@ -81,14 +82,16 @@ const localAdmin: User = {
   email: "",
   name: "admin",
   groups: ["admin"],
+  isSuperuser: true,
   provider: "local",
 };
 
-const member = (groups: string[]): User => ({
+const member = (groups: string[], isSuperuser = false): User => ({
   sub: "u1",
   email: "u@example.com",
   name: "User",
   groups,
+  isSuperuser,
   provider: "authentik",
 });
 
@@ -124,6 +127,23 @@ describe("tenantsForUser / isPlatformAdmin", () => {
   it("returns no tenants for an Authentik user in no matching group", () => {
     expect(tenantsForUser(member(["elsewhere"]))).toEqual([]);
     expect(effectiveTenant(member(["elsewhere"]))).toBeNull();
+  });
+
+  it("treats Authentik superusers as platform admins (bootstrap path)", () => {
+    const owner = member(["authentik Admins"], true);
+    expect(isPlatformAdmin(owner)).toBe(true);
+    expect(tenantsForUser(owner).map((t) => t.slug)).toEqual([
+      "default",
+      "acme",
+      "globex",
+    ]);
+  });
+
+  it("matches group names to tenant slugs case-insensitively", () => {
+    const acmeUser = member(["Acme"]);
+    expect(isPlatformAdmin(acmeUser)).toBe(false);
+    expect(tenantsForUser(acmeUser).map((t) => t.slug)).toEqual(["acme"]);
+    expect(effectiveTenant(acmeUser, "GLOBEX")).toBeNull(); // still not a member
   });
 });
 

@@ -7,6 +7,7 @@ export interface OidcUser {
   email: string;
   name: string;
   groups: string[];
+  isSuperuser: boolean;
 }
 
 interface OidcDiscovery {
@@ -131,6 +132,9 @@ class OidcClient {
       groups: Array.isArray(claims.groups)
         ? (claims.groups as unknown[]).map(String)
         : [],
+      // Claim emitted by the provider's `groups` scope mapping; false when the
+      // mapping is not provisioned (older deployments).
+      isSuperuser: claims.is_superuser === true,
     };
   }
 

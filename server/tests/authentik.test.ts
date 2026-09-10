@@ -18,28 +18,41 @@ function jsonResponse(obj: unknown, status = 200): Response {
   } as unknown as Response;
 }
 
-const requests: { method: string; path: string }[] = [];
+const requests: { method: string; path: string; query: string }[] = [];
 
 function installMockFetch() {
   vi.stubGlobal(
     "fetch",
     async (url: string | URL, init?: RequestInit) => {
       const method = init?.method ?? "GET";
-      const path = new URL(String(url)).pathname;
-      requests.push({ method, path });
-      if (path === "/api/v3/core/groups/acme/users/") {
-        return jsonResponse({
-          pagination: { count: 2 },
-          results: [
-            { pk: 11, username: "alice", email: "alice@example.com", name: "Alice" },
-            { pk: 12, username: "bob", email: "bob@example.com", name: "Bob" },
-          ],
-        });
+      const parsed = new URL(String(url));
+      requests.push({ method, path: parsed.pathname, query: parsed.search });
+      // Tenant slug → exact group-name lookup (groups have no slug in
+      // Authentik 2025.x+).
+      if (parsed.pathname === "/api/v3/core/groups/") {
+        if (parsed.searchParams.get("name") === "acme") {
+          return jsonResponse({
+            pagination: { count: 1 },
+            results: [{ pk: "1f0f6d5a-0000-4000-8000-000000000001", name: "acme" }],
+          });
+        }
+        return jsonResponse({ pagination: { count: 0 }, results: [] });
       }
-      if (path === "/api/v3/core/groups/nonexistent/users/") {
-        return jsonResponse({ detail: "Not found" }, 404);
+      // Members come from the users collection (the per-group users endpoint
+      // was removed in Authentik 2026.x).
+      if (parsed.pathname === "/api/v3/core/users/") {
+        if (parsed.searchParams.get("groups_by_name") === "acme") {
+          return jsonResponse({
+            pagination: { count: 2 },
+            results: [
+              { pk: 11, username: "alice", email: "alice@example.com", name: "Alice" },
+              { pk: 12, username: "bob", email: "bob@example.com", name: "Bob" },
+            ],
+          });
+        }
+        return jsonResponse({ pagination: { count: 0 }, results: [] });
       }
-      throw new Error(`Unexpected request: ${method} ${path}`);
+      throw new Error(`Unexpected request: ${method} ${parsed.pathname}`);
     },
   );
 }
@@ -58,10 +71,18 @@ describe("listGroupMembers", () => {
     expect(result.groupExists).toBe(true);
     expect(result.users.map((u) => u.username)).toEqual(["alice", "bob"]);
     expect(result.users[0].email).toBe("alice@example.com");
-    const groupReq = requests.find(
-      (r) => r.path === "/api/v3/core/groups/acme/users/",
-    );
-    expect(groupReq).toBeTruthy();
+    expect(
+      requests.some(
+        (r) => r.path === "/api/v3/core/groups/" && r.query.includes("name=acme"),
+      ),
+    ).toBe(true);
+    expect(
+      requests.some(
+        (r) =>
+          r.path === "/api/v3/core/users/" &&
+          r.query.includes("groups_by_name=acme"),
+      ),
+    ).toBe(true);
     expect(requests.some((r) => r.path === "/api/v3/core/auth/admin/")).toBe(
       false,
     );
@@ -72,5 +93,6 @@ describe("listGroupMembers", () => {
     const result = await listGroupMembers("nonexistent");
     expect(result.groupExists).toBe(false);
     expect(result.users).toEqual([]);
+    expect(requests.some((r) => r.path === "/api/v3/core/users/")).toBe(false);
   });
 });

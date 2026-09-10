@@ -23,10 +23,15 @@ Required (in .env):
 
 Optional:
     AUTHENTIK_APP_SLUG         application slug (default: cerulean)
+    TENANT_PLATFORM_GROUP      Authentik group whose members are platform
+                               admins (default: cerulean-platform). Created if
+                               it does not exist, so an administrator can
+                               always reach the tenant bootstrap.
 """
 
 import json
 import os
+import sqlite3
 import sys
 import urllib.error
 import urllib.parse
@@ -93,6 +98,30 @@ class Authentik:
         if status not in (200, 204):
             raise RuntimeError(f"Authentik PUT {path} failed (HTTP {status}): {json.dumps(data)}")
         return data
+
+
+def known_tenant_slugs():
+    """Tenant slugs from the local Cerulean database (read-only, best-effort).
+
+    Every tenant needs a matching Authentik group: the tenant slug is matched
+    against the caller's `groups` claim, so without the group nobody but a
+    platform admin can sign in.
+    """
+    env_path = os.environ.get("CERULEAN_DB_PATH")
+    here = os.path.dirname(os.path.abspath(__file__))
+    db_path = env_path or os.path.join(here, "..", "data", "cerulean.db")
+    if not os.path.isfile(db_path):
+        return []
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            rows = con.execute("SELECT slug FROM tenants").fetchall()
+        finally:
+            con.close()
+    except sqlite3.Error as err:
+        print(f"  ! could not read tenants from {db_path}: {err}", file=sys.stderr)
+        return []
+    return sorted({str(row[0]).strip() for row in rows if row and row[0]})
 
 
 def login(base_url, username, password):
@@ -173,6 +202,56 @@ def main():
     # Find the existing provider (by client_id) or create it.
     providers = ak.list(f"/providers/oauth2/?client_id={urllib.parse.quote(client_id)}")
     provider = providers[0] if providers else None
+
+    # ── Scope mappings ──────────────────────────────────────────────────
+    # Cerulean resolves the caller's tenant from the `groups` claim and treats
+    # Authentik superusers as platform admins via `is_superuser`, so the
+    # provider must include a mapping that emits both. PIN them explicitly:
+    # tenant resolution must not depend on Authentik's default `profile`
+    # mapping happening to include `groups`.
+    platform_group = env("TENANT_PLATFORM_GROUP", "cerulean-platform")
+    groups_mapping_name = "Innotel OAuth Mapping: OpenID 'groups'"
+    groups_mapping_expr = (
+        "return {\n"
+        '    "groups": [g.name for g in user.ak_groups.all()],\n'
+        '    "is_superuser": user.is_superuser,\n'
+        "}"
+    )
+    scope_mappings = {
+        m.get("name"): m
+        for m in ak.list("/propertymappings/provider/scope/?page_size=100")
+    }
+    mapping_pks: set[str] = set()
+    groups_mapping = scope_mappings.get(groups_mapping_name)
+    groups_mapping_body = {
+        "name": groups_mapping_name,
+        "scope_name": "groups",
+        "description": "Group names of the user, plus the Authentik superuser flag",
+        "expression": groups_mapping_expr,
+    }
+    if groups_mapping:
+        ak.update(
+            f"/propertymappings/provider/scope/{groups_mapping['pk']}/",
+            groups_mapping_body,
+        )
+        mapping_pks.add(groups_mapping["pk"])
+        print(f"  ✓ updated scope mapping '{groups_mapping_name}'")
+    else:
+        mapping_pks.add(
+            ak.create("/propertymappings/provider/scope/", groups_mapping_body)["pk"]
+        )
+        print(f"  ✓ created scope mapping '{groups_mapping_name}'")
+    # Keep the standard OpenID scopes and any mapping the provider already had.
+    for default_name in (
+        "authentik default OAuth Mapping: OpenID 'openid'",
+        "authentik default OAuth Mapping: OpenID 'email'",
+        "authentik default OAuth Mapping: OpenID 'profile'",
+    ):
+        if default_name in scope_mappings:
+            mapping_pks.add(scope_mappings[default_name]["pk"])
+    if provider:
+        mapping_pks.update(provider.get("property_mappings") or [])
+
     provider_body = {
         "name": "Cerulean",
         "authorization_flow": auth_flow_pk,
@@ -184,6 +263,7 @@ def main():
         "sub_mode": "hashed_user_id",
         "issuer_mode": "global",
         "include_claims_in_id_token": True,
+        "property_mappings": sorted(mapping_pks),
     }
     if provider:
         ak.update(f"/providers/oauth2/{provider['pk']}/", provider_body)
@@ -204,12 +284,34 @@ def main():
         ak.create("/core/applications/", app_body)
         print(f"  ✓ created application '{app_slug}'")
 
+    # ── Platform-admin group ────────────────────────────────────────────
+    # Tenant slugs are Authentik group names (Authentik dropped group slugs in
+    # 2025.x) and platform admins are the members of this group; make sure it
+    # exists so the tenant bootstrap is never locked out.
+    platform_group_body = {"name": platform_group, "is_superuser": False}
+    groups = ak.list(f"/core/groups/?name={urllib.parse.quote(platform_group)}")
+    if groups:
+        print(f"  ✓ platform group '{platform_group}' exists")
+    else:
+        ak.create("/core/groups/", platform_group_body)
+        print(f"  ✓ created platform group '{platform_group}'")
+
+    # ── Tenant groups ───────────────────────────────────────────────────
+    # One group per tenant; the group name is the tenant's stable identity.
+    for slug in known_tenant_slugs():
+        if ak.list(f"/core/groups/?name={urllib.parse.quote(slug)}"):
+            print(f"  ✓ tenant group '{slug}' exists")
+        else:
+            ak.create("/core/groups/", {"name": slug, "is_superuser": False})
+            print(f"  ✓ created tenant group '{slug}'")
+
     print()
     print("Done. Sign in to Authentik once as an admin, then open")
     print(f"  {redirect_uri}")
     print("— the Cerulean login page now offers 'Sign in with Authentik'.")
     print()
     print("Users/groups are managed in Authentik; the provider is 'Cerulean'.")
+    print(f"Add tenant administrators to '{platform_group}' to make them platform admins.")
     return 0
 
 

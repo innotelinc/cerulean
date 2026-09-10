@@ -5,8 +5,10 @@ import { db, DEFAULT_TENANT_ID, type TenantRow } from "../db";
 
 /**
  * Organizations/tenants. Identity comes from Authentik: **a tenant's slug is an
- * Authentik group**, and members of that group are members of the tenant (the
- * OIDC `groups` claim drives it). Local admin sessions are platform admins and
+ * Authentik group name**, and members of that group are members of the tenant
+ * (the OIDC `groups` claim drives it). Authentik dropped group slugs in
+ * 2025.x, so the name is the stable identity; matching is case-insensitive.
+ * Local admin sessions — and Authentik superusers — are platform admins and
  * operate on the default tenant unless an `X-Cerulean-Tenant` header names
  * another one.
  *
@@ -21,19 +23,28 @@ export interface TenantScope {
   name: string;
 }
 
+/** Authentik group names and tenant slugs are matched case-insensitively. */
+function normalizeName(name: string): string {
+  return name.trim().toLowerCase();
+}
+
 /** Platform admins see and manage every tenant. */
 export function isPlatformAdmin(user: SessionUser): boolean {
   if (user.provider === "local") return true;
-  const group = config.tenant.platformGroup;
-  return Boolean(group && user.groups.includes(group));
+  // Authentik superusers are always platform admins. Without this the
+  // platform group is the only way in, so an empty (or differently-cased)
+  // group locks every administrator out of the tenant bootstrap.
+  if (user.isSuperuser) return true;
+  const group = normalizeName(config.tenant.platformGroup);
+  return Boolean(group) && user.groups.some((g) => normalizeName(g) === group);
 }
 
 /** Tenants a user may act in: platform admins → all, others → their groups. */
 export function tenantsForUser(user: SessionUser): TenantRow[] {
   const all = db.listTenants();
   if (isPlatformAdmin(user)) return all;
-  const slugs = new Set(user.groups);
-  return all.filter((t) => slugs.has(t.slug));
+  const slugs = new Set(user.groups.map(normalizeName));
+  return all.filter((t) => slugs.has(normalizeName(t.slug)));
 }
 
 /** Pick the effective tenant: an allowed `X-Cerulean-Tenant` header wins,
@@ -46,7 +57,7 @@ export function effectiveTenant(
   if (!allowed.length) return null;
   let tenant = allowed[0];
   if (header) {
-    const match = allowed.find((t) => t.slug === header);
+    const match = allowed.find((t) => normalizeName(t.slug) === normalizeName(header));
     if (!match) return null;
     tenant = match;
   } else if (isPlatformAdmin(user)) {

@@ -3,7 +3,7 @@ import { config } from "../config";
 /**
  * Minimal Authentik admin-API client used by tenant administration: members
  * of a tenant are the users of the matching Authentik group (tenant slug =
- * group slug), so listing them requires the Authentik admin API
+ * group name), so listing them requires the Authentik admin API
  * (AUTHENTIK_API_URL + AUTHENTIK_BOOTSTRAP_TOKEN in .env).
  *
  * Authentik 2024.12 removed the POST /api/v3/core/auth/admin/ endpoint, so
@@ -51,22 +51,37 @@ async function adminToken(): Promise<string> {
 }
 
 /**
- * Users in the Authentik group whose slug is `slug`. A 404 means the group
- * does not exist (yet) — the tenant exists but nobody can join it until the
- * platform admin creates the matching group in Authentik.
+ * Users in the Authentik group named `name`. Groups have no slug in Authentik
+ * 2025.x+, so the tenant slug is looked up as the exact group name; a missing
+ * group means the tenant exists but nobody can join it until a platform admin
+ * creates the matching group in Authentik.
+ *
+ * Members are read via `/core/users/?groups_by_name=`, because Authentik
+ * 2026.x removed the old `GET /core/groups/{uuid}/users/` endpoint.
  */
-export async function listGroupMembers(slug: string): Promise<GroupMembersResult> {
+export async function listGroupMembers(name: string): Promise<GroupMembersResult> {
   const token = await adminToken();
   const base = config.authentikAdmin.apiUrl.replace(/\/$/, "");
-  const res = await fetch(
-    `${base}/api/v3/core/groups/${encodeURIComponent(slug)}/users/`,
-    { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20_000) },
+  const headers = { Authorization: `Bearer ${token}` };
+
+  const groupRes = await fetch(
+    `${base}/api/v3/core/groups/?name=${encodeURIComponent(name)}`,
+    { headers, signal: AbortSignal.timeout(20_000) },
   );
-  if (res.status === 404) return { users: [], groupExists: false };
-  if (!res.ok) {
-    throw new Error(`Authentik group query failed (HTTP ${res.status})`);
+  if (!groupRes.ok) {
+    throw new Error(`Authentik group query failed (HTTP ${groupRes.status})`);
   }
-  const data = (await res.json()) as {
+  const groups = (await groupRes.json()) as { results?: unknown[] };
+  if (!(groups.results ?? []).length) return { users: [], groupExists: false };
+
+  const usersRes = await fetch(
+    `${base}/api/v3/core/users/?groups_by_name=${encodeURIComponent(name)}&page_size=1000`,
+    { headers, signal: AbortSignal.timeout(20_000) },
+  );
+  if (!usersRes.ok) {
+    throw new Error(`Authentik group members query failed (HTTP ${usersRes.status})`);
+  }
+  const data = (await usersRes.json()) as {
     results?: { pk: number | string; username: string; email?: string; name?: string }[];
   };
   const users = (data.results ?? []).map((u) => ({
