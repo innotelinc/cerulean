@@ -35,19 +35,16 @@ services:
     container_name: cerulean-technitium
     profiles: ["technitium"]
     restart: unless-stopped
-    # For DHCP to see client broadcasts and for DNS to serve the LAN,
-    # host networking is ideal. However port-mapping works for most home-lab
-    # use. Keep bridge (default) so Cerulean reaches it at http://cerulean-technitium:5380;
-    # DHCP users who need broadcast should add `network_mode: host` manually.
-    ports:
-      - "${TECHNITIUM_DNS_UDP_PORT:-53}:53/udp"
-      - "${TECHNITIUM_DNS_TCP_PORT:-53}:53/tcp"
-      - "${TECHNITIUM_WEB_PORT:-5380}:5380/tcp"
-      - "${TECHNITIUM_DHCP_PORT:-67}:67/udp"
-      # Optional DNS-over-TLS/HTTPS (uncomment if needed)
-      # - "853:853/tcp"
-      # - "443:443/tcp"
-      # - "80:80/tcp"
+    # Host networking: Technitium binds :53 (DNS), :67 (DHCP broadcasts), and
+    # :5380 (console) directly on the host — required for DHCP to hear client
+    # broadcasts. Cerulean reaches it at http://127.0.0.1:5380.
+    # (Requires port 53 to be free on the host: scripts/setup.sh disables
+    # systemd-resolved's stub listener automatically.)
+    network_mode: host
+    # Optional DNS-over-TLS/HTTPS extra listeners are configured in Technitium.
+    # When network_mode: host is used, no port mappings are needed:
+    #   TECHNITIUM_DNS_UDP_PORT / TECHNITIUM_DNS_TCP_PORT / TECHNITIUM_WEB_PORT /
+    #   TECHNITIUM_DHCP_PORT are retained only for documentation.
     environment:
       DNS_SERVER_DOMAIN: ${TECHNITIUM_DOMAIN:-${CERULEAN_SERVER_ID:-cerulean}.lab.innotel.us}
       DNS_SERVER_ADMIN_PASSWORD: ${TECHNITIUM_ADMIN_PASSWORD:-${TECHNITIUM_PASSWORD:-}}
