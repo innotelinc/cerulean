@@ -272,6 +272,7 @@ export interface OrchestratorStatus {
   technitium: { reachable: boolean; detail: string; url: string };
   dhcp: { reachable: boolean; scopes: number; leases: number; detail: string };
   blocking: BlockingStatus;
+  vault: { enabled: boolean; status: string; addr: string };
   config: { orchestrator: { enabled: boolean; dhcpEnabled: boolean; blockingEnabled: boolean }; server: { id: string; labDomain: string; wildcardValidityDays: number; autoWildcard: boolean } };
 }
 
@@ -288,11 +289,6 @@ export interface StatusResponse {
     redirectUri: string;
   };
   vault: {
-    enabled: boolean;
-    status: string;
-    addr: string;
-  };
-  infisical?: {
     enabled: boolean;
     status: string;
     addr: string;

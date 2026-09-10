@@ -20,16 +20,16 @@
 
 | Problem | Cerulean answer |
 | --- | --- |
-| Identity, secrets, and trust scattered across platforms | One stack: Authentik SSO + Infisical secrets + Cerulean DNS/TLS/PKI, all in one place |
+| Identity, secrets, and trust scattered across platforms | One stack: Authentik SSO + HashiCorp Vault secrets + Cerulean DNS/TLS/PKI, all in one place |
 | Every platform running its own login | Cerulean Authentik is the single identity source; disable a user and they lose every platform |
 | Per-platform TLS lifecycle | Cerulean issues ACME certificates + DNS records; NPM Edge fronts public hosts only |
-| Secrets committed to .env or repos | Infisical is the only secrets store; .env is derived and gitignored |
+| Secrets committed to .env or repos | HashiCorp Vault is the only secrets store; .env is derived and gitignored |
 | Recovery after a host loss is manual | Cerulean stores DNS + PKI + secrets; re-provision a host and the trust plane is recoverable |
 | Box must work offline / anywhere | Master orchestrator: DHCP, DNS, 90-day wildcard (*.<serverId>.lab.innotel.us) and ad-blocking without internet |
 
 > **About Cerulean** — the self-hosted **authentication & trust stack** for the Innotel
 > platform: **Authentik** (single sign-on — every platform login goes through Cerulean),
-> **Infisical** (secret management), certificate lifecycles and DNS automation written
+> **HashiCorp Vault** (secret management), certificate lifecycles and DNS automation written
 > straight into **Technitium DNS Server** via HTTP API (regular + wildcard Let's Encrypt via DNS-01),
 > an **internal PKI** with mTLS device enrollment, **DHCP** and **ad-blocking** from the same DNS,
 > discovery and health scoring, a secret vault,
@@ -70,7 +70,7 @@ zone is configurable.
 | | | |
 | --- | --- | --- |
 | 🪪 **Single sign-on (Authentik)** | One login for every platform — OIDC authorization-code + PKCE, passkeys (WebAuthn), groups/roles; all platform logins route through Cerulean. |
-| 🔑 **Secret management (Infisical)** | Central secret store for the whole stack; `.env` values may be `infisical://path#key` references; mirrors into the vault. |
+| 🔑 **Secret management (HashiCorp Vault)** | Central secret store for the whole stack; `.env` values may be `vault://path#key` references; cert/ACME/CA keys mirror into Vault (KV v2). |
 | 🔐 **ACME certificates** | Let's Encrypt, regular + **wildcard**, DNS-01 via Technitium HTTP API. Auto-renewed 30 days before expiry. Default wildcard `*.<serverId>.lab.innotel.us` is 90-day PKI offline, upgraded to ACME when online. | 
 | 🌐 **Live DNS management** | Create/list/delete `A`, `AAAA`, `CNAME`, `TXT`, `MX`, `NS`, `SRV`, `CAA`, `PTR` records on zones you control via Technitium API — routed to **the tenant's own Technitium** when one is registered. |
 | 📡 **DHCP (Technitium)** | Scopes, leases and reservations on the same Technitium — Cerulean is the LAN's DHCP orchestrator. |
@@ -97,15 +97,15 @@ zone is configurable.
 # Bundled Technitium (authoritative DNS + DHCP + blocking) — offline-ready
 docker compose --profile technitium up -d
 # With the full auth & trust stack provisioned automatically
-# (Authentik SSO + Infisical secrets + Vault — set INFISICAL_ADMIN_PASSWORD
-# in .env to also import stack secrets into Infisical):
+# (Authentik SSO + HashiCorp Vault secrets — set VAULT_ADDR/VAULT_TOKEN
+# in .env to enable the secret vault):
 ./scripts/setup.sh --with-authentik
 ```
 
 The portal is then at `http://<host>:3000` (or `https://<serverId>.lab.innotel.us`
 once the Technitium zone + wildcard are active and a proxy host is provisioned).
 The generated admin password is printed at the end of setup (and stored in
-`CERULEAN_ADMIN_PASSWORD` in `.env`). Authentik and Infisical are **the stack's
+`CERULEAN_ADMIN_PASSWORD` in `.env`). Authentik and HashiCorp Vault are **the stack's
 auth & secrets layer** — every platform login and every secret reference
 routes through Cerulean.
 
@@ -113,8 +113,6 @@ Auth & trust compose profiles (each opt-in):
 
 ```bash
 docker compose --profile authentik up -d                     # Authentik SSO — one login for every platform
-docker compose -f docker-compose.yml -f compose.infisical.yml \
-             --profile infisical up -d                       # Infisical secret management
 docker compose --profile vault up -d                         # dev-mode HashiCorp Vault
 # DNS/DHCP/blocking plane:
 docker compose --profile technitium up -d                    # Technitium DNS + DHCP + ad-blocking (recommended)
@@ -370,34 +368,24 @@ authentication flow, so enrolled users sign in with a passkey (Community
 Edition; users enroll once in their Authentik settings). See
 `docs/device-enrollment.md` §5.
 
-## Secrets — Infisical (SecretOps) and legacy Vault
+## Secrets — HashiCorp Vault
 
 Cerulean follows the [Innotel Platform Stack](https://github.com/innotelinc/innotel-platform-stack):
-**Infisical** (SecretOps) is the source of truth for secrets, with the legacy HashiCorp
-Vault integration kept for existing deployments.
-
-With `INFISICAL_ADDR` / `INFISICAL_TOKEN` / `INFISICAL_WORKSPACE_ID` set (provisioned by
-`scripts/infisical-setup.sh`), `.env` values can reference secrets instead of holding
-plaintext:
+**HashiCorp Vault** is the source of truth for secrets. With `VAULT_ADDR` and
+`VAULT_TOKEN` set, `.env` values can reference secrets instead of holding plaintext:
 
 ```
-NPM_PASSWORD=infisical://NPM_PASSWORD
-TECHNITIUM_TOKEN=infisical://TECHNITIUM_TOKEN
+NPM_PASSWORD=vault://cerulean/npm#password
+TECHNITIUM_TOKEN=vault://cerulean/technitium#token
 ```
 
-The server also mirrors certificate private keys and ACME account keys into Infisical on
-a schedule and on demand (`POST /api/vault/sync`), each under its own secret name
-(`certs.<tenant>.<id>.*`, `pki.ca.*`, `acme.<email>.key`). Enable the bundled Infisical
-profile with:
+The server also mirrors certificate private keys, ACME account keys and the root CA
+into Vault (KV v2) on a schedule and on demand (`POST /api/vault/sync`). A dev-mode
+Vault ships with the stack:
 
 ```bash
-docker compose -f docker-compose.yml -f compose.infisical.yml --profile infisical up -d
-bash scripts/infisical-setup.sh
+docker compose --profile vault up -d
 ```
-
-Legacy deployments can keep using Vault: with `VAULT_ADDR` and `VAULT_TOKEN` set, the
-server mirrors the same material into Vault (KV v2) and resolves `vault://path#key`
-references (a dev-mode Vault ships as `docker compose --profile vault up -d`).
 
 ## Release pipeline
 
@@ -408,7 +396,7 @@ release with release artifacts.
 ## Security notes
 
 - Real credentials live only in `.env`, which is **gitignored** — never commit
-  them. `.env.example` holds placeholders. Prefer `vault://`/`infisical://` references.
+  them. `.env.example` holds placeholders. Prefer `vault://` references.
 - `scripts/npm-proxy-hosts.py` reads `NPM_*`/`TECHNITIUM_*` from `.env` and talks to
   NPM/Technitium APIs with short-lived tokens; it never writes credentials anywhere.
 - Change the NPM and Technitium passwords if they have ever been shared in chat or logs.
@@ -421,7 +409,7 @@ MIT — see [LICENSE](LICENSE).
 
 Cerulean is the ecosystem's **TrustOps** platform — certificate lifecycle, DNS automation, DHCP, ad-blocking, PKI, and trust scoring in the
 [**Innotel Platform Stack**](https://github.com/innotelinc/innotel-platform-stack) —
-where Authentik owns identity, Infisical owns secrets, Cerulean owns trust and is the
+where Authentik owns identity, HashiCorp Vault owns secrets, Cerulean owns trust and is the
 offline-first **master orchestrator** (Technitium DNS + DHCP + blocking), ONYX owns storage,
 Magnate owns revenue, NPM Edge owns the edge. See
 [docs/stack.md](docs/stack.md) for this platform's owns/consumes boundaries.

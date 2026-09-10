@@ -86,11 +86,6 @@ export default function Discovery() {
   const statusDot = (s: string) =>
     s === "ok" ? "ok" : s === "not-configured" ? "warn" : "err";
 
-  // Infisical is the stack's secret store when enabled; HashiCorp Vault otherwise.
-  const secretVault = status?.infisical?.enabled
-    ? { status: status.infisical.status, addr: status.infisical.addr }
-    : { status: status?.vault.status ?? "not-configured", addr: status?.vault.addr ?? "" };
-
   const expiryCell = (expiresAt: string | null) => {
     if (!expiresAt) return <span className="muted">—</span>;
     const days = Math.round((new Date(expiresAt).getTime() - Date.now()) / 86400000);
@@ -128,12 +123,12 @@ export default function Discovery() {
             </tr>
             <tr>
               <td>
-                <span className={`status-dot ${statusDot(secretVault.status)}`} />
-                Secret vault {status?.infisical?.enabled ? "(Infisical)" : "(HashiCorp Vault)"}
+                <span className={`status-dot ${statusDot(status?.vault.status || "warn")}`} />
+                Secret vault (HashiCorp Vault)
               </td>
-              <td className="muted mono">{secretVault.status}</td>
+              <td className="muted mono">{status?.vault.status || "not-configured"}</td>
               <td style={{ textAlign: "right" }}>
-                {(status?.vault.enabled || status?.infisical?.enabled) && (
+                {status?.vault.enabled && (
                   <button className="secondary small" onClick={syncVault}>
                     Sync secrets
                   </button>

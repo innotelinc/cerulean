@@ -27,7 +27,7 @@ the canonical single-responsibility architecture.
 ## Consumes
 
 - Authentik — identity, SSO, organizations
-- Infisical — secrets, TLS private keys, CA keys
+- HashiCorp Vault — secrets, TLS private keys, CA keys
 - Technitium DNS Server — DNS, DHCP, blocking backend (bundled via `technitium/dns-server`, or remote via `TECHNITIUM_URL`)
 - CRS home `https://lab.innotel.us` + regional masters (slaves register & pull replica when online; offline → `isolated-master` self-sufficient; legacy `SERVER_REGISTER_URL` still honored)
 
@@ -75,21 +75,17 @@ Bridge (Bearer `ceru_…`):
 
 See Orchestrator page → *CRS* and *Service API keys* panels for live state, sync, and key management.
 
-## Secrets (Infisical)
+## Secrets (HashiCorp Vault)
 
 ```bash
-openssl rand -base64 32   # INFISICAL_ENCRYPTION_KEY
-openssl rand -hex 16      # INFISICAL_AUTH_SECRET
-openssl rand -hex 16      # INFISICAL_DB_PASSWORD
-docker compose -f docker-compose.yml -f compose.infisical.yml --profile infisical up -d
-bash scripts/infisical-setup.sh
+docker compose --profile vault up -d   # bundled dev-mode Vault (VAULT_ADDR=http://localhost:8200, VAULT_TOKEN=cerulean-root)
 ```
 
-See [compose.infisical.yml](../compose.infisical.yml) and [scripts/infisical-setup.py](../scripts/infisical-setup.py).
+See [vault-setup.md](vault-setup.md).
 
 ## Golden rules
 
-- **Authentik = Identity** · **Infisical = Secrets** · **Cerulean = Trust + Network** · **ONYX = Storage** · **Magnate = Revenue** · **NPM Edge = Edge** — everything else is a business function.
+- **Authentik = Identity** · **HashiCorp Vault = Secrets** · **Cerulean = Trust + Network** · **ONYX = Storage** · **Magnate = Revenue** · **NPM Edge = Edge** — everything else is a business function.
 - No platform duplicates another's responsibility.
 - No credit in commits, footers, or headers to anyone but the project owner.
 

@@ -33,14 +33,6 @@ export interface Config {
     prefix: string;
   };
 
-  infisical: {
-    enabled: boolean;
-    addr: string;
-    token: string;
-    workspaceId: string;
-    environment: string;
-  };
-
   discovery: {
     dirs: string[];
   };
@@ -160,8 +152,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const clientSecret = env.AUTHENTIK_CLIENT_SECRET || "";
   const vaultAddr = env.VAULT_ADDR || "";
   const vaultToken = env.VAULT_TOKEN || "";
-  const infisicalAddr = env.INFISICAL_ADDR || "";
-  const infisicalToken = env.INFISICAL_TOKEN || "";
 
   const npmMode = (env.NPM_MODE || "remote").toLowerCase();
   if (npmMode !== "local" && npmMode !== "remote") {
@@ -231,17 +221,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       addr: vaultAddr,
       token: vaultToken,
       prefix: env.VAULT_PREFIX || "cerulean",
-    },
-
-    infisical: {
-      enabled: bool(
-        env.INFISICAL_ENABLED,
-        Boolean(infisicalAddr && infisicalToken && env.INFISICAL_WORKSPACE_ID),
-      ),
-      addr: infisicalAddr,
-      token: infisicalToken,
-      workspaceId: env.INFISICAL_WORKSPACE_ID || "",
-      environment: env.INFISICAL_ENVIRONMENT || "prod",
     },
 
     discovery: {
