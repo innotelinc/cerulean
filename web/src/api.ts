@@ -17,11 +17,6 @@ function readCookie(name: string): string | null {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
-/**
- * After an Authentik sign-in the OIDC callback leaves the session token in a
- * cookie. Adopt it into localStorage (where a local login stores it) and clear
- * the cookie so the two mechanisms stay in sync.
- */
 export function adoptCookieToken(): void {
   if (getToken()) return;
   const cookie = readCookie(TOKEN_KEY);
@@ -130,8 +125,8 @@ export const api = {
     request<import("./types").Certificate[]>("GET", "/certificates"),
   createCertificate: (input: {
     name?: string;
-    domain: string;
-    wildcard: boolean;
+    domain?: string;
+    wildcard?: boolean;
   }) => request<import("./types").Certificate>("POST", "/certificates", input),
   getCertificate: (id: number) =>
     request<import("./types").Certificate>("GET", `/certificates/${id}`),
@@ -164,35 +159,97 @@ export const api = {
     http2_support?: boolean;
   }) => request<import("./types").NpmProxyHost>("POST", "/npm/hosts", input),
 
+  // ── DNS providers (Technitium) ───────────────────────────────────────────
   listDnsProviders: () =>
     request<import("./types").DnsProvider[]>("GET", "/dns/providers"),
   createDnsProvider: (input: {
     name: string;
-    host: string;
+    url?: string;
+    host?: string;
     port?: number;
     user?: string;
-    key_path?: string;
+    api_token?: string;
+    apiToken?: string;
     password?: string;
-    tsig_name?: string;
-    tsig_secret?: string;
     default?: boolean;
+    isDefault?: boolean;
   }) => request<import("./types").DnsProvider>("POST", "/dns/providers", input),
   updateDnsProvider: (
     id: number,
     input: {
       name?: string;
+      url?: string;
       host?: string;
       port?: number;
       user?: string;
-      key_path?: string;
+      api_token?: string;
+      apiToken?: string;
       password?: string;
-      tsig_name?: string;
-      tsig_secret?: string;
       default?: boolean;
+      isDefault?: boolean;
     },
   ) => request<import("./types").DnsProvider>("PATCH", `/dns/providers/${id}`, input),
   deleteDnsProvider: (id: number) =>
     request<{ ok: boolean }>("DELETE", `/dns/providers/${id}`),
+
+  // ── Server identity + orchestrator ───────────────────────────────────────
+  serverIdentity: () =>
+    request<import("./types").ServerIdentity>("GET", "/server/identity"),
+  updateServerIdentity: (input: { serverId?: string; labDomain?: string }) =>
+    request<import("./types").ServerIdentity>("POST", "/server/identity", input),
+  registerServer: () =>
+    request<{ registered: boolean; detail: string }>("POST", "/server/register"),
+  renewWildcard: () =>
+    request<{ ok: boolean; pki: { certId: number; domain: string } | null; acme: { upgraded: boolean; detail: string }; identity: import("./types").ServerIdentity }>("POST", "/server/wildcard/renew"),
+  orchestratorStatus: () =>
+    request<import("./types").OrchestratorStatus>("GET", "/orchestrator/status"),
+
+  // ── DHCP ─────────────────────────────────────────────────────────────────
+  dhcpScopes: () =>
+    request<import("./types").DhcpScope[]>("GET", "/dhcp/scopes"),
+  createDhcpScope: (input: {
+    name: string;
+    startingAddress: string;
+    endingAddress: string;
+    subnetMask: string;
+    routerAddress?: string;
+    domainName?: string;
+    dnsServers?: string;
+    useThisDnsServer?: boolean;
+    leaseTimeDays?: number;
+  }) => request<{ ok: boolean }>("POST", "/dhcp/scopes", input),
+  deleteDhcpScope: (name: string) =>
+    request<{ ok: boolean }>("DELETE", `/dhcp/scopes/${encodeURIComponent(name)}`),
+  enableDhcpScope: (name: string) =>
+    request<{ ok: boolean }>("POST", `/dhcp/scopes/${encodeURIComponent(name)}/enable`),
+  disableDhcpScope: (name: string) =>
+    request<{ ok: boolean }>("POST", `/dhcp/scopes/${encodeURIComponent(name)}/disable`),
+  dhcpLeases: () =>
+    request<import("./types").DhcpLease[]>("GET", "/dhcp/leases"),
+  deleteDhcpLease: (scope: string, hardwareAddress: string) =>
+    request<{ ok: boolean }>("DELETE", "/dhcp/leases", { scope, hardwareAddress }),
+  addReservedLease: (scope: string, input: { hardwareAddress: string; ipAddress: string; hostName?: string }) =>
+    request<{ ok: boolean }>("POST", `/dhcp/scopes/${encodeURIComponent(scope)}/reserved`, input),
+  deleteReservedLease: (scope: string, mac: string) =>
+    request<{ ok: boolean }>("DELETE", `/dhcp/scopes/${encodeURIComponent(scope)}/reserved/${encodeURIComponent(mac)}`),
+
+  // ── Ad-blocking ──────────────────────────────────────────────────────────
+  blockingStatus: () =>
+    request<import("./types").BlockingStatus>("GET", "/blocking/status"),
+  setBlocking: (input: { enableBlocking?: boolean; blockListUrls?: string; blockingType?: string }) =>
+    request<{ ok: boolean }>("POST", "/blocking", input),
+  listBlocked: () => request<string[]>("GET", "/blocking/blocked"),
+  addBlocked: (domain: string) =>
+    request<{ ok: boolean }>("POST", "/blocking/blocked", { domain }),
+  deleteBlocked: (domain: string) =>
+    request<{ ok: boolean }>("DELETE", `/blocking/blocked/${encodeURIComponent(domain)}`),
+  listAllowed: () => request<string[]>("GET", "/blocking/allowed"),
+  addAllowed: (domain: string) =>
+    request<{ ok: boolean }>("POST", "/blocking/allowed", { domain }),
+  deleteAllowed: (domain: string) =>
+    request<{ ok: boolean }>("DELETE", `/blocking/allowed/${encodeURIComponent(domain)}`),
+  refreshBlockLists: () =>
+    request<{ ok: boolean }>("POST", "/blocking/refresh"),
 
   listTenants: () => request<import("./types").TenantRow[]>("GET", "/tenants"),
   createTenant: (input: { slug: string; name: string }) =>

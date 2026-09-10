@@ -24,7 +24,7 @@ function defaultCert(): MockCertRow {
     name: "cerulean.innotel.us",
     domain: "cerulean.innotel.us",
     wildcard: 0,
-    strategy: "bind",
+    strategy: "technitium",
     status: "issued",
     error: null,
     domains_json: JSON.stringify(["cerulean.innotel.us"]),

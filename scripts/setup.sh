@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
-# Cerulean one-shot setup.
+# Cerulean one-shot setup — Technitium master orchestrator.
 #
-#   ./scripts/setup.sh [--no-start] [--with-authentik]
+#   ./scripts/setup.sh [--no-start] [--with-authentik] [--with-technitium]
 #
-# Does everything needed to get a working portal on a fresh host:
-#   1. Ensures .env exists and generates the admin password if unset
-#   2. Configures BIND (TSIG key autogen + install on BIND for nsupdate
-#      DNS-01 TXT challenge records)
-#   3. Installs all dependencies and builds the portal
+#   1. Ensures .env exists and generates the admin password + serverId if unset
+#   2. Ensures Technitium DNS (bundled --profile technitium) is ready / reachable
+#   3. Installs dependencies and builds the portal
 #   4. Starts the stack (docker compose)
-#   5. Provisions nginx proxy manager proxy hosts via ./npm-proxy-hosts.py
+#   5. Provisions nginx proxy manager proxy hosts
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -17,25 +15,24 @@ source "${SCRIPT_DIR}/lib.sh"
 
 NO_START=0
 WITH_AUTHENTIK=0
+WITH_TECHNITIUM=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-start) NO_START=1; shift ;;
     --with-authentik) WITH_AUTHENTIK=1; shift ;;
-    *) fail "Unknown option: $1 (usage: ./scripts/setup.sh [--no-start] [--with-authentik])" ;;
+    --with-technitium) WITH_TECHNITIUM=1; shift ;;
+    *) fail "Unknown option: $1 (usage: ./scripts/setup.sh [--no-start] [--with-authentik] [--with-technitium])" ;;
   esac
 done
 
-log "Cerulean setup — ${CERULEAN_ROOT}"
+log "Cerulean setup — ${CERULEAN_ROOT} (Technitium master orchestrator)"
 
-# ── 0a. Enable the commit-attribution guard hooks (.githooks) ───────────────
-# Point git at the version-controlled hooks dir so commits made from this
-# clone are guarded (blocks attribution to anyone but Darnel Hunter).
 if [ -d "${CERULEAN_ROOT}/.githooks" ] && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   git config core.hooksPath "${CERULEAN_ROOT}/.githooks"
   ok "commit guard hook enabled (core.hooksPath -> .githooks)"
 fi
 
-# ── 0. .env + admin password ─────────────────────────────────────────────────
+# ── 0. .env + admin password + server identity ──────────────────────────────
 if [ ! -f "$ENV_FILE" ]; then
   cp "${CERULEAN_ROOT}/.env.example" "$ENV_FILE"
   ok "Created .env from .env.example — review the host/email values"
@@ -47,36 +44,29 @@ if [ -z "$ADMIN" ] || [ "$ADMIN" = "change-me" ]; then
   env_set CERULEAN_ADMIN_PASSWORD "$ADMIN"
   ok "Generated portal admin password (see below)"
 fi
-
-# ── 1. BIND / TSIG ───────────────────────────────────────────────────────────
-# DNS-01 challenges are validated by writing TXT records straight into BIND
-# over SSH (nsupdate + TSIG).
-#   BIND_MODE=local  (default: remote) — the compose stack bundles a BIND+sshd
-#                    container (profile "bind"); nothing to configure here, the
-#                    container generates its TSIG key and root password on
-#                    first start (printed to its logs — copy into .env).
-#   BIND_MODE=local + NPM_MODE=local — start bundled BIND and the complete
-#                    NPM Edge component (NPM, MariaDB, and backup-ui).
-#   BIND_MODE=remote — generate + install the TSIG key on the remote BIND
-#                    server automatically when BIND_SSH_* is configured.
-BIND_MODE="$(env_get BIND_MODE remote)"
-NPM_MODE="$(env_get NPM_MODE remote)"
-if [ "$NPM_MODE" = "local" ] && [ "$BIND_MODE" != "local" ]; then
-  fail "NPM_MODE=local requires BIND_MODE=local; use NPM_MODE=remote with an external NPM instance for remote BIND"
+# Server ID: stable slug for offline wildcard <id>.lab.innotel.us
+SERVER_ID="$(env_get CERULEAN_SERVER_ID)"
+if [ -z "$SERVER_ID" ]; then
+  # keep empty — server/config.ts + DB will auto-generate and persist on boot
+  log "CERULEAN_SERVER_ID not set — a stable ID will be generated on first boot (set it in .env for a pre-assigned hostname)"
 fi
-if [ "$BIND_MODE" = "local" ]; then
-  log "BIND_MODE=local — bundled BIND container will serve the zones"
-  log "Start it with: docker compose --profile bind up -d"
-  if [ -z "$(env_get BIND_TSIG_SECRET)" ]; then
-    warn "BIND_TSIG_SECRET not set — the bundled container generates one on first"
-    warn "start (see: docker logs cerulean-bind); copy it into .env and restart."
-  fi
-elif bind_configured; then
-  "${SCRIPT_DIR}/setup-bind.sh"
-else
-  warn "BIND is not configured in .env — skipping automatic BIND setup"
-  warn "Set BIND_SSH_HOST/BIND_SSH_USER and a key or password (and BIND_TSIG_SECRET)"
-  warn "in .env to enable DNS-01 validation through BIND."
+LAB_DOMAIN="$(env_get CERULEAN_LAB_DOMAIN lab.innotel.us)"
+if [ -z "$LAB_DOMAIN" ]; then
+  env_set CERULEAN_LAB_DOMAIN "lab.innotel.us"
+fi
+
+# ── 1. Technitium DNS ───────────────────────────────────────────────────────
+log "Technitium DNS: ${TECHNITIUM_URL:-http://cerulean-technitium:5380} (HTTP API — no SSH/TSIG)"
+if ! technitium_configured; then
+  warn "Technitium credentials not set (TECHNITIUM_TOKEN or TECHNITIUM_USER/PASSWORD in .env)"
+  warn "The bundled Technitium (docker compose --profile technitium up -d) may still work with defaults;"
+  warn "set TECHNITIUM_ADMIN_PASSWORD in .env for the bundled container or TECHNITIUM_TOKEN for remote."
+fi
+if [ -z "$(env_get TECHNITIUM_URL)" ]; then
+  warn "TECHNITIUM_URL not set — defaults to http://cerulean-technitium:5380 (bundled container)"
+fi
+if [ "$WITH_TECHNITIUM" = "1" ] || [ -z "$(env_get TECHNITIUM_URL)" ]; then
+  log "Tip: start the bundled Technitium with: docker compose --profile technitium up -d"
 fi
 
 # ── 2. Install dependencies + build ──────────────────────────────────────────
@@ -91,15 +81,24 @@ if [ "$NO_START" = "1" ]; then
   echo
   ok "Setup finished (--no-start). Start it with:"
   echo "    cd ${CERULEAN_ROOT}"
+  echo "    docker compose --profile technitium up -d --build  # DNS/DHCP/blocking"
   echo "    docker compose up -d --build"
 else
   log "Starting the stack…"
   if command -v docker >/dev/null 2>&1; then
     PROFILES=()
-    [ "$(env_get BIND_MODE remote)" = "local" ] && PROFILES+=("--profile" "bind")
+    # Always bring up cerulean; Technitium is opt-in profile
+    if [ "$WITH_TECHNITIUM" = "1" ]; then
+      PROFILES+=("--profile" "technitium")
+    fi
     [ "$(env_get NPM_MODE remote)" = "local" ] && PROFILES+=("--profile" "npm")
     ( cd "${CERULEAN_ROOT}" && docker compose up -d --build "${PROFILES[@]}" )
     ok "Stack is up. Dashboard: http://<this-host>:3000"
+    if [ "$WITH_TECHNITIUM" = "1" ] || docker compose ps 2>/dev/null | grep -q cerulean-technitium; then
+      ok "Technitium web console: http://<this-host>:5380 (admin / TECHNITIUM_ADMIN_PASSWORD)"
+    else
+      log "Start Technitium (DNS/DHCP/blocking) with: docker compose --profile technitium up -d"
+    fi
   else
     warn "docker not found — start the portal manually with:"
     echo "    cd ${CERULEAN_ROOT} && npm start"
@@ -109,7 +108,7 @@ fi
 # ── 4. Provision nginx proxy manager proxy hosts ────────────────────────────
 if npm_configured; then
   if command -v python3 >/dev/null 2>&1; then
-    log "Provisioning nginx proxy manager proxy hosts (${NPM_API_URL})…"
+    log "Provisioning nginx proxy manager proxy hosts (${NPM_API_URL:-bundled})…"
     if python3 "${SCRIPT_DIR}/npm-proxy-hosts.py"; then
       ok "nginx proxy manager proxy hosts are up to date"
     else
@@ -123,12 +122,12 @@ else
   log "NPM not configured in .env — skipping proxy host provisioning"
 fi
 
-# ── 5. Authentik (optional: --with-authentik or when AUTHENTIK_ISSUER_URL set) ─
+# ── 5. Authentik (optional) ─────────────────────────────────────────────────
 AUTHENTIK_ISSUER_URL="$(env_get AUTHENTIK_ISSUER_URL)"
 if [ "$WITH_AUTHENTIK" = "1" ] || [ -n "$AUTHENTIK_ISSUER_URL" ]; then
   log "Configuring Authentik OIDC…"
   if [ -z "$AUTHENTIK_ISSUER_URL" ]; then
-    NPM_BASE_DOMAIN="$(env_get NPM_BASE_DOMAIN "$(env_get CERULEAN_ZONE innotel.us)")"
+    NPM_BASE_DOMAIN="$(env_get NPM_BASE_DOMAIN "$(env_get CERULEAN_ZONE "${SERVER_ID:-cerulean}.${LAB_DOMAIN}")")"
     AUTHENTIK_ISSUER_URL="http://auth.${NPM_BASE_DOMAIN}"
     env_set AUTHENTIK_ISSUER_URL "$AUTHENTIK_ISSUER_URL"
   fi
@@ -145,11 +144,11 @@ if [ "$WITH_AUTHENTIK" = "1" ] || [ -n "$AUTHENTIK_ISSUER_URL" ]; then
   fi
   REDIRECT_URI="$(env_get AUTHENTIK_REDIRECT_URI)"
   if [ -z "$REDIRECT_URI" ]; then
-    REDIRECT_URI="http://cerulean.$(env_get NPM_BASE_DOMAIN "$(env_get CERULEAN_ZONE innotel.us)")/api/auth/oidc/callback"
+    REDIRECT_URI="http://cerulean.$(env_get NPM_BASE_DOMAIN "${SERVER_ID:-cerulean}.${LAB_DOMAIN}")/api/auth/oidc/callback"
     env_set AUTHENTIK_REDIRECT_URI "$REDIRECT_URI"
   fi
   if [ -z "$(env_get AUTHENTIK_ADMIN_PASSWORD)" ]; then
-    warn "AUTHENTIK_ADMIN_PASSWORD is not set in .env — set it (the Authentik admin password) "
+    warn "AUTHENTIK_ADMIN_PASSWORD is not set in .env — set it (the Authentik admin password)"
     warn "or provision the provider manually in the Authentik UI (Applications → Create)."
   fi
   if command -v python3 >/dev/null 2>&1; then
@@ -169,18 +168,21 @@ fi
 
 echo
 echo "──────────────────────────────────────────────────────────"
-echo "  Cerulean is ready!"
+echo "  Cerulean is ready! (Technitium master orchestrator)"
 echo "  Dashboard:   http://<this-host>:3000"
+if [ -n "$SERVER_ID" ]; then
+  echo "  Server:      ${SERVER_ID}.${LAB_DOMAIN}  (*.${SERVER_ID}.${LAB_DOMAIN} wildcard: PKI 30d → ACME when online)"
+else
+  echo "  Server:      <auto-generated> — check Orchestrator page after boot for <serverId>.${LAB_DOMAIN}"
+fi
+echo "  Technitium:  ${TECHNITIUM_URL:-http://<this-host>:5380}  — DNS/DHCP/blocking plane (HTTP API)"
 echo "  Admin login: admin  (password below)"
 echo "  Admin pass:  ${ADMIN}"
 echo "  Authentik:   $(env_get AUTHENTIK_ISSUER_URL '(not configured)')  — add --with-authentik to enable SSO"
 echo "  Vault:       $(env_get VAULT_ADDR '(not configured)')  — set VAULT_ADDR/VAULT_TOKEN to enable"
 echo "──────────────────────────────────────────────────────────"
 
-# ── Infisical (SecretOps) — opt-in secret provisioning ──────────────
-# Secrets for the Innotel Platform Stack live in Infisical. Enable by
-# setting INFISICAL_ADMIN_EMAIL / INFISICAL_ADMIN_PASSWORD and the
-# INFISICAL_* keys in .env, then re-run setup (idempotent).
+# ── Infisical (SecretOps) ───────────────────────────────────────────────────
 if grep -qE '^INFISICAL_ADMIN_EMAIL=.+' .env 2>/dev/null && \
    grep -qE '^INFISICAL_ADMIN_PASSWORD=.+' .env 2>/dev/null; then
   __root="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"

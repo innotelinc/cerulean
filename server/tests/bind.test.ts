@@ -4,7 +4,7 @@ import {
   parseZoneTransfer,
   quoteTxt,
   resolveZone,
-} from "../src/services/bind";
+} from "../src/services/technitium";
 
 describe("quoteTxt", () => {
   it("wraps values in quotes", () => {

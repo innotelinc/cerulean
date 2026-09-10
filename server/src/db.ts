@@ -14,7 +14,7 @@ export interface DnsProviderRow {
   id: number;
   tenant_id: number;
   name: string;
-  kind: "bind-ssh";
+  kind: string; // "technitium" | legacy "bind-ssh"
   host: string;
   port: number;
   user: string;
@@ -22,8 +22,26 @@ export interface DnsProviderRow {
   password: string | null;
   tsig_name: string | null;
   tsig_secret: string | null;
+  /** Technitium HTTP API fields */
+  url: string | null;
+  api_token: string | null;
   is_default: number;
   created_at: string;
+}
+
+/** Master orchestrator server identity (singleton) */
+export interface ServerIdentityRow {
+  id: number; // always 1
+  server_id: string;
+  lab_domain: string;
+  wildcard_domain: string; // <id>.lab.innotel.us
+  base_domain: string; // *.<id>.lab.innotel.us display
+  registered: number; // 0/1
+  registered_at: string | null;
+  central_url: string | null;
+  wildcard_cert_id: number | null;
+  created_at: string;
+  updated_at: string;
 }
 
 /** Slug of the built-in tenant that pre-tenant data belongs to. */
@@ -32,7 +50,7 @@ export const DEFAULT_TENANT_ID = 1;
 export interface DomainRow {
   id: number;
   name: string;
-  strategy: "bind";
+  strategy: string; // "technitium" (legacy "bind" migrated)
   tenant_id: number;
   created_at: string;
 }
@@ -42,7 +60,7 @@ export interface CertificateRow {
   name: string;
   domain: string;
   wildcard: number;
-  strategy: "bind";
+  strategy: string; // "technitium"
   status: string; // issuing | issued | error
   error: string | null;
   domains_json: string;
@@ -52,6 +70,7 @@ export interface CertificateRow {
   issued_at: string | null;
   auto_renew: number;
   tenant_id: number;
+  source: string | null; // "pki" | "acme" | null (legacy)
   created_at: string;
 }
 
@@ -105,7 +124,7 @@ export interface ClientCertificateRow {
   serial_hex: string;
   status: string; // issued | revoked
   certificate: string; // client cert PEM
-  key: string; // client private key (PKCS#8 PEM; "" when CSR-enrolled — the device holds the key)
+  key: string; // client private key (PKCS#8 PEM; "" when CSR-enrolled)
   fingerprint: string | null;
   expires_at: string | null;
   issued_at: string | null;
@@ -140,30 +159,26 @@ class Database {
 
   private migrate(): void {
     this.db.exec(`
-      -- Organizations/tenants (Authentik group slug ↔ tenant slug). Rows in
-      -- the tables below carry tenant_id; the default tenant (id 1) owns all
-      -- pre-tenant data and is the home of local/admin sessions.
       CREATE TABLE IF NOT EXISTS tenants (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         slug TEXT NOT NULL UNIQUE,
         name TEXT NOT NULL,
         created_at TEXT NOT NULL
       );
-      -- Per-tenant DNS providers: which BIND (SSH + nsupdate + TSIG) a
-      -- tenant's zones are managed on. A tenant with no providers falls back
-      -- to the platform-level BIND configured in .env.
       CREATE TABLE IF NOT EXISTS dns_providers (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         tenant_id INTEGER NOT NULL DEFAULT 1,
         name TEXT NOT NULL,
-        kind TEXT NOT NULL DEFAULT 'bind-ssh',
+        kind TEXT NOT NULL DEFAULT 'technitium',
         host TEXT NOT NULL,
-        port INTEGER NOT NULL DEFAULT 22,
-        user TEXT NOT NULL DEFAULT 'root',
+        port INTEGER NOT NULL DEFAULT 5380,
+        user TEXT NOT NULL DEFAULT 'admin',
         key_path TEXT,
         password TEXT,
         tsig_name TEXT,
         tsig_secret TEXT,
+        url TEXT,
+        api_token TEXT,
         is_default INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         UNIQUE(tenant_id, name)
@@ -171,7 +186,7 @@ class Database {
       CREATE TABLE IF NOT EXISTS domains (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL UNIQUE,
-        strategy TEXT NOT NULL DEFAULT 'bind',
+        strategy TEXT NOT NULL DEFAULT 'technitium',
         tenant_id INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL
       );
@@ -180,7 +195,7 @@ class Database {
         name TEXT NOT NULL,
         domain TEXT NOT NULL,
         wildcard INTEGER NOT NULL DEFAULT 0,
-        strategy TEXT NOT NULL DEFAULT 'bind',
+        strategy TEXT NOT NULL DEFAULT 'technitium',
         status TEXT NOT NULL DEFAULT 'issuing',
         error TEXT,
         domains_json TEXT NOT NULL DEFAULT '[]',
@@ -190,6 +205,7 @@ class Database {
         issued_at TEXT,
         auto_renew INTEGER NOT NULL DEFAULT 1,
         tenant_id INTEGER NOT NULL DEFAULT 1,
+        source TEXT,
         created_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS activities (
@@ -234,7 +250,6 @@ class Database {
       );
       CREATE INDEX IF NOT EXISTS idx_dns_audits_domain ON dns_audits (domain);
 
-      -- Internal private CA (singleton row) issuing TLS client certificates.
       CREATE TABLE IF NOT EXISTS ca (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         common_name TEXT NOT NULL,
@@ -260,9 +275,23 @@ class Database {
       );
       CREATE INDEX IF NOT EXISTS idx_client_certs_status
         ON client_certificates (status);
+
+      -- Master orchestrator: server identity (singleton)
+      CREATE TABLE IF NOT EXISTS server_identity (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        server_id TEXT NOT NULL,
+        lab_domain TEXT NOT NULL,
+        wildcard_domain TEXT NOT NULL,
+        base_domain TEXT NOT NULL,
+        registered INTEGER NOT NULL DEFAULT 0,
+        registered_at TEXT,
+        central_url TEXT,
+        wildcard_cert_id INTEGER,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
     `);
 
-    // Seed the default tenant (owns all pre-tenant data + local sessions).
     this.db
       .prepare(
         `INSERT OR IGNORE INTO tenants (id, slug, name, created_at)
@@ -270,8 +299,7 @@ class Database {
       )
       .run(nowIso());
 
-    // Existing databases predate tenants: add tenant_id to every owned table
-    // and back-fill it to the default tenant, then index the column.
+    // Migrate legacy schemas
     for (const table of [
       "domains",
       "certificates",
@@ -283,16 +311,57 @@ class Database {
         `CREATE INDEX IF NOT EXISTS idx_${table}_tenant ON ${table} (tenant_id);`,
       );
     }
-    // Uniqueness of active certificate names is now per tenant (each tenant
-    // has its own device inventory). Replace the old global partial index.
+    this.ensureColumn("certificates", "source", "TEXT");
+    this.ensureColumn("dns_providers", "kind", "TEXT NOT NULL DEFAULT 'technitium'");
+    this.ensureColumn("dns_providers", "url", "TEXT");
+    this.ensureColumn("dns_providers", "api_token", "TEXT");
+    // Legacy BIND columns remain for backup compatibility but are unused
+    this.ensureColumn("dns_providers", "key_path", "TEXT");
+    this.ensureColumn("dns_providers", "password", "TEXT");
+    this.ensureColumn("dns_providers", "tsig_name", "TEXT");
+    this.ensureColumn("dns_providers", "tsig_secret", "TEXT");
+
+    // Normalize old strategy values: bind -> technitium
+    try {
+      this.db.exec(`UPDATE domains SET strategy='technitium' WHERE strategy='bind'`);
+      this.db.exec(`UPDATE certificates SET strategy='technitium' WHERE strategy='bind'`);
+      this.db.exec(`UPDATE dns_providers SET kind='technitium' WHERE kind='bind-ssh'`);
+    } catch {
+      // ignore if columns missing
+    }
+
     this.db.exec(`
       DROP INDEX IF EXISTS idx_client_certs_active_name;
       CREATE UNIQUE INDEX IF NOT EXISTS idx_client_certs_active_name
         ON client_certificates (tenant_id, name) WHERE status = 'issued';
     `);
+
+    // Seed server_identity if empty, using config.server defaults
+    const existing = this.db.prepare("SELECT id FROM server_identity WHERE id=1").get();
+    if (!existing) {
+      const sid = config.server.id;
+      const lab = config.server.labDomain;
+      const wildcard = `${sid}.${lab}`;
+      this.db
+        .prepare(
+          `INSERT OR IGNORE INTO server_identity
+           (id, server_id, lab_domain, wildcard_domain, base_domain, registered, central_url, created_at, updated_at)
+           VALUES (1, ?, ?, ?, ?, 0, ?, ?, ?)`,
+        )
+        .run(sid, lab, wildcard, `*.${wildcard}`, config.server.registerUrl || null, nowIso(), nowIso());
+    } else {
+      // Keep lab_domain in sync if env changed (but don't overwrite manual server_id)
+      try {
+        const row = this.db.prepare("SELECT server_id, lab_domain FROM server_identity WHERE id=1").get() as { server_id: string; lab_domain: string };
+        if (row && row.lab_domain !== config.server.labDomain) {
+          const newWildcard = `${row.server_id}.${config.server.labDomain}`;
+          this.db.prepare(`UPDATE server_identity SET lab_domain=?, wildcard_domain=?, base_domain=?, updated_at=? WHERE id=1`)
+            .run(config.server.labDomain, newWildcard, `*.${newWildcard}`, nowIso());
+        }
+      } catch { /* ignore */ }
+    }
   }
 
-  /** Add a column to an existing table when it is missing (idempotent). */
   private ensureColumn(table: string, column: string, ddl: string): void {
     const cols = this.db
       .prepare(`PRAGMA table_info(${table})`)
@@ -302,43 +371,70 @@ class Database {
     }
   }
 
+  // ── Server identity ────────────────────────────────────────────────────
+  getServerIdentity(): ServerIdentityRow | undefined {
+    return this.db.prepare("SELECT * FROM server_identity WHERE id=1").get() as ServerIdentityRow | undefined;
+  }
+
+  upsertServerIdentity(input: { serverId: string; labDomain: string; centralUrl?: string | null }): ServerIdentityRow {
+    const wildcard = `${input.serverId}.${input.labDomain}`;
+    const base = `*.${wildcard}`;
+    const existing = this.getServerIdentity();
+    if (existing) {
+      this.db
+        .prepare(
+          `UPDATE server_identity SET server_id=?, lab_domain=?, wildcard_domain=?, base_domain=?, central_url=COALESCE(?, central_url), updated_at=? WHERE id=1`,
+        )
+        .run(input.serverId, input.labDomain, wildcard, base, input.centralUrl ?? null, nowIso());
+      return this.getServerIdentity()!;
+    }
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO server_identity
+         (id, server_id, lab_domain, wildcard_domain, base_domain, registered, central_url, created_at, updated_at)
+         VALUES (1, ?, ?, ?, ?, 0, ?, ?, ?)`,
+      )
+      .run(input.serverId, input.labDomain, wildcard, base, input.centralUrl ?? null, nowIso(), nowIso());
+    return this.getServerIdentity()!;
+  }
+
+  setServerRegistered(registered: boolean, centralUrl?: string): void {
+    this.db
+      .prepare(`UPDATE server_identity SET registered=?, registered_at=?, central_url=COALESCE(?, central_url), updated_at=? WHERE id=1`)
+      .run(registered ? 1 : 0, registered ? nowIso() : null, centralUrl ?? null, nowIso());
+  }
+
+  setServerWildcardCert(certId: number | null): void {
+    this.db.prepare(`UPDATE server_identity SET wildcard_cert_id=?, updated_at=? WHERE id=1`).run(certId, nowIso());
+  }
+
   // ── Tenants ────────────────────────────────────────────────────────────
   listTenants(): TenantRow[] {
-    return this.db
-      .prepare("SELECT * FROM tenants ORDER BY id")
-      .all() as unknown as TenantRow[];
+    return this.db.prepare("SELECT * FROM tenants ORDER BY id").all() as unknown as TenantRow[];
   }
 
   getTenant(id: number): TenantRow | undefined {
-    return this.db
-      .prepare("SELECT * FROM tenants WHERE id = ?")
-      .get(id) as TenantRow | undefined;
+    return this.db.prepare("SELECT * FROM tenants WHERE id = ?").get(id) as TenantRow | undefined;
   }
 
   getTenantBySlug(slug: string): TenantRow | undefined {
-    return this.db
-      .prepare("SELECT * FROM tenants WHERE slug = ?")
-      .get(slug) as TenantRow | undefined;
+    return this.db.prepare("SELECT * FROM tenants WHERE slug = ?").get(slug) as TenantRow | undefined;
   }
 
   createTenant(input: { slug: string; name: string }): TenantRow {
     const result = this.db
-      .prepare(
-        `INSERT INTO tenants (slug, name, created_at) VALUES (?, ?, ?)`,
-      )
+      .prepare(`INSERT INTO tenants (slug, name, created_at) VALUES (?, ?, ?)`)
       .run(input.slug, input.name, nowIso());
     return this.getTenant(Number(result.lastInsertRowid))!;
   }
 
   renameTenant(id: number, name: string): TenantRow | undefined {
-    const result = this.db
-      .prepare("UPDATE tenants SET name = ? WHERE id = ?")
-      .run(name, id);
+    const result = this.db.prepare("UPDATE tenants SET name = ? WHERE id = ?").run(name, id);
     if (Number(result.changes) === 0) return undefined;
     return this.getTenant(id);
   }
 
-  // ── DNS providers ──────────────────────────────────────────────────────
+  // ── DNS providers (now Technitium HTTP API) ────────────────────────────
   listDnsProviders(tenantId: number): DnsProviderRow[] {
     return this.db
       .prepare("SELECT * FROM dns_providers WHERE tenant_id = ? ORDER BY name")
@@ -347,9 +443,7 @@ class Database {
 
   getDnsProvider(id: number, tenantId?: number): DnsProviderRow | undefined {
     const row = tenantId
-      ? this.db
-          .prepare("SELECT * FROM dns_providers WHERE id = ? AND tenant_id = ?")
-          .get(id, tenantId)
+      ? this.db.prepare("SELECT * FROM dns_providers WHERE id = ? AND tenant_id = ?").get(id, tenantId)
       : this.db.prepare("SELECT * FROM dns_providers WHERE id = ?").get(id);
     return row as DnsProviderRow | undefined;
   }
@@ -365,33 +459,34 @@ class Database {
     password?: string;
     tsigName?: string;
     tsigSecret?: string;
+    url?: string;
+    apiToken?: string;
     isDefault?: boolean;
   }): DnsProviderRow {
     const result = this.db
       .prepare(
         `INSERT INTO dns_providers
            (tenant_id, name, kind, host, port, user, key_path, password,
-            tsig_name, tsig_secret, is_default, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            tsig_name, tsig_secret, url, api_token, is_default, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.tenantId,
         input.name,
-        input.kind ?? "bind-ssh",
+        input.kind ?? "technitium",
         input.host,
-        input.port ?? 22,
-        input.user ?? "root",
+        input.port ?? 5380,
+        input.user ?? "admin",
         input.keyPath ?? null,
         input.password ?? null,
         input.tsigName ?? null,
         input.tsigSecret ?? null,
+        input.url ?? null,
+        input.apiToken ?? null,
         input.isDefault ? 1 : 0,
         nowIso(),
       );
-    return this.getDnsProvider(
-      Number(result.lastInsertRowid),
-      input.tenantId,
-    )!;
+    return this.getDnsProvider(Number(result.lastInsertRowid), input.tenantId)!;
   }
 
   updateDnsProvider(
@@ -406,6 +501,8 @@ class Database {
       password?: string | null;
       tsigName?: string;
       tsigSecret?: string;
+      url?: string;
+      apiToken?: string;
       isDefault?: boolean;
     },
   ): DnsProviderRow | undefined {
@@ -416,33 +513,19 @@ class Database {
       host: input.host ?? existing.host,
       port: input.port ?? existing.port,
       user: input.user ?? existing.user,
-      // An empty string means "unchanged"; null explicitly clears.
-      keyPath:
-        input.keyPath !== undefined
-          ? input.keyPath || existing.key_path
-          : existing.key_path,
-      password:
-        input.password !== undefined
-          ? input.password || existing.password
-          : existing.password,
-      tsigName:
-        input.tsigName !== undefined
-          ? input.tsigName || existing.tsig_name
-          : existing.tsig_name,
-      tsigSecret:
-        input.tsigSecret !== undefined
-          ? input.tsigSecret || existing.tsig_secret
-          : existing.tsig_secret,
-      isDefault:
-        input.isDefault !== undefined
-          ? input.isDefault
-          : existing.is_default === 1,
+      keyPath: input.keyPath !== undefined ? input.keyPath || existing.key_path : existing.key_path,
+      password: input.password !== undefined ? input.password || existing.password : existing.password,
+      tsigName: input.tsigName !== undefined ? input.tsigName || existing.tsig_name : existing.tsig_name,
+      tsigSecret: input.tsigSecret !== undefined ? input.tsigSecret || existing.tsig_secret : existing.tsig_secret,
+      url: input.url !== undefined ? input.url || existing.url : existing.url,
+      apiToken: input.apiToken !== undefined ? input.apiToken || existing.api_token : existing.api_token,
+      isDefault: input.isDefault !== undefined ? input.isDefault : existing.is_default === 1,
     };
     this.db
       .prepare(
         `UPDATE dns_providers SET
            name = ?, host = ?, port = ?, user = ?, key_path = ?, password = ?,
-           tsig_name = ?, tsig_secret = ?, is_default = ?
+           tsig_name = ?, tsig_secret = ?, url = ?, api_token = ?, is_default = ?
          WHERE id = ? AND tenant_id = ?`,
       )
       .run(
@@ -454,6 +537,8 @@ class Database {
         next.password,
         next.tsigName,
         next.tsigSecret,
+        next.url,
+        next.apiToken,
         next.isDefault ? 1 : 0,
         id,
         tenantId,
@@ -462,47 +547,32 @@ class Database {
   }
 
   deleteDnsProvider(id: number, tenantId: number): void {
-    this.db
-      .prepare("DELETE FROM dns_providers WHERE id = ? AND tenant_id = ?")
-      .run(id, tenantId);
+    this.db.prepare("DELETE FROM dns_providers WHERE id = ? AND tenant_id = ?").run(id, tenantId);
   }
 
-  /** Clear the default flag on every provider of a tenant (before promoting one). */
   clearDnsProviderDefaults(tenantId: number): void {
-    this.db
-      .prepare("UPDATE dns_providers SET is_default = 0 WHERE tenant_id = ?")
-      .run(tenantId);
+    this.db.prepare("UPDATE dns_providers SET is_default = 0 WHERE tenant_id = ?").run(tenantId);
   }
 
   // ── Domains ────────────────────────────────────────────────────────────
   listDomains(tenantId?: number): DomainRow[] {
     const rows = tenantId
-      ? this.db
-          .prepare("SELECT * FROM domains WHERE tenant_id = ? ORDER BY name")
-          .all(tenantId)
+      ? this.db.prepare("SELECT * FROM domains WHERE tenant_id = ? ORDER BY name").all(tenantId)
       : this.db.prepare("SELECT * FROM domains ORDER BY name").all();
     return rows as unknown as DomainRow[];
   }
 
   getDomain(id: number, tenantId?: number): DomainRow | undefined {
     const row = tenantId
-      ? this.db
-          .prepare("SELECT * FROM domains WHERE id = ? AND tenant_id = ?")
-          .get(id, tenantId)
+      ? this.db.prepare("SELECT * FROM domains WHERE id = ? AND tenant_id = ?").get(id, tenantId)
       : this.db.prepare("SELECT * FROM domains WHERE id = ?").get(id);
     return row as DomainRow | undefined;
   }
 
   getDomainByName(name: string, tenantId?: number): DomainRow | undefined {
     const row = tenantId
-      ? this.db
-          .prepare(
-            "SELECT * FROM domains WHERE name = ? AND tenant_id = ?",
-          )
-          .get(name.toLowerCase().replace(/\.$/, ""), tenantId)
-      : this.db
-          .prepare("SELECT * FROM domains WHERE name = ?")
-          .get(name.toLowerCase().replace(/\.$/, ""));
+      ? this.db.prepare("SELECT * FROM domains WHERE name = ? AND tenant_id = ?").get(name.toLowerCase().replace(/\.$/, ""), tenantId)
+      : this.db.prepare("SELECT * FROM domains WHERE name = ?").get(name.toLowerCase().replace(/\.$/, ""));
     return row as DomainRow | undefined;
   }
 
@@ -510,21 +580,15 @@ class Database {
     const result = this.db
       .prepare(
         `INSERT INTO domains (name, strategy, tenant_id, created_at)
-         VALUES (?, 'bind', ?, ?)`,
+         VALUES (?, 'technitium', ?, ?)`,
       )
-      .run(
-        input.name.toLowerCase().replace(/\.$/, ""),
-        input.tenantId ?? DEFAULT_TENANT_ID,
-        nowIso(),
-      );
+      .run(input.name.toLowerCase().replace(/\.$/, ""), input.tenantId ?? DEFAULT_TENANT_ID, nowIso());
     return this.getDomain(Number(result.lastInsertRowid))!;
   }
 
   deleteDomain(id: number, tenantId?: number): void {
     if (tenantId) {
-      this.db
-        .prepare("DELETE FROM domains WHERE id = ? AND tenant_id = ?")
-        .run(id, tenantId);
+      this.db.prepare("DELETE FROM domains WHERE id = ? AND tenant_id = ?").run(id, tenantId);
       return;
     }
     this.db.prepare("DELETE FROM domains WHERE id = ?").run(id);
@@ -533,22 +597,14 @@ class Database {
   // ── Certificates ───────────────────────────────────────────────────────
   listCertificates(tenantId?: number): CertificateRow[] {
     const rows = tenantId
-      ? this.db
-          .prepare(
-            "SELECT * FROM certificates WHERE tenant_id = ? ORDER BY id DESC",
-          )
-          .all(tenantId)
+      ? this.db.prepare("SELECT * FROM certificates WHERE tenant_id = ? ORDER BY id DESC").all(tenantId)
       : this.db.prepare("SELECT * FROM certificates ORDER BY id DESC").all();
     return rows as unknown as CertificateRow[];
   }
 
   getCertificate(id: number, tenantId?: number): CertificateRow | undefined {
     const row = tenantId
-      ? this.db
-          .prepare(
-            "SELECT * FROM certificates WHERE id = ? AND tenant_id = ?",
-          )
-          .get(id, tenantId)
+      ? this.db.prepare("SELECT * FROM certificates WHERE id = ? AND tenant_id = ?").get(id, tenantId)
       : this.db.prepare("SELECT * FROM certificates WHERE id = ?").get(id);
     return row as CertificateRow | undefined;
   }
@@ -559,32 +615,28 @@ class Database {
     wildcard: boolean;
     autoRenew?: boolean;
     tenantId?: number;
+    source?: string;
   }): CertificateRow {
     const result = this.db
       .prepare(
-        `INSERT INTO certificates (name, domain, wildcard, strategy, domains_json, auto_renew, tenant_id, created_at)
-         VALUES (?, ?, ?, 'bind', ?, ?, ?, ?)`,
+        `INSERT INTO certificates (name, domain, wildcard, strategy, domains_json, auto_renew, tenant_id, source, created_at)
+         VALUES (?, ?, ?, 'technitium', ?, ?, ?, ?, ?)`,
       )
       .run(
         input.name,
         input.domain.toLowerCase().replace(/\.$/, ""),
         input.wildcard ? 1 : 0,
-        JSON.stringify(
-          input.wildcard
-            ? [input.domain, `*.${input.domain}`]
-            : [input.domain],
-        ),
+        JSON.stringify(input.wildcard ? [input.domain, `*.${input.domain}`] : [input.domain]),
         input.autoRenew === false ? 0 : 1,
         input.tenantId ?? DEFAULT_TENANT_ID,
+        input.source ?? null,
         nowIso(),
       );
     return this.getCertificate(Number(result.lastInsertRowid))!;
   }
 
   updateCertificateStatus(id: number, status: string, error?: string): void {
-    this.db
-      .prepare("UPDATE certificates SET status = ?, error = ? WHERE id = ?")
-      .run(status, error ?? null, id);
+    this.db.prepare("UPDATE certificates SET status = ?, error = ? WHERE id = ?").run(status, error ?? null, id);
   }
 
   saveCertificateMaterial(
@@ -592,19 +644,26 @@ class Database {
     certificate: string,
     key: string,
     expiresAt: string,
+    source?: string,
   ): void {
-    this.db
-      .prepare(
-        `UPDATE certificates SET certificate = ?, key = ?, expires_at = ?, issued_at = ?, status = 'issued', error = NULL WHERE id = ?`,
-      )
-      .run(certificate, key, expiresAt, nowIso(), id);
+    if (source) {
+      this.db
+        .prepare(
+          `UPDATE certificates SET certificate = ?, key = ?, expires_at = ?, issued_at = ?, status = 'issued', error = NULL, source=? WHERE id = ?`,
+        )
+        .run(certificate, key, expiresAt, nowIso(), source, id);
+    } else {
+      this.db
+        .prepare(
+          `UPDATE certificates SET certificate = ?, key = ?, expires_at = ?, issued_at = ?, status = 'issued', error = NULL WHERE id = ?`,
+        )
+        .run(certificate, key, expiresAt, nowIso(), id);
+    }
   }
 
   deleteCertificate(id: number, tenantId?: number): void {
     if (tenantId) {
-      this.db
-        .prepare("DELETE FROM certificates WHERE id = ? AND tenant_id = ?")
-        .run(id, tenantId);
+      this.db.prepare("DELETE FROM certificates WHERE id = ? AND tenant_id = ?").run(id, tenantId);
       return;
     }
     this.db.prepare("DELETE FROM certificates WHERE id = ?").run(id);
@@ -624,9 +683,7 @@ class Database {
   // ── ACME accounts ──────────────────────────────────────────────────────
   getAcmeAccount(directoryUrl: string, email: string): AcmeAccountRow | undefined {
     return this.db
-      .prepare(
-        "SELECT * FROM acme_accounts WHERE directory_url = ? AND email = ?",
-      )
+      .prepare("SELECT * FROM acme_accounts WHERE directory_url = ? AND email = ?")
       .get(directoryUrl, email) as AcmeAccountRow | undefined;
   }
 
@@ -640,9 +697,7 @@ class Database {
   }
 
   listAcmeAccounts(): AcmeAccountRow[] {
-    return this.db
-      .prepare("SELECT * FROM acme_accounts")
-      .all() as unknown as AcmeAccountRow[];
+    return this.db.prepare("SELECT * FROM acme_accounts").all() as unknown as AcmeAccountRow[];
   }
 
   // ── Discovered certificates ────────────────────────────────────────────
@@ -663,9 +718,7 @@ class Database {
     tenantId = DEFAULT_TENANT_ID,
   ): boolean {
     const existing = this.db
-      .prepare(
-        "SELECT id FROM discovered_certificates WHERE source = ? AND source_id = ?",
-      )
+      .prepare("SELECT id FROM discovered_certificates WHERE source = ? AND source_id = ?")
       .get(input.source, input.sourceId) as { id: number } | undefined;
     if (existing) {
       this.db
@@ -726,21 +779,13 @@ class Database {
              WHERE tenant_id = ? ORDER BY expires_at IS NULL, expires_at ASC`,
           )
           .all(tenantId)
-      : this.db
-          .prepare(
-            "SELECT * FROM discovered_certificates ORDER BY expires_at IS NULL, expires_at ASC",
-          )
-          .all();
+      : this.db.prepare("SELECT * FROM discovered_certificates ORDER BY expires_at IS NULL, expires_at ASC").all();
     return rows as unknown as DiscoveredCertRow[];
   }
 
   deleteDiscoveredCert(id: number, tenantId?: number): void {
     if (tenantId) {
-      this.db
-        .prepare(
-          "DELETE FROM discovered_certificates WHERE id = ? AND tenant_id = ?",
-        )
-        .run(id, tenantId);
+      this.db.prepare("DELETE FROM discovered_certificates WHERE id = ? AND tenant_id = ?").run(id, tenantId);
       return;
     }
     this.db.prepare("DELETE FROM discovered_certificates WHERE id = ?").run(id);
@@ -748,17 +793,10 @@ class Database {
 
   // ── Private CA + client certificates ──────────────────────────────────
   getCa(): CaRow | undefined {
-    return this.db.prepare("SELECT * FROM ca WHERE id = 1").get() as
-      | CaRow
-      | undefined;
+    return this.db.prepare("SELECT * FROM ca WHERE id = 1").get() as CaRow | undefined;
   }
 
-  /** Insert the root CA singleton (no-op if it already exists). */
-  createCa(input: {
-    commonName: string;
-    certificate: string;
-    key: string;
-  }): CaRow {
+  createCa(input: { commonName: string; certificate: string; key: string }): CaRow {
     this.db
       .prepare(
         `INSERT OR IGNORE INTO ca (id, common_name, certificate, key, serial, created_at)
@@ -768,13 +806,10 @@ class Database {
     return this.getCa()!;
   }
 
-  /** Atomically claim the next serial number for a certificate issuance. */
   nextCaSerial(): number {
     this.db.exec("BEGIN IMMEDIATE;");
     try {
-      const row = this.db
-        .prepare("SELECT serial FROM ca WHERE id = 1")
-        .get() as { serial: number } | undefined;
+      const row = this.db.prepare("SELECT serial FROM ca WHERE id = 1").get() as { serial: number } | undefined;
       if (!row) throw new Error("CA is not initialized");
       const next = row.serial + 1;
       this.db.prepare("UPDATE ca SET serial = ? WHERE id = 1").run(next);
@@ -788,48 +823,24 @@ class Database {
 
   listClientCertificates(tenantId?: number): ClientCertificateRow[] {
     const rows = tenantId
-      ? this.db
-          .prepare(
-            "SELECT * FROM client_certificates WHERE tenant_id = ? ORDER BY id DESC",
-          )
-          .all(tenantId)
-      : this.db
-          .prepare("SELECT * FROM client_certificates ORDER BY id DESC")
-          .all();
+      ? this.db.prepare("SELECT * FROM client_certificates WHERE tenant_id = ? ORDER BY id DESC").all(tenantId)
+      : this.db.prepare("SELECT * FROM client_certificates ORDER BY id DESC").all();
     return rows as unknown as ClientCertificateRow[];
   }
 
-  getClientCertificate(
-    id: number,
-    tenantId?: number,
-  ): ClientCertificateRow | undefined {
+  getClientCertificate(id: number, tenantId?: number): ClientCertificateRow | undefined {
     const row = tenantId
-      ? this.db
-          .prepare(
-            "SELECT * FROM client_certificates WHERE id = ? AND tenant_id = ?",
-          )
-          .get(id, tenantId)
+      ? this.db.prepare("SELECT * FROM client_certificates WHERE id = ? AND tenant_id = ?").get(id, tenantId)
       : this.db.prepare("SELECT * FROM client_certificates WHERE id = ?").get(id);
     return row as ClientCertificateRow | undefined;
   }
 
-  /** Active (non-revoked) certificate whose CN/name matches `name`. */
-  findActiveClientCertificate(
-    name: string,
-    tenantId?: number,
-  ): ClientCertificateRow | undefined {
+  findActiveClientCertificate(name: string, tenantId?: number): ClientCertificateRow | undefined {
     const row = tenantId
       ? this.db
-          .prepare(
-            `SELECT * FROM client_certificates
-             WHERE name = ? AND status = 'issued' AND tenant_id = ?`,
-          )
+          .prepare(`SELECT * FROM client_certificates WHERE name = ? AND status = 'issued' AND tenant_id = ?`)
           .get(name, tenantId)
-      : this.db
-          .prepare(
-            "SELECT * FROM client_certificates WHERE name = ? AND status = 'issued'",
-          )
-          .get(name);
+      : this.db.prepare("SELECT * FROM client_certificates WHERE name = ? AND status = 'issued'").get(name);
     return row as ClientCertificateRow | undefined;
   }
 
@@ -858,19 +869,15 @@ class Database {
         input.key,
         input.fingerprint,
         input.expiresAt,
-        nowIso(), // issued_at
+        nowIso(),
         input.tenantId ?? DEFAULT_TENANT_ID,
-        nowIso(), // created_at
+        nowIso(),
       );
     return this.getClientCertificate(Number(result.lastInsertRowid))!;
   }
 
   revokeClientCertificate(id: number): ClientCertificateRow | undefined {
-    this.db
-      .prepare(
-        `UPDATE client_certificates SET status = 'revoked', revoked_at = ? WHERE id = ?`,
-      )
-      .run(nowIso(), id);
+    this.db.prepare(`UPDATE client_certificates SET status = 'revoked', revoked_at = ? WHERE id = ?`).run(nowIso(), id);
     return this.getClientCertificate(id);
   }
 
@@ -882,30 +889,22 @@ class Database {
   }
 
   listDnsAudits(limit = 50): DnsAuditRow[] {
-    return this.db
-      .prepare("SELECT * FROM dns_audits ORDER BY id DESC LIMIT ?")
-      .all(limit) as unknown as DnsAuditRow[];
+    return this.db.prepare("SELECT * FROM dns_audits ORDER BY id DESC LIMIT ?").all(limit) as unknown as DnsAuditRow[];
   }
 
   latestDnsAudit(domain: string): DnsAuditRow | undefined {
     return this.db
-      .prepare(
-        "SELECT * FROM dns_audits WHERE domain = ? ORDER BY id DESC LIMIT 1",
-      )
+      .prepare("SELECT * FROM dns_audits WHERE domain = ? ORDER BY id DESC LIMIT 1")
       .get(domain.toLowerCase()) as DnsAuditRow | undefined;
   }
 
   // ── Activities ─────────────────────────────────────────────────────────
   addActivity(kind: string, message: string, detail?: string): void {
-    this.db
-      .prepare("INSERT INTO activities (ts, kind, message, detail) VALUES (?, ?, ?, ?)")
-      .run(nowIso(), kind, message, detail ?? null);
+    this.db.prepare("INSERT INTO activities (ts, kind, message, detail) VALUES (?, ?, ?, ?)").run(nowIso(), kind, message, detail ?? null);
   }
 
   listActivities(limit = 100): ActivityRow[] {
-    return this.db
-      .prepare("SELECT * FROM activities ORDER BY id DESC LIMIT ?")
-      .all(limit) as unknown as ActivityRow[];
+    return this.db.prepare("SELECT * FROM activities ORDER BY id DESC LIMIT ?").all(limit) as unknown as ActivityRow[];
   }
 }
 

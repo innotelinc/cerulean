@@ -8,8 +8,8 @@ Drives the endpoints the Cerulean server exposes (see server/src/routes.ts):
                   POST /api/certificates/:id/renew
     npm hosts     GET/POST /api/npm/hosts, PUT /api/npm/hosts/:id
 
-All mutation happens server-side against Cerulean's own NPM + BIND
-connections, so projects using this plugin never need NPM or TSIG secrets.
+All mutation happens server-side against Cerulean's own NPM + Technitium
+connections, so projects using this plugin never need NPM or Technitium secrets.
 """
 
 from __future__ import annotations
@@ -102,7 +102,7 @@ class CeruleanClient:
         return self._request("GET", "/api/domains") or []
 
     def resolve_zone(self, base_domain: str, configured_zone: str = "") -> str:
-        """Resolve the BIND zone that hosts `base_domain`'s records: the
+        """Resolve the Technitium zone that hosts `base_domain`'s records: the
         longest registered-zone suffix, else the configured zone, else
         base_domain itself."""
         base = base_domain.strip().lower().rstrip(".")
@@ -240,7 +240,7 @@ class CeruleanClient:
         timeout: int,
     ):
         """Reuse a valid wildcard cert for base_domain, else issue one via
-        Cerulean (BIND/TSIG DNS-01). Returns (cert, action)."""
+        Cerulean (Technitium DNS-01). Returns (cert, action)."""
         base_domain = base_domain.strip().lower().rstrip(".")
         now = time.time()
         for cert in self.list_certificates():

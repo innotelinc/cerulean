@@ -9,6 +9,7 @@ export interface DnsRecord {
   type: string;
   ttl: number;
   value: string;
+  disabled?: boolean;
 }
 
 export interface HealthSummary {
@@ -39,6 +40,7 @@ export interface Certificate {
   autoRenew: boolean;
   createdAt: string;
   hasMaterial: boolean;
+  source: string | null;
   health: HealthSummary;
 }
 
@@ -115,9 +117,11 @@ export interface DnsProvider {
   kind: string;
   host: string;
   port: number;
+  url: string | null;
   user: string;
-  hasKey: boolean;
+  hasToken: boolean;
   hasPassword: boolean;
+  hasKey: boolean;
   hasTsig: boolean;
   isDefault: boolean;
   createdAt: string;
@@ -171,8 +175,70 @@ export interface SessionUser {
   provider: "local" | "authentik";
 }
 
+// ── Orchestrator / Technitium / DHCP / Blocking ───────────────────────────
+
+export interface ServerIdentity {
+  serverId: string;
+  labDomain: string;
+  apex: string;
+  wildcard: string;
+  registered: boolean;
+  wildcardCertId: number | null;
+  wildcardCert?: Certificate | null;
+  centralUrl: string | null;
+  registeredAt: string | null;
+  autoWildcard: boolean;
+  wildcardValidityDays: number;
+  registerUrl: string | null;
+  orchestrator: { enabled: boolean; dhcpEnabled: boolean; blockingEnabled: boolean };
+}
+
+export interface DhcpScope {
+  name: string;
+  enabled: boolean;
+  startingAddress: string;
+  endingAddress: string;
+  subnetMask: string;
+  networkAddress?: string;
+  broadcastAddress?: string;
+  routerAddress?: string;
+  domainName?: string;
+  dnsServers?: string;
+  leaseTimeDays?: number;
+}
+
+export interface DhcpLease {
+  scope: string;
+  type: string;
+  hardwareAddress: string;
+  address: string;
+  hostName: string | null;
+  leaseObtained: string;
+  leaseExpires: string;
+  clientIdentifier?: string;
+}
+
+export interface BlockingStatus {
+  enabled: boolean;
+  blockListUrls: string[];
+  blockedZones: number;
+  allowedZones: number;
+  detail: string;
+}
+
+export interface OrchestratorStatus {
+  server: { serverId: string; labDomain: string; apex: string; wildcard: string; registered: boolean; wildcardCertId: number | null };
+  technitium: { reachable: boolean; detail: string; url: string };
+  dhcp: { reachable: boolean; scopes: number; leases: number; detail: string };
+  blocking: BlockingStatus;
+  config: { orchestrator: { enabled: boolean; dhcpEnabled: boolean; blockingEnabled: boolean }; server: { id: string; labDomain: string; wildcardValidityDays: number; autoWildcard: boolean } };
+}
+
 export interface StatusResponse {
   bind: { status: string; detail: string };
+  technitium: { status: string; detail: string; url: string };
+  dhcp: { status: string; detail: string; scopes: number; leases: number; enabled: boolean };
+  blocking: { status: string; detail: string; enabled: boolean; blockedZones: number; allowedZones: number; urls: string[] };
   npm: { status: string };
   auth: {
     oidcEnabled: boolean;
@@ -185,11 +251,32 @@ export interface StatusResponse {
     status: string;
     addr: string;
   };
+  infisical?: {
+    enabled: boolean;
+    status: string;
+    addr: string;
+  };
   discovery: {
     dirs: string[];
     count: number;
   };
   pki: PkiStatus;
+  server: {
+    serverId: string;
+    labDomain: string;
+    apex: string;
+    wildcard: string;
+    registered: boolean;
+    wildcardCertId: number | null;
+    autoWildcard: boolean;
+    wildcardValidityDays: number;
+    registerUrl: string | null;
+  };
+  orchestrator: {
+    enabled: boolean;
+    dhcpEnabled: boolean;
+    blockingEnabled: boolean;
+  };
   config: {
     zone: string;
     acmeDirectoryUrl: string;
@@ -197,5 +284,8 @@ export interface StatusResponse {
     bindHost: string;
     npmApiUrl: string;
     tsigConfigured: boolean;
+    technitiumUrl: string;
+    bindMode: string;
+    npmMode: string;
   };
 }

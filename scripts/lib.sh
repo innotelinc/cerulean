@@ -3,11 +3,9 @@
 set -euo pipefail
 
 # ── .env handling ───────────────────────────────────────────────────────────
-# Locate the repo root (parent of scripts/)
 CERULEAN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${CERULEAN_ROOT}/.env"
 
-# Get a value from .env (or fallback). Values must be single-line, unquoted.
 env_get() {
   local key="$1"
   local fallback="${2:-}"
@@ -22,7 +20,6 @@ env_get() {
   printf '%s' "$fallback"
 }
 
-# Set a value in .env (create the file from .env.example if missing).
 env_set() {
   local key="$1"
   local value="$2"
@@ -36,20 +33,19 @@ env_set() {
   fi
 }
 
-# Load the keys the setup scripts need into the environment.
 env_load() {
   if [ ! -f "$ENV_FILE" ]; then
     echo "⚠  .env not found — copying .env.example to .env (edit it first!)" >&2
     cp "${CERULEAN_ROOT}/.env.example" "$ENV_FILE"
   fi
-  BIND_SSH_HOST="$(env_get BIND_SSH_HOST)"
-  BIND_SSH_PORT="$(env_get BIND_SSH_PORT 22)"
-  BIND_SSH_USER="$(env_get BIND_SSH_USER root)"
-  BIND_SSH_KEY_PATH="$(env_get BIND_SSH_KEY_PATH)"
-  BIND_SSH_PASSWORD="$(env_get BIND_SSH_PASSWORD)"
-  BIND_TSIG_NAME="$(env_get BIND_TSIG_NAME cerulean)"
-  BIND_TSIG_SECRET="$(env_get BIND_TSIG_SECRET)"
-  BIND_ZONES="$(env_get BIND_ZONES "$(env_get CERULEAN_ZONE)")"
+  # Server identity
+  CERULEAN_SERVER_ID="$(env_get CERULEAN_SERVER_ID)"
+  CERULEAN_LAB_DOMAIN="$(env_get CERULEAN_LAB_DOMAIN lab.innotel.us)"
+  # Technitium
+  TECHNITIUM_URL="$(env_get TECHNITIUM_URL http://cerulean-technitium:5380)"
+  TECHNITIUM_TOKEN="$(env_get TECHNITIUM_TOKEN)"
+  TECHNITIUM_PASSWORD="$(env_get TECHNITIUM_PASSWORD)"
+  CERULEAN_ZONE="$(env_get CERULEAN_ZONE)"
   CERULEAN_ADMIN_PASSWORD="$(env_get CERULEAN_ADMIN_PASSWORD)"
   NPM_MODE="$(env_get NPM_MODE remote)"
   NPM_API_URL="$(env_get NPM_API_URL)"
@@ -60,41 +56,15 @@ env_load() {
   NPM_PROXY_SSL="$(env_get NPM_PROXY_SSL 0)"
 }
 
-# ── SSH to the BIND server ──────────────────────────────────────────────────
-ensure_sshpass() {
-  if command -v sshpass >/dev/null 2>&1; then
-    return 0
-  fi
-  echo "sshpass not found — installing it (needed for password-based SSH to BIND)…"
-  if [ "$(id -u)" = "0" ]; then
-    apt-get update -y && apt-get install -y sshpass
-  else
-    sudo apt-get update -y && sudo apt-get install -y sshpass
-  fi
-}
-
-# Run a remote command on the BIND server. Output is returned on stdout.
-ssh_run() {
-  local cmd="$1"
-  local opts=(-p "$BIND_SSH_PORT" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15)
-  if [ -n "$BIND_SSH_KEY_PATH" ] && [ -f "$BIND_SSH_KEY_PATH" ]; then
-    ssh "${opts[@]}" -i "$BIND_SSH_KEY_PATH" "$BIND_SSH_USER@$BIND_SSH_HOST" "$cmd"
-  elif [ -n "$BIND_SSH_PASSWORD" ]; then
-    ensure_sshpass
-    sshpass -p "$BIND_SSH_PASSWORD" ssh "${opts[@]}" "$BIND_SSH_USER@$BIND_SSH_HOST" "$cmd"
-  else
-    echo "ERROR: no BIND SSH credentials (set BIND_SSH_KEY_PATH or BIND_SSH_PASSWORD in .env)" >&2
-    return 1
-  fi
-}
-
-bind_configured() {
-  [ -n "$BIND_SSH_HOST" ] && { [ -n "$BIND_SSH_KEY_PATH" ] || [ -n "$BIND_SSH_PASSWORD" ]; }
+technitium_configured() {
+  # Considered configured if URL points somewhere (even default), but for
+  # setup guidance we want token/password present
+  [ -n "$TECHNITIUM_TOKEN" ] || [ -n "$TECHNITIUM_PASSWORD" ] || [ -n "$(env_get TECHNITIUM_USER)" ]
 }
 
 npm_configured() {
   if [ "$NPM_MODE" = "local" ]; then
-    [ "$(env_get BIND_MODE remote)" = "local" ] && [ -n "$NPM_EMAIL" ] && [ -n "$NPM_PASSWORD" ] && [ "$NPM_PASSWORD" != "change-me" ]
+    [ -n "$NPM_EMAIL" ] && [ -n "$NPM_PASSWORD" ] && [ "$NPM_PASSWORD" != "change-me" ]
     return
   fi
   [ -n "$NPM_API_URL" ] && [ -n "$NPM_EMAIL" ] && [ -n "$NPM_PASSWORD" ] && [ "$NPM_PASSWORD" != "change-me" ]

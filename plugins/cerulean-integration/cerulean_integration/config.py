@@ -47,8 +47,8 @@ class Config:
     api_url: str = "http://localhost:3003"
     password: str = ""
     base_domain: str = "innotel.us"
-    # BIND zone that hosts the A records. Optional: when empty, the zone is
-    # resolved as the longest registered-zone suffix of base_domain (falling
+    # Technitium zone that hosts the A records. Optional: when empty, the zone
+    # is resolved as the longest registered-zone suffix of base_domain (falling
     # back to base_domain itself). Set it when subdomains live under a parent
     # zone, e.g. base_domain=monarch.innotel.us with CERULEAN_ZONE=innotel.us.
     zone: str = ""

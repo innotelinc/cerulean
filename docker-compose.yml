@@ -1,6 +1,6 @@
 include:
   # Canonical NPM Edge integration: NPM + MariaDB + backup-ui.
-  # Its services remain profile-gated and are used only for local BIND.
+  # Its services remain profile-gated.
   - ../npm/compose.cerulean.yml
 
 services:
@@ -8,7 +8,6 @@ services:
     build: .
     container_name: cerulean
     restart: unless-stopped
-    # Memory posture (docs/service-audit.md): DNS/cert control plane; light.
     mem_limit: 768m
     memswap_limit: 768m
     env_file: .env
@@ -16,37 +15,60 @@ services:
       - "${CERULEAN_PORT:-3000}:${CERULEAN_PORT:-3000}"
     volumes:
       - ./data:/app/data
+    depends_on:
+      cerulean-technitium:
+        condition: service_healthy
+        required: false
 
-  # ── Bundled BIND + SSH (OPT-IN: BIND_MODE=local, docker compose --profile bind up -d) ──
-  # Authoritative DNS + sshd so Cerulean manages records exactly like a remote
-  # BIND box (nsupdate over SSH + TSIG, dig AXFR). BIND_SSH_HOST defaults to
-  # "cerulean-bind" inside the compose network; port 53 is published so the
-  # LAN can query the zones, and 2222 maps to sshd for host-side debugging.
-  cerulean-bind:
-    build: ./bind
-    container_name: cerulean-bind
-    profiles: ["bind"]
+  # ── Bundled Technitium DNS Server (OPT-IN: docker compose --profile technitium up -d) ──
+  # Authoritative + recursive DNS, DHCP, and ad-blocking in one container.
+  # Cerulean is the master orchestrator: it drives Technitium via HTTP API
+  # (/api/zones/*, /api/dhcp/*, /api/blocked/*, /api/settings/*).
+  #   • Auto-creates zones from Domains + the server apex <serverId>.lab.innotel.us
+  #   • ACME DNS-01 TXT records via /api/zones/records/add (replaces RFC2136/nsupdate)
+  #   • DHCP scopes & leases via /api/dhcp/scopes/*
+  #   • Ad-blocking via /api/settings + /api/blocked/* + block lists
+  # The web console is at http://<host>:5380 (admin / TECHNITIUM_ADMIN_PASSWORD).
+  # Port 53 is published so the LAN can use this host as DNS; 67/udp for DHCP.
+  cerulean-technitium:
+    image: technitium/dns-server:latest
+    container_name: cerulean-technitium
+    profiles: ["technitium"]
     restart: unless-stopped
-    environment:
-      BIND_ZONES: ${BIND_ZONES:-${CERULEAN_ZONE:-}}
-      BIND_TSIG_NAME: ${BIND_TSIG_NAME:-cerulean}
-      BIND_TSIG_SECRET: ${BIND_TSIG_SECRET:-}
-      BIND_SSH_PASSWORD: ${BIND_SSH_PASSWORD:-}
-      BIND_PORTAL_IPS: ${BIND_PORTAL_IPS:-any}
+    # For DHCP to see client broadcasts and for DNS to serve the LAN,
+    # host networking is ideal. However port-mapping works for most home-lab
+    # use. Keep bridge (default) so Cerulean reaches it at http://cerulean-technitium:5380;
+    # DHCP users who need broadcast should add `network_mode: host` manually.
     ports:
-      - "${BIND_UDP_PORT:-53}:53/udp"
-      - "${BIND_TCP_PORT:-53}:53/tcp"
-      - "2222:22"
+      - "${TECHNITIUM_DNS_UDP_PORT:-53}:53/udp"
+      - "${TECHNITIUM_DNS_TCP_PORT:-53}:53/tcp"
+      - "${TECHNITIUM_WEB_PORT:-5380}:5380/tcp"
+      - "${TECHNITIUM_DHCP_PORT:-67}:67/udp"
+      # Optional DNS-over-TLS/HTTPS (uncomment if needed)
+      # - "853:853/tcp"
+      # - "443:443/tcp"
+      # - "80:80/tcp"
+    environment:
+      DNS_SERVER_DOMAIN: ${TECHNITIUM_DOMAIN:-${CERULEAN_SERVER_ID:-cerulean}.lab.innotel.us}
+      DNS_SERVER_ADMIN_PASSWORD: ${TECHNITIUM_ADMIN_PASSWORD:-${TECHNITIUM_PASSWORD:-}}
+      DNS_SERVER_PREFER_IPV6: "${DNS_SERVER_PREFER_IPV6:-false}"
+      DNS_SERVER_WEB_SERVICE_HTTP_PORT: "5380"
+      DNS_SERVER_RECURSION: "${DNS_SERVER_RECURSION:-AllowOnlyForPrivateNetworks}"
+      DNS_SERVER_ENABLE_BLOCKING: "${DNS_SERVER_ENABLE_BLOCKING:-true}"
+      DNS_SERVER_BLOCK_LIST_URLS: ${DNS_SERVER_BLOCK_LIST_URLS:-}
+      DNS_SERVER_FORWARDERS: ${DNS_SERVER_FORWARDERS:-1.1.1.1,8.8.8.8}
+      DNS_SERVER_FORWARDER_PROTOCOL: "${DNS_SERVER_FORWARDER_PROTOCOL:-Udp}"
     volumes:
-      - ./data/bind/zones:/etc/bind/zones
+      - ./data/technitium:/etc/dns
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5380/api/user/login 2>&1 | grep -q status || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   # ── Authentik (OPT-IN: docker compose --profile authentik up -d) ────────
-  # SSO / user management. Cerulean authenticates against it via OIDC
-  # (AUTHENTIK_ISSUER_URL / AUTHENTIK_CLIENT_ID / AUTHENTIK_CLIENT_SECRET).
-  # Reach it at http://<host>:9000, or through the auth.<base> proxy host.
   authentik-server:
-    # Memory posture (docs/service-audit.md): shared identity plane for the
-    # whole portfolio — cap generously (measured ~620 MiB) but bounded.
     mem_limit: 1500m
     memswap_limit: 1500m
     image: ghcr.io/goauthentik/server:${AUTHENTIK_IMAGE_TAG:-2026.8.1}
@@ -55,8 +77,6 @@ services:
     restart: unless-stopped
     command: server
     environment:
-      # Note: no :? syntax here — compose interpolates env for every service
-      # even when the profile is inactive, so these must tolerate being unset.
       AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:-}
       AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
       AUTHENTIK_POSTGRESQL__HOST: authentik-postgres
@@ -87,9 +107,6 @@ services:
     restart: unless-stopped
     command: worker
     environment:
-      # The worker runs the bootstrap blueprint (system/bootstrap.yaml), so it
-      # needs the same bootstrap env as the server or akadmin is created with
-      # the default root@example.com email and no bootstrap token.
       AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:-}
       AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
       AUTHENTIK_POSTGRESQL__HOST: authentik-postgres
@@ -138,11 +155,7 @@ services:
       retries: 10
 
   # ── HashiCorp Vault (OPT-IN: docker compose --profile vault up -d) ───────
-  # Secret vault for private keys and credentials. This runs Vault in DEV
-  # mode (ephemeral, single unsealed node) for a self-hosted stack — for
-  # anything beyond testing, point VAULT_ADDR at a real Vault instead.
   vault:
-    # Memory posture: secrets store is tiny; cap for safety.
     mem_limit: 512m
     memswap_limit: 512m
     image: hashicorp/vault:${VAULT_IMAGE_TAG:-1.17}
@@ -156,4 +169,3 @@ services:
       - "8200:8200"
     cap_add:
       - IPC_LOCK
-

@@ -1,23 +1,23 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * Unit tests for per-tenant DNS providers: validation, default promotion,
- * credential write-only semantics (JSON views never leak secrets), and
- * connection resolution for record operations. `db` is mocked; the real
- * SQLite schema/DDL is exercised by the build smoke (vitest cannot load
- * node:sqlite).
+ * Unit tests for per-tenant Technitium DNS providers: validation,
+ * default promotion, credential write-only semantics, and connection
+ * resolution. `db` is mocked; real SQLite schema exercised by build.
  */
 
 type DnsProviderRow = {
   id: number;
   tenant_id: number;
   name: string;
-  kind: "bind-ssh";
+  kind: string;
   host: string;
   port: number;
   user: string;
-  key_path: string | null;
+  url: string | null;
+  api_token: string | null;
   password: string | null;
+  key_path: string | null;
   tsig_name: string | null;
   tsig_secret: string | null;
   is_default: number;
@@ -43,8 +43,10 @@ const h = vi.hoisted(() => {
       host: string;
       port?: number;
       user?: string;
-      keyPath?: string;
+      url?: string;
+      apiToken?: string;
       password?: string;
+      keyPath?: string;
       tsigName?: string;
       tsigSecret?: string;
       isDefault?: boolean;
@@ -53,12 +55,14 @@ const h = vi.hoisted(() => {
         id: nextId++,
         tenant_id: input.tenantId,
         name: input.name,
-        kind: "bind-ssh",
+        kind: input.kind ?? "technitium",
         host: input.host,
-        port: input.port ?? 22,
-        user: input.user ?? "root",
-        key_path: input.keyPath ?? null,
+        port: input.port ?? 5380,
+        user: input.user ?? "admin",
+        url: input.url ?? null,
+        api_token: input.apiToken ?? null,
         password: input.password ?? null,
+        key_path: input.keyPath ?? null,
         tsig_name: input.tsigName ?? null,
         tsig_secret: input.tsigSecret ?? null,
         is_default: input.isDefault ? 1 : 0,
@@ -75,8 +79,10 @@ const h = vi.hoisted(() => {
         host?: string;
         port?: number;
         user?: string;
-        keyPath?: string;
+        url?: string;
+        apiToken?: string;
         password?: string | null;
+        keyPath?: string;
         tsigName?: string;
         tsigSecret?: string;
         isDefault?: boolean;
@@ -89,22 +95,9 @@ const h = vi.hoisted(() => {
         host: input.host ?? row.host,
         port: input.port ?? row.port,
         user: input.user ?? row.user,
-        key_path:
-          input.keyPath !== undefined
-            ? input.keyPath || row.key_path
-            : row.key_path,
-        password:
-          input.password !== undefined
-            ? input.password || row.password
-            : row.password,
-        tsig_name:
-          input.tsigName !== undefined
-            ? input.tsigName || row.tsig_name
-            : row.tsig_name,
-        tsig_secret:
-          input.tsigSecret !== undefined
-            ? input.tsigSecret || row.tsig_secret
-            : row.tsig_secret,
+        url: input.url ?? row.url,
+        api_token: input.apiToken !== undefined ? input.apiToken || row.api_token : row.api_token,
+        password: input.password !== undefined ? input.password || row.password : row.password,
         is_default: input.isDefault !== undefined ? (input.isDefault ? 1 : 0) : row.is_default,
       });
       return { ...row };
@@ -139,12 +132,9 @@ const {
 } = await import("../src/services/providers");
 
 const base = {
-  name: "prod-dns",
-  host: "dns.acme.example",
-  user: "root",
-  keyPath: "/root/.ssh/cerulean",
-  tsigName: "cerulean",
-  tsigSecret: "topsecret",
+  name: "prod-technitium",
+  url: "http://10.0.0.5:5380",
+  apiToken: "secret-token-123",
 };
 
 beforeEach(() => {
@@ -152,39 +142,32 @@ beforeEach(() => {
 });
 
 describe("createProvider validation", () => {
-  it("accepts a valid SSH+BIND provider", () => {
+  it("accepts a valid Technitium provider via URL + token", () => {
     const p = createProvider(2, base);
-    expect(p.name).toBe("prod-dns");
-    expect(p.host).toBe("dns.acme.example");
+    expect(p.name).toBe("prod-technitium");
+    expect(p.url).toBe("http://10.0.0.5:5380");
     expect(p.isDefault).toBe(true); // first provider auto-defaults
+    expect(p.hasToken).toBe(true);
   });
 
-  it("rejects invalid names and hosts", () => {
-    expect(() => createProvider(2, { ...base, name: "bad name!" })).toThrow(
-      ProviderError,
-    );
-    expect(() =>
-      createProvider(2, { ...base, host: "https://dns.example/with/path" }),
-    ).toThrow(/Invalid host/);
-    expect(() => createProvider(2, { ...base, host: "notaipnorhost" })).toThrow(
-      /Invalid host/,
-    );
-    expect(() => createProvider(2, { ...base, port: 0 })).toThrow(/port/);
-    expect(() => createProvider(2, { ...base, user: "  " })).toThrow(
-      /user is required/,
-    );
+  it("accepts host+port style (legacy compat)", () => {
+    const p = createProvider(2, { name: "x", host: "10.0.0.6", port: 5380, password: "pw" });
+    expect(p.host).toBe("10.0.0.6");
+    expect(p.url).toBe("http://10.0.0.6:5380");
   });
 
-  it("requires credentials (key_path or password)", () => {
-    expect(() =>
-      createProvider(2, { name: "x", host: "dns.example.com" }),
-    ).toThrow(/Credentials required/);
+  it("rejects invalid name or missing URL", () => {
+    expect(() => createProvider(2, { ...base, name: "bad name!" })).toThrow(ProviderError);
+    expect(() => createProvider(2, { name: "x", apiToken: "tok" } as never)).toThrow(/url is required/i);
+  });
+
+  it("requires credentials (token or password)", () => {
+    expect(() => createProvider(2, { name: "x", url: "http://10.0.0.5:5380" })).toThrow(/Credentials required/);
   });
 
   it("rejects duplicate names per tenant", () => {
     createProvider(2, base);
     expect(() => createProvider(2, base)).toThrow(ProviderError);
-    // Same name under another tenant is fine.
     expect(createProvider(3, base).tenantId).toBe(3);
   });
 
@@ -200,30 +183,26 @@ describe("createProvider validation", () => {
 describe("updateProvider", () => {
   it("merges over stored values and keeps untouched fields", () => {
     const created = createProvider(2, base);
-    const updated = updateProvider(created.id, 2, { name: "prod-dns-2" });
-    expect(updated.name).toBe("prod-dns-2");
-    expect(updated.host).toBe("dns.acme.example");
-    expect(updated.hasTsig).toBe(true);
+    const updated = updateProvider(created.id, 2, { name: "prod-2" });
+    expect(updated.name).toBe("prod-2");
+    expect(updated.url).toBe("http://10.0.0.5:5380");
+    expect(updated.hasToken).toBe(true);
   });
 
   it("404s on unknown or cross-tenant ids", () => {
     const created = createProvider(2, base);
-    expect(() => updateProvider(created.id, 3, { name: "nope" })).toThrow(
-      ProviderError,
-    );
+    expect(() => updateProvider(created.id, 3, { name: "nope" })).toThrow(ProviderError);
     expect(() => updateProvider(999, 2, { name: "nope" })).toThrow(ProviderError);
   });
 
   it("never exposes stored secrets in responses", () => {
     const created = createProvider(2, base);
     const body = JSON.stringify(created);
-    expect(body).not.toContain("topsecret");
-    expect(body).not.toContain("tsig_secret");
-    expect(body).not.toContain("password");
-    // A later PATCH without secrets still keeps them server-side but hides them.
-    const updated = updateProvider(created.id, 2, { host: "dns2.acme.example" });
-    expect(JSON.stringify(updated)).not.toContain("topsecret");
-    expect(h.db.getDnsProvider(created.id)!.tsig_secret).toBe("topsecret");
+    expect(body).not.toContain("secret-token-123");
+    expect(body).not.toContain("api_token");
+    const updated = updateProvider(created.id, 2, { name: "prod-2" });
+    expect(JSON.stringify(updated)).not.toContain("secret-token-123");
+    expect(h.db.getDnsProvider(created.id)!.api_token).toBe("secret-token-123");
   });
 });
 
@@ -237,10 +216,9 @@ describe("providerConnectionForTenant", () => {
     createProvider(2, { ...base, name: "b", isDefault: true });
     const conn = providerConnectionForTenant(2)!;
     expect(conn.providerName).toBe("b");
-    expect(conn.host).toBe("dns.acme.example");
-    expect(conn.tsigSecret).toBe("topsecret");
+    expect(conn.url).toBe("http://10.0.0.5:5380");
+    expect(conn.apiToken).toBe("secret-token-123");
 
-    // After removing the default flag the first row wins.
     updateProvider(
       h.db.listDnsProviders(2).find((r) => r.name === "b")!.id,
       2,
