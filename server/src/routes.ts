@@ -27,7 +27,7 @@ import { oidc } from "./services/oidc";
 import { scoreCertificate } from "./services/health";
 import { runDiscovery } from "./services/discovery";
 import { auditDomain } from "./services/audit";
-import { infisical, vault } from "./services/vault";
+import { vault } from "./services/vault";
 import * as pki from "./services/pki";
 import * as enrollment from "./services/enrollment";
 import * as dhcp from "./services/dhcp";
@@ -240,7 +240,6 @@ router.get(
         redirectUri: config.auth.redirectUri,
       },
       vault: { enabled: vault.isEnabled(), status: vaultStatus, addr: config.vault.addr },
-      infisical: { enabled: infisical.isEnabled(), status: await infisical.test(), addr: config.infisical.addr },
       discovery: { dirs: config.discovery.dirs, count: db.listDiscoveredCerts(tenantId).length },
       pki: pki.pkiStatus(tenantId),
       server: {
@@ -349,11 +348,13 @@ router.get(
     const dns = await technitium.testConnection();
     const dhcpS = await dhcp.status().catch(() => ({ reachable: false, scopes: 0, leases: 0, detail: "error" }));
     const blockS = await blocking.getStatus().catch(() => ({ enabled: false, blockListUrls: [], blockedZones: 0, allowedZones: 0, detail: "error" }));
+    const vaultStatus = vault.isEnabled() ? await vault.test().catch(() => "error") : "not-configured";
     res.json({
       server: ident,
       technitium: { reachable: dns.ok, detail: dns.detail, url: config.technitium.url },
       dhcp: dhcpS,
       blocking: blockS,
+      vault: { enabled: vault.isEnabled(), status: vaultStatus, addr: config.vault.addr },
       config: { orchestrator: config.orchestrator, server: config.server },
     });
   }),
@@ -1348,13 +1349,12 @@ router.post(
   "/vault/sync",
   requireAuth,
   asyncHandler(async (_req, res) => {
-    // Infisical is the stack's secret store when enabled; HashiCorp Vault otherwise.
-    if (!vault.isEnabled() && !infisical.isEnabled()) {
-      res.status(409).json({ error: "Secret vault is not configured — set VAULT_ADDR/VAULT_TOKEN or INFISICAL_ADDR/INFISICAL_TOKEN in .env" });
+    if (!vault.isEnabled()) {
+      res.status(409).json({ error: "Secret vault is not configured — set VAULT_ADDR/VAULT_TOKEN in .env" });
       return;
     }
     const { written } = await vault.sync();
-    db.addActivity("vault-sync", `Synced ${written.length} secret(s) to the secret vault (manual)`);
+    db.addActivity("vault-sync", `Synced ${written.length} secret(s) to HashiCorp Vault (manual)`);
     res.json({ ok: true, written });
   }),
 );

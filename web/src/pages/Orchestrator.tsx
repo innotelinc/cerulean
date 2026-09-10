@@ -2,6 +2,9 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import type { BlockingStatus, CrsRegistryEntry, CrsStatus, DhcpLease, DhcpScope, OrchestratorStatus, ServerIdentity, ServiceApiKey } from "../types";
 
+const statusBadge = (s: string | undefined) =>
+  s === "ok" ? "green" : s === "not-configured" || s === "off" ? "amber" : "red";
+
 export default function Orchestrator() {
   const [ident, setIdent] = useState<ServerIdentity | null>(null);
   const [orch, setOrch] = useState<OrchestratorStatus | null>(null);
@@ -108,6 +111,16 @@ export default function Orchestrator() {
     finally { setBusy(false); }
   };
 
+  const syncVault = async () => {
+    setBusy(true); setError("");
+    try {
+      const r = await api.vaultSync();
+      flash(`Synced ${r.written.length} secret(s) to HashiCorp Vault`);
+      await load();
+    } catch (err) { setError(err instanceof Error ? err.message : "Vault sync failed"); }
+    finally { setBusy(false); }
+  };
+
   const saveBlockLists = async () => {
     setBusy(true); setError("");
     try {
@@ -147,6 +160,11 @@ export default function Orchestrator() {
           <div className="num">{blocking?.enabled ? "On" : "Off"}</div>
           <div className="label">Ad-blocking · {blocked.length} blocked</div>
         </div>
+        <div className="card">
+          <div className="num">{orch ? (orch.vault.enabled ? "Vault" : "—") : "—"}</div>
+          <div className="label">Secret vault · {orch?.vault.status ?? "…"}</div>
+          <div className="muted mono" style={{ fontSize: 12 }}>{orch?.vault.addr || "set VAULT_ADDR/VAULT_TOKEN in .env"}</div>
+        </div>
       </div>
 
       <div className="panel">
@@ -176,6 +194,24 @@ export default function Orchestrator() {
                 </div>
               </div>
             )}
+          </>
+        )}
+      </div>
+
+      <div className="panel">
+        <div className="panel-title">Secret vault (HashiCorp Vault)</div>
+        {!orch ? <p className="muted">Loading…</p> : (
+          <>
+            <table><tbody>
+              <tr>
+                <td><span className={`badge ${statusBadge(orch.vault.enabled ? orch.vault.status : "not-configured")}`}>{orch.vault.enabled ? orch.vault.status : "not-configured"}</span></td>
+                <td className="mono">{orch.vault.addr || "set VAULT_ADDR/VAULT_TOKEN in .env"}</td>
+                <td className="muted">KV v2 mirror of certificate private keys, ACME account keys and the root CA</td>
+              </tr>
+            </tbody></table>
+            <div className="actions" style={{ marginTop: 12 }}>
+              <button className="secondary small" onClick={syncVault} disabled={busy} title="Mirror cert keys, ACME keys and the root CA into Vault (KV v2)">Sync secrets to Vault</button>
+            </div>
           </>
         )}
       </div>

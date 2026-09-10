@@ -66,10 +66,10 @@ PROXY_HOSTS = [
     },
     {
         "name": "secrets",
-        "port": 8383,
+        "port": 8200,
         "scheme": "http",
         "websocket": False,
-        "purpose": "Infisical — secrets management (SecretOps)",
+        "purpose": "HashiCorp Vault — secrets management (KV v2)",
     },
     {
         "name": "dns",
