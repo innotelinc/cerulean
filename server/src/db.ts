@@ -44,6 +44,46 @@ export interface ServerIdentityRow {
   updated_at: string;
 }
 
+export interface CrsRegistryRow {
+  server_id: string; // PK = serverId slug
+  lab_domain: string;
+  apex: string;
+  wildcard: string;
+  role: string; // master | slave | isolated-master | offline-slave
+  source: string; // local | replica | master | home
+  first_seen: string;
+  last_seen: string;
+  metadata_json: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CrsStateRow {
+  id: number; // always 1
+  desired_role: string;
+  resolved_role: string;
+  domain: string;
+  home_url: string;
+  master_url: string;
+  is_air_gapped: number;
+  last_sync: string | null;
+  last_sync_status: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ServiceApiKeyRow {
+  id: number;
+  name: string;
+  prefix: string; // 16 hex chars of the token (for lookup)
+  hash: string; // sha256(secret) hex
+  scopes_json: string; // JSON string[]
+  tenant_id: number | null;
+  created_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+}
+
 /** Slug of the built-in tenant that pre-tenant data belongs to. */
 export const DEFAULT_TENANT_ID = 1;
 
@@ -290,6 +330,49 @@ class Database {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+
+      -- Central Registration Server (CRS): authoritative registry + replica
+      CREATE TABLE IF NOT EXISTS crs_registry (
+        server_id TEXT PRIMARY KEY,
+        lab_domain TEXT NOT NULL,
+        apex TEXT NOT NULL,
+        wildcard TEXT NOT NULL,
+        role TEXT NOT NULL,
+        source TEXT NOT NULL,
+        first_seen TEXT NOT NULL,
+        last_seen TEXT NOT NULL,
+        metadata_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS crs_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        desired_role TEXT NOT NULL,
+        resolved_role TEXT NOT NULL,
+        domain TEXT NOT NULL,
+        home_url TEXT NOT NULL,
+        master_url TEXT NOT NULL,
+        is_air_gapped INTEGER NOT NULL DEFAULT 0,
+        last_sync TEXT,
+        last_sync_status TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      -- Cross-stack service API keys (other stacks → Cerulean)
+      CREATE TABLE IF NOT EXISTS service_api_keys (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        prefix TEXT NOT NULL,
+        hash TEXT NOT NULL UNIQUE,
+        scopes_json TEXT NOT NULL DEFAULT '[]',
+        tenant_id INTEGER,
+        created_at TEXT NOT NULL,
+        last_used_at TEXT,
+        revoked_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_service_keys_prefix ON service_api_keys (prefix);
+      CREATE INDEX IF NOT EXISTS idx_service_keys_tenant ON service_api_keys (tenant_id);
     `);
 
     this.db
@@ -896,6 +979,71 @@ class Database {
     return this.db
       .prepare("SELECT * FROM dns_audits WHERE domain = ? ORDER BY id DESC LIMIT 1")
       .get(domain.toLowerCase()) as DnsAuditRow | undefined;
+  }
+
+  // ── CRS registry + state ───────────────────────────────────────────────
+  getCrsEntry(serverId: string): CrsRegistryRow | undefined {
+    return this.db.prepare("SELECT * FROM crs_registry WHERE server_id = ?").get(serverId) as CrsRegistryRow | undefined;
+  }
+  listCrsRegistry(): CrsRegistryRow[] {
+    return this.db.prepare("SELECT * FROM crs_registry ORDER BY updated_at DESC").all() as unknown as CrsRegistryRow[];
+  }
+  upsertCrsEntry(input: { serverId: string; labDomain: string; apex: string; wildcard: string; role: string; source: string; metadata?: Record<string, unknown> | null }): CrsRegistryRow {
+    const existing = this.getCrsEntry(input.serverId);
+    const meta = input.metadata ? JSON.stringify(input.metadata) : (existing?.metadata_json ?? null);
+    if (existing) {
+      this.db.prepare(`UPDATE crs_registry SET lab_domain=?, apex=?, wildcard=?, role=?, source=?, metadata_json=?, last_seen=?, updated_at=? WHERE server_id=?`)
+        .run(input.labDomain, input.apex, input.wildcard, input.role, input.source, meta, nowIso(), nowIso(), input.serverId);
+    } else {
+      this.db.prepare(`INSERT INTO crs_registry (server_id, lab_domain, apex, wildcard, role, source, first_seen, last_seen, metadata_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(input.serverId, input.labDomain, input.apex, input.wildcard, input.role, input.source, nowIso(), nowIso(), meta, nowIso(), nowIso());
+    }
+    return this.getCrsEntry(input.serverId)!;
+  }
+  deleteCrsEntry(serverId: string): void {
+    this.db.prepare("DELETE FROM crs_registry WHERE server_id = ?").run(serverId);
+  }
+  getCrsState(): CrsStateRow | undefined {
+    return this.db.prepare("SELECT * FROM crs_state WHERE id = 1").get() as CrsStateRow | undefined;
+  }
+  upsertCrsState(input: { desiredRole: string; resolvedRole: string; domain: string; homeUrl: string; masterUrl: string; isAirGapped: number; lastSync: string | null; lastSyncStatus: string | null }): CrsStateRow {
+    const existing = this.getCrsState();
+    if (existing) {
+      this.db.prepare(`UPDATE crs_state SET desired_role=?, resolved_role=?, domain=?, home_url=?, master_url=?, is_air_gapped=?, last_sync=?, last_sync_status=?, updated_at=? WHERE id=1`)
+        .run(input.desiredRole, input.resolvedRole, input.domain, input.homeUrl, input.masterUrl, input.isAirGapped, input.lastSync, input.lastSyncStatus, nowIso());
+    } else {
+      this.db.prepare(`INSERT INTO crs_state (id, desired_role, resolved_role, domain, home_url, master_url, is_air_gapped, last_sync, last_sync_status, created_at, updated_at) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(input.desiredRole, input.resolvedRole, input.domain, input.homeUrl, input.masterUrl, input.isAirGapped, input.lastSync, input.lastSyncStatus, nowIso(), nowIso());
+    }
+    return this.getCrsState()!;
+  }
+
+  // ── Service API keys (cross-stack) ────────────────────────────────────
+  listServiceKeys(): ServiceApiKeyRow[] {
+    return this.db.prepare("SELECT * FROM service_api_keys ORDER BY created_at DESC").all() as unknown as ServiceApiKeyRow[];
+  }
+  getServiceKey(id: number): ServiceApiKeyRow | undefined {
+    return this.db.prepare("SELECT * FROM service_api_keys WHERE id = ?").get(id) as ServiceApiKeyRow | undefined;
+  }
+  getServiceKeyByHash(hash: string): ServiceApiKeyRow | undefined {
+    return this.db.prepare("SELECT * FROM service_api_keys WHERE hash = ?").get(hash) as ServiceApiKeyRow | undefined;
+  }
+  getServiceKeyByPrefix(prefix: string): ServiceApiKeyRow[] {
+    return this.db.prepare("SELECT * FROM service_api_keys WHERE prefix = ?").all(prefix) as unknown as ServiceApiKeyRow[];
+  }
+  createServiceKey(input: { name: string; prefix: string; hash: string; scopes: string[]; tenantId?: number | null }): ServiceApiKeyRow {
+    const result = this.db.prepare(`INSERT INTO service_api_keys (name, prefix, hash, scopes_json, tenant_id, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(input.name, input.prefix, input.hash, JSON.stringify(input.scopes), input.tenantId ?? null, nowIso());
+    return this.getServiceKey(Number(result.lastInsertRowid))!;
+  }
+  touchServiceKey(id: number): void {
+    this.db.prepare("UPDATE service_api_keys SET last_used_at = ? WHERE id = ?").run(nowIso(), id);
+  }
+  revokeServiceKey(id: number): void {
+    this.db.prepare("UPDATE service_api_keys SET revoked_at = ? WHERE id = ?").run(nowIso(), id);
+  }
+  deleteServiceKey(id: number): void {
+    this.db.prepare("DELETE FROM service_api_keys WHERE id = ?").run(id);
   }
 
   // ── Activities ─────────────────────────────────────────────────────────

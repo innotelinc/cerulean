@@ -264,6 +264,17 @@ export const api = {
       hint: string;
     }>("GET", `/tenants/${encodeURIComponent(slug)}/members`),
 
+  crsStatus: () => request<import("./types").CrsStatus & { identity: import("./types").ServerIdentity | null }>("GET", "/crs/status"),
+  crsRegistry: () => request<{ entries: import("./types").CrsRegistryEntry[]; count: number; status: import("./types").CrsStatus }>("GET", "/crs/registry"),
+  crsSync: () => request<{ ok: boolean; pulled: number; detail: string; before: import("./types").CrsStatus; after: import("./types").CrsStatus }>("POST", "/crs/sync"),
+  crsRegisterSelf: () => request<{ ok: boolean; serverId: string; apex: string; wildcard: string; status: import("./types").CrsStatus }>("POST", "/crs/register-self"),
+  crsResolve: () => request<{ resolvedRole: string; status: import("./types").CrsStatus }>("POST", "/crs/resolve"),
+
+  serviceKeys: () => request<import("./types").ServiceApiKey[]>("GET", "/service/keys"),
+  createServiceKey: (input: { name: string; scopes?: string[] | string; tenantId?: number | null }) => request<import("./types").ServiceApiKey>("POST", "/service/keys", input),
+  deleteServiceKey: (id: number) => request<{ ok: boolean }>("DELETE", `/service/keys/${id}`),
+  revokeServiceKey: (id: number) => request<import("./types").ServiceApiKey>("POST", `/service/keys/${id}/revoke`),
+
   pkiStatus: () => request<import("./types").PkiStatus>("GET", "/pki/status"),
   pkiInit: (commonName?: string) =>
     request<import("./types").PkiStatus>(

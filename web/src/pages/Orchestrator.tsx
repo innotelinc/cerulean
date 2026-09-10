@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
-import type { BlockingStatus, DhcpLease, DhcpScope, OrchestratorStatus, ServerIdentity } from "../types";
+import type { BlockingStatus, CrsRegistryEntry, CrsStatus, DhcpLease, DhcpScope, OrchestratorStatus, ServerIdentity, ServiceApiKey } from "../types";
 
 export default function Orchestrator() {
   const [ident, setIdent] = useState<ServerIdentity | null>(null);
@@ -10,6 +10,12 @@ export default function Orchestrator() {
   const [blocking, setBlocking] = useState<BlockingStatus | null>(null);
   const [blocked, setBlocked] = useState<string[]>([]);
   const [allowed, setAllowed] = useState<string[]>([]);
+  const [crs, setCrs] = useState<CrsStatus | null>(null);
+  const [registry, setRegistry] = useState<CrsRegistryEntry[]>([]);
+  const [serviceKeys, setServiceKeys] = useState<ServiceApiKey[]>([]);
+  const [newKeyToken, setNewKeyToken] = useState<string | null>(null);
+  const [newKeyName, setNewKeyName] = useState("");
+  const [newKeyScopes, setNewKeyScopes] = useState("*");
   const [error, setError] = useState("");
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState(false);
@@ -37,6 +43,9 @@ export default function Orchestrator() {
       try { setLeases(await api.dhcpLeases()); } catch { setLeases([]); }
       try { setBlocked(await api.listBlocked()); } catch { setBlocked([]); }
       try { setAllowed(await api.listAllowed()); } catch { setAllowed([]); }
+      try { const c = await api.crsStatus(); setCrs(c as unknown as CrsStatus); } catch { setCrs(null); }
+      try { const r = await api.crsRegistry(); setRegistry(r.entries as unknown as CrsRegistryEntry[]); } catch { setRegistry([]); }
+      try { setServiceKeys(await api.serviceKeys()); } catch { setServiceKeys([]); }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load orchestrator");
     }
@@ -141,6 +150,37 @@ export default function Orchestrator() {
       </div>
 
       <div className="panel">
+        <div className="panel-title">Central Registration (CRS) — home <span className="mono" style={{ fontWeight: 400 }}>{crs?.homeUrl ?? "—"}</span></div>
+        {!crs ? <p className="muted">Loading CRS…</p> : (
+          <>
+            <table><tbody>
+              <tr><td>Desired role</td><td className="mono">{crs.desiredRole}</td><td className="muted">CRS_ROLE env</td></tr>
+              <tr><td>Resolved role</td><td><span className={`badge ${crs.isAirGapped ? "amber" : crs.isMaster && crs.resolvedRole === "master" ? "green" : crs.resolvedRole === "slave" ? "green" : "gray"}`}>{crs.resolvedRole}</span>{crs.isAirGapped ? <span className="badge amber" style={{ marginLeft: 8 }}>air-gapped / isolated master</span> : null}</td><td>{crs.error ? <span className="error">{crs.error}</span> : <span className="muted">{crs.reachable === null ? "not probed yet" : crs.reachable ? "master reachable" : "master unreachable"}</span>}</td></tr>
+              <tr><td>Authority domain</td><td className="mono">{crs.domain}</td><td className="muted">{crs.isMaster ? "this node assigns serverIds for this domain" : `slave to ${crs.masterUrl}`}</td></tr>
+              <tr><td>Master / Home</td><td className="mono" style={{ fontSize: 12 }}>{crs.masterUrl}</td><td className="muted mono" style={{ fontSize: 12 }}>{crs.homeUrl}</td></tr>
+              <tr><td>Registry</td><td className="mono">{crs.registryCount} entries · {crs.localCount} replica</td><td className="muted">{crs.lastSyncAt ? `last sync ${new Date(crs.lastSyncAt).toLocaleString()}` : "never synced"}{crs.lastSyncStatus ? ` — ${crs.lastSyncStatus.slice(0, 80)}` : ""}</td></tr>
+            </tbody></table>
+            <div className="actions" style={{ marginTop: 12 }}>
+              <button className="secondary small" onClick={async () => { setBusy(true); try { const r = await api.crsResolve(); setCrs(r.status as unknown as CrsStatus); flash(`Re-resolved → ${r.resolvedRole}`); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); } }} disabled={busy}>Re-probe master</button>
+              <button className="secondary small" onClick={async () => { setBusy(true); try { const r = await api.crsRegisterSelf(); flash(`Registered ${r.serverId} @ ${r.apex}`); await load(); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); } }} disabled={busy}>Register this node to master</button>
+              <button className="secondary small" onClick={async () => { setBusy(true); try { const r = await api.crsSync(); flash(`Sync pulled ${r.pulled}`); await load(); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); } }} disabled={busy}>Sync registry from master</button>
+            </div>
+            {registry.length > 0 && (
+              <div style={{ marginTop: 14 }}>
+                <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>Registry preview (first 50) — full list via <span className="mono">GET /api/crs/registry</span> or <span className="mono">GET /api/service/crs/registry</span></div>
+                <div style={{ maxHeight: 220, overflow: "auto", border: "1px solid var(--border)", borderRadius: 8 }}>
+                  <table><thead><tr><th>Server ID</th><th>Apex</th><th>Source</th><th>Seen</th></tr></thead>
+                    <tbody>{registry.slice(0, 50).map((e) => (
+                      <tr key={e.serverId}><td className="mono">{e.serverId}</td><td className="mono">{e.apex}</td><td><span className={`badge ${e.source === "master" ? "green" : e.source === "replica" || e.source === "home" ? "gray" : "amber"}`}>{e.source}</span> <span className="muted">{e.role}</span></td><td className="muted" style={{ fontSize: 12 }}>{new Date(e.lastSeen).toLocaleDateString()}</td></tr>
+                    ))}</tbody></table>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      <div className="panel">
         <div className="panel-title">Server identity</div>
         {!ident ? <p className="muted">Loading…</p> : (
           <>
@@ -241,6 +281,48 @@ export default function Orchestrator() {
             </div>
           </div>
         </div>
+      </div>
+
+      <div className="panel">
+        <div className="panel-title">Service API keys — other stacks → Cerulean <span className="muted" style={{ fontWeight: 400 }}>(Bearer <span className="mono">ceru_…</span>)</span></div>
+        <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>Create a key for another stack (or for a CRS slave) to call the service bridge. Scopes: <span className="mono">*</span>, <span className="mono">crs:register</span>, <span className="mono">dns:*</span>, <span className="mono">certs:write</span>, <span className="mono">dhcp:read</span>, etc. CRS also accepts <span className="mono">CRS_TOKEN</span> as a lightweight shared secret.</p>
+        <div className="form-row" style={{ marginTop: 8 }}>
+          <input placeholder="key name (e.g. innotel-core)" value={newKeyName} onChange={(e) => setNewKeyName(e.target.value)} style={{ flex: 1 }} />
+          <input placeholder="scopes (e.g. * or crs:register,dns:*)" value={newKeyScopes} onChange={(e) => setNewKeyScopes(e.target.value)} style={{ flex: 1 }} />
+          <button className="secondary small" disabled={busy || !newKeyName.trim()} onClick={async () => {
+            setBusy(true); setError("");
+            try {
+              const scopes = newKeyScopes.split(",").map((s) => s.trim()).filter(Boolean);
+              const k = await api.createServiceKey({ name: newKeyName.trim(), scopes: scopes.length ? scopes : ["*"] });
+              setNewKeyToken(k.token ?? null);
+              setNewKeyName("");
+              flash(`Created key ${k.prefix}… — copy the token now`);
+              await load();
+            } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+            finally { setBusy(false); }
+          }}>Create key</button>
+        </div>
+        {newKeyToken && (
+          <div style={{ marginTop: 10, padding: 10, borderRadius: 8, background: "var(--card)", border: "1px solid var(--border)" }}>
+            <div className="muted" style={{ fontSize: 12 }}>Copy this token now — it is shown only once:</div>
+            <div className="mono" style={{ wordBreak: "break-all", marginTop: 6, fontSize: 13 }}>{newKeyToken}</div>
+            <div className="actions" style={{ marginTop: 8 }}>
+              <button className="secondary small" onClick={() => { navigator.clipboard.writeText(newKeyToken); flash("Copied"); }}>Copy</button>
+              <button className="secondary small" onClick={() => setNewKeyToken(null)}>Dismiss</button>
+            </div>
+          </div>
+        )}
+        {serviceKeys.length === 0 ? <p className="muted" style={{ marginTop: 10 }}>No service keys yet.</p> : (
+          <table style={{ marginTop: 10 }}><thead><tr><th>Name</th><th>Prefix</th><th>Scopes</th><th>Created</th><th /></tr></thead>
+            <tbody>{serviceKeys.map((k) => (
+              <tr key={k.id}><td>{k.name}{k.revokedAt ? <span className="badge gray" style={{ marginLeft: 6 }}>revoked</span> : null}</td><td className="mono">{k.prefix}…</td><td className="mono" style={{ fontSize: 12 }}>{k.scopes.join(", ")}</td><td className="muted" style={{ fontSize: 12 }}>{new Date(k.createdAt).toLocaleDateString()}</td>
+                <td><div className="actions">
+                  {!k.revokedAt && <button className="secondary small" disabled={busy} onClick={async () => { if (!window.confirm(`Revoke key ${k.name}?`)) return; await api.revokeServiceKey(k.id); await load(); }}>Revoke</button>}
+                  <button className="danger small" disabled={busy} onClick={async () => { if (!window.confirm(`Delete key ${k.name}? This cannot be undone.`)) return; await api.deleteServiceKey(k.id); await load(); }}>Delete</button>
+                </div></td></tr>
+            ))}</tbody></table>
+        )}
+        <p className="muted" style={{ fontSize: 12, marginTop: 10 }}>Service bridge (Bearer <span className="mono">ceru_…</span>): <span className="mono">GET /api/service/status</span> · <span className="mono">/service/crs/*</span> · <span className="mono">/service/domains</span> · <span className="mono">/service/certificates</span> · <span className="mono">/service/dns/records</span> · <span className="mono">/service/dhcp/*</span> · <span className="mono">/service/blocking/status</span> · <span className="mono">/service/pki/*</span></p>
       </div>
 
       {toast && <div className="toast">{toast}</div>}

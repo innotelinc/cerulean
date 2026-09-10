@@ -87,14 +87,49 @@ async function vaultSyncSweep(): Promise<void> {
 async function orchestratorSweep(): Promise<void> {
   try {
     const { ensureIdentity, registerServer, ensureWildcardPki, tryUpgradeWildcardToAcme } = await import("./services/serverIdentity");
+    const crs = await import("./services/crs");
     ensureIdentity();
-    // Best-effort central registration (offline-tolerant)
-    await registerServer().catch(() => undefined);
+    // Resolve CRS role (master/slave vs isolated-master) — probes home/masters,
+    // falls back to isolated-master when offline so the box stays self-sufficient.
+    await crs.resolveCrsRole().catch(() => undefined);
+    // Register/slave behavior: if we are a slave (or isolated-master that should be
+    // a slave to lab.innotel.us) try to register and pull the replica. Standalone
+    // isolated nodes just ensure they are recorded locally.
+    const st = crs.crsStatus();
+    if (st.resolvedRole === "slave" || st.resolvedRole === "offline-slave") {
+      await crs.registerToMaster().catch(() => undefined);
+      await crs.syncRegistryFromMaster().catch(() => undefined);
+    } else if (st.resolvedRole === "isolated-master") {
+      // Still try to register as a slave to home; if home is reachable we become a slave
+      await crs.registerToMaster().catch(() => undefined);
+      await crs.syncRegistryFromMaster().catch(() => undefined);
+    } else if (st.resolvedRole === "master") {
+      // Masters still logically enslave to home best-effort
+      await crs.registerToMaster().catch(() => undefined);
+    } else {
+      // Fallback to legacy server registration path
+      await registerServer().catch(() => undefined);
+    }
     // Ensure a 30-day wildcard exists via PKI first (offline), then try ACME upgrade
     await ensureWildcardPki().catch(() => undefined);
     await tryUpgradeWildcardToAcme().catch(() => undefined);
   } catch (err) {
     db.addActivity("orchestrator-error", "Orchestrator sweep failed", err instanceof Error ? err.message : String(err));
+  }
+}
+
+async function crsSyncSweep(): Promise<void> {
+  try {
+    const crs = await import("./services/crs");
+    const st = crs.crsStatus();
+    if (st.resolvedRole === "slave" || st.resolvedRole === "isolated-master" || st.resolvedRole === "offline-slave") {
+      await crs.syncRegistryFromMaster().catch(() => undefined);
+    }
+    // Re-resolve every ~15 minutes so an air-gapped node that just got connectivity
+    // discovers its master and flips from isolated-master → slave.
+    await crs.resolveCrsRole(true).catch(() => undefined);
+  } catch (err) {
+    db.addActivity("crs-sync-error", "CRS sync sweep failed", err instanceof Error ? err.message : String(err));
   }
 }
 
@@ -107,6 +142,9 @@ export function startScheduler(): void {
 
   // Wildcard rotation check every 6 hours (covers the 30-day short cert)
   setInterval(() => { orchestratorSweep().catch(() => undefined); }, 6 * 60 * 60 * 1000);
+
+  // CRS replica pull every 15 minutes (slaves + isolated masters)
+  setInterval(() => { crsSyncSweep().catch(() => undefined); }, 15 * 60 * 1000);
 
   discoverySweep().catch(() => undefined);
   setInterval(() => { discoverySweep().catch(() => undefined); }, 24 * 60 * 60 * 1000);

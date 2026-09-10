@@ -67,13 +67,24 @@ export interface Config {
     id: string;
     /** Lab base domain suffix, e.g. lab.innotel.us */
     labDomain: string;
-    /** Optional central registration endpoint (POST {serverId,domain,wildcard}) */
+    /** Optional central registration endpoint (POST {serverId,domain,wildcard}) — legacy; prefer CRS. */
     registerUrl: string;
     registerToken: string;
     /** Validity of the auto-issued wildcard for *.<id>.lab.innotel.us */
     wildcardValidityDays: number;
     /** Auto-issue/renew the lab wildcard on boot (PKI offline, ACME when online) */
     autoWildcard: boolean;
+  };
+
+  /** Central Registration Server (CRS) — master/slave to lab.innotel.us */
+  crs: {
+    role: string; // "auto" | "master" | "slave"
+    domain: string; // authority domain for master (e.g. lab.innotel.us)
+    homeUrl: string; // home address, defaults to https://lab.innotel.us
+    masterUrl: string; // which master this slave registers to (defaults to home)
+    token: string; // shared secret for CRS register/registry (Bearer)
+    airGapped: boolean; // true → never try to reach home, stay isolated master
+    timeoutMs: number;
   };
 
   /** Master orchestrator posture */
@@ -263,6 +274,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         90,
       ),
       autoWildcard: bool(env.SERVER_AUTO_WILDCARD, true),
+    },
+
+    crs: {
+      role: (env.CRS_ROLE || env.CERULEAN_CRS_ROLE || "auto").toLowerCase(),
+      domain: (env.CRS_DOMAIN || env.CRS_LAB_DOMAIN || "").trim().toLowerCase().replace(/^\.+|\.+$/g, ""),
+      homeUrl: env.CRS_HOME_URL || env.CRS_HOME || "https://lab.innotel.us",
+      masterUrl: env.CRS_MASTER_URL || env.CRS_URL || env.SERVER_REGISTER_URL || env.CERULEAN_REGISTER_URL || "https://lab.innotel.us",
+      token: env.CRS_TOKEN || env.CRS_REGISTER_TOKEN || env.SERVER_REGISTER_TOKEN || env.CERULEAN_REGISTER_TOKEN || "",
+      airGapped: bool(env.CRS_AIR_GAPPED ?? env.AIR_GAPPED, false),
+      timeoutMs: Number(env.CRS_TIMEOUT_MS || 10_000),
     },
 
     orchestrator: {
