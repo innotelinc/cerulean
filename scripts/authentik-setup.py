@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""authentik-setup.py — provision the Cerulean OIDC provider in Authentik.
+"""authentik-setup.py — provision OIDC providers in Authentik.
 
-Creates (or updates) an OIDC provider and application in Authentik so that
-Cerulean can sign users in via the authorization-code flow. Idempotent: run it
-any time after .env changes.
+Creates (or updates) an OIDC provider and application in Authentik so that an
+app can sign users in via the authorization-code flow. Idempotent: run it any
+time after .env changes.
+
+Usage:
+    python3 scripts/authentik-setup.py            # the Cerulean app (default)
+    python3 scripts/authentik-setup.py <slug>     # any other app, e.g. dograh
 
 Reads .env (repo root) when run standalone, or the environment when run from
 setup.sh.
@@ -27,6 +31,17 @@ Optional:
                                admins (default: cerulean-platform). Created if
                                it does not exist, so an administrator can
                                always reach the tenant bootstrap.
+
+Other apps (given as the CLI slug, e.g. ``dograh``) read the same settings
+from ``AUTHENTIK_<SLUG-UPPER>_*`` variables instead — per app:
+
+    AUTHENTIK_<SLUG>_CLIENT_ID        desired OIDC client id (default: slug)
+    AUTHENTIK_<SLUG>_CLIENT_SECRET    OIDC client secret (generate one)
+    AUTHENTIK_<SLUG>_REDIRECT_URI     the app's OIDC callback URL (required)
+    AUTHENTIK_<SLUG>_APP_NAME         display name (default: capitalized slug)
+
+Every provider shares the 'groups' scope mapping, so any app can authorize on
+Authentik group membership the same way Cerulean does.
 """
 
 import json
@@ -152,28 +167,36 @@ def main():
     for path in (os.path.join(here, "..", ".env"), ".env"):
         load_env_file(path)
 
+    # First positional arg selects the app: none = cerulean (back-compat).
+    args = [a for a in sys.argv[1:] if not a.startswith("-")]
+    app_slug = (args[0] if args else env("AUTHENTIK_APP_SLUG", "cerulean")).strip().lower()
+
+    # The Cerulean app keeps its unprefixed variable names; every other app
+    # reads AUTHENTIK_<SLUG-UPPER>_* so several apps can coexist in one .env.
+    prefix = "" if app_slug == "cerulean" else f"AUTHENTIK_{app_slug.upper()}_"
+    env_for = lambda key, default="": env(f"{prefix}{key}", default)
+
     issuer = env("AUTHENTIK_ISSUER_URL")
     api_url = env("AUTHENTIK_API_URL", issuer).rstrip("/")
     admin_user = env("AUTHENTIK_ADMIN_USER", "akadmin")
     admin_password = env("AUTHENTIK_ADMIN_PASSWORD")
     bootstrap_token = env("AUTHENTIK_BOOTSTRAP_TOKEN")
-    client_id = env("AUTHENTIK_CLIENT_ID", "cerulean")
-    client_secret = env("AUTHENTIK_CLIENT_SECRET")
-    redirect_uri = env("AUTHENTIK_REDIRECT_URI")
-    app_slug = env("AUTHENTIK_APP_SLUG", "cerulean")
+    client_id = env_for("CLIENT_ID", app_slug)
+    client_secret = env_for("CLIENT_SECRET")
+    redirect_uri = env_for("REDIRECT_URI")
 
     missing = [k for k, v in [
         ("AUTHENTIK_ISSUER_URL", api_url),
         ("AUTHENTIK_BOOTSTRAP_TOKEN", bootstrap_token),
-        ("AUTHENTIK_CLIENT_SECRET", client_secret),
-        ("AUTHENTIK_REDIRECT_URI", redirect_uri),
+        (f"{prefix}CLIENT_SECRET", client_secret),
+        (f"{prefix}REDIRECT_URI", redirect_uri),
     ] if not v]
     if missing:
         print(f"Authentik is not fully configured — missing: {', '.join(missing)}", file=sys.stderr)
         return 2
 
     print(f"Authentik: {api_url}")
-    print(f"Client: {client_id}   Redirect URI: {redirect_uri}")
+    print(f"App: {app_slug}   Client: {client_id}   Redirect URI: {redirect_uri}")
 
     # Authentik 2024.12 removed the POST /api/v3/core/auth/admin/ endpoint, so
     # authenticate with the bootstrap API token instead of an admin password.
@@ -253,7 +276,7 @@ def main():
         mapping_pks.update(provider.get("property_mappings") or [])
 
     provider_body = {
-        "name": "Cerulean",
+        "name": env_for("APP_NAME", app_slug.capitalize()),
         "authorization_flow": auth_flow_pk,
         "invalidation_flow": invalidation_flow["pk"],
         "client_type": "confidential",
@@ -276,7 +299,7 @@ def main():
 
     # Ensure the application is bound to the provider (URL key is the slug).
     apps = ak.list(f"/core/applications/?slug={urllib.parse.quote(app_slug)}")
-    app_body = {"name": "Cerulean", "slug": app_slug, "provider": provider_pk}
+    app_body = {"name": env_for("APP_NAME", app_slug.capitalize()), "slug": app_slug, "provider": provider_pk}
     if apps:
         ak.update(f"/core/applications/{app_slug}/", app_body)
         print(f"  ✓ updated application '{app_slug}'")
@@ -305,12 +328,15 @@ def main():
             ak.create("/core/groups/", {"name": slug, "is_superuser": False})
             print(f"  ✓ created tenant group '{slug}'")
 
+    app_name = env_for("APP_NAME", app_slug.capitalize())
     print()
     print("Done. Sign in to Authentik once as an admin, then open")
     print(f"  {redirect_uri}")
-    print("— the Cerulean login page now offers 'Sign in with Authentik'.")
+    if app_slug == "cerulean":
+        print("— the Cerulean login page now offers 'Sign in with Authentik'.")
     print()
-    print("Users/groups are managed in Authentik; the provider is 'Cerulean'.")
+    print("Users/groups are managed in Authentik; the provider is "
+          f"'{app_name}'.")
     print(f"Add tenant administrators to '{platform_group}' to make them platform admins.")
     return 0
 
