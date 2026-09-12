@@ -21,8 +21,16 @@ services:
       - "${CERULEAN_PORT:-3000}:${CERULEAN_PORT:-3000}"
     volumes:
       - ./data:/app/data
+      # Scoped Vault token, minted by the vault profile into ./data/vault/token
+      # (read .env's VAULT_TOKEN_FILE). Read-only, and only that directory — the
+      # unseal key and root token stay in ./data/vault/init, which only the vault
+      # container mounts.
+      - ./data/vault/token:/vault/token:ro
     depends_on:
       cerulean-technitium:
+        condition: service_healthy
+        required: false
+      vault:
         condition: service_healthy
         required: false
 
@@ -171,28 +179,38 @@ services:
     container_name: cerulean-vault
     profiles: ["vault"]
     restart: unless-stopped
-    # Dev-mode Vault (in-memory, per docs/stack.md). Beyond the stock
-    # `vault server -dev`, the KV v2 mount at VAULT_PREFIX is created on every
-    # start: dev mode only ships `secret/`, while Cerulean's client addresses
-    # `/<prefix>/data/<path>` (config.vault.prefix, default `cerulean`).
-    # Without the mount the health row still reads green (a 404 is treated as
-    # "reachable, no key") but "Sync secrets to Vault" fails — so the mount
-    # belongs here, where it is recreated with the (in-memory) server.
-    command:
-      - sh
-      - -c
-      - |
-        vault server -dev -dev-root-token-id="$${VAULT_DEV_ROOT_TOKEN_ID}" &
-        vpid=$$!
-        export VAULT_ADDR=http://127.0.0.1:8200
-        until vault status >/dev/null 2>&1; do sleep 1; done
-        vault secrets enable -path="$${VAULT_PREFIX}" kv-v2 >/dev/null 2>&1 || true
-        wait $$vpid
+    # Durable, file-backed Vault (not dev mode). scripts/vault-entrypoint.sh
+    # initialises+unseals the server on start, enables KV v2 at VAULT_PREFIX,
+    # mints a periodic token for that prefix, and mints a narrower token for each
+    # product in VAULT_PRODUCT_TOKENS — renewing them all in place. See
+    # docs/vault-setup.md.
+    entrypoint: ["/bin/sh", "/vault/bootstrap/entrypoint.sh"]
     environment:
-      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
-      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_DEV_ROOT_TOKEN_ID:-cerulean-root}
+      # Used by the healthcheck and by the bootstrap CLI (the server itself is
+      # configured from /vault/init/vault.hcl). The app reaches it as vault:8200.
+      VAULT_ADDR: http://127.0.0.1:8200
       VAULT_PREFIX: ${VAULT_PREFIX:-cerulean}
+      # Products needing a token narrowed to <prefix>/data/<product> rather than
+      # the mount-wide grant. Space-separated; empty = mount-wide token only.
+      VAULT_PRODUCT_TOKENS: ${VAULT_PRODUCT_TOKENS:-}
+    volumes:
+      # Encrypted storage — the durable part; survives restarts and rebuilds.
+      - ./data/vault/file:/vault/file
+      # Unseal key + root token (mode 600). Operator-only: never mounted into
+      # the app. Back this directory up — losing it means the store stays sealed
+      # (or must be wiped, losing the mirrored secrets).
+      - ./data/vault/init:/vault/init
+      # The tokens clients read: cerulean.token for the mount-wide policy, plus
+      # one <product>.token per name in VAULT_PRODUCT_TOKENS.
+      - ./data/vault/token:/vault/token
+      - ./scripts/vault-entrypoint.sh:/vault/bootstrap/entrypoint.sh:ro
     ports:
       - "8200:8200"
-    cap_add:
-      - IPC_LOCK
+    healthcheck:
+      # `vault status` exits 2 while sealed/uninitialised, so this only turns
+      # healthy once the bootstrap has unsealed and provisioned the store.
+      test: ["CMD", "vault", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s

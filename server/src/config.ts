@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import dotenv from "dotenv";
 
@@ -118,6 +119,20 @@ function bool(value: string | undefined, def: boolean): boolean {
   return value.toLowerCase() === "true" || value === "1";
 }
 
+/**
+ * Read a secret from a file (e.g. the scoped Vault token the bundled vault
+ * profile writes to /vault/token/cerulean.token). A missing or unreadable file
+ * is not an error: the integration is simply treated as unconfigured.
+ */
+function readSecretFile(file: string | undefined): string {
+  if (!file) return "";
+  try {
+    return readFileSync(file, "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
 function list(value: string | undefined): string[] {
   return (value || "")
     .split(",")
@@ -151,7 +166,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const clientId = env.AUTHENTIK_CLIENT_ID || "";
   const clientSecret = env.AUTHENTIK_CLIENT_SECRET || "";
   const vaultAddr = env.VAULT_ADDR || "";
-  const vaultToken = env.VAULT_TOKEN || "";
+  // The bundled vault profile mints a scoped token into a file rather than
+  // putting it in .env; an explicit VAULT_TOKEN still wins (external Vault).
+  const vaultToken = env.VAULT_TOKEN || readSecretFile(env.VAULT_TOKEN_FILE);
 
   const npmMode = (env.NPM_MODE || "remote").toLowerCase();
   if (npmMode !== "local" && npmMode !== "remote") {

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Cerulean one-shot setup — Technitium master orchestrator.
 #
-#   ./scripts/setup.sh [--no-start] [--with-authentik] [--with-technitium]
+#   ./scripts/setup.sh [--no-start] [--with-authentik] [--with-technitium] [--with-vault]
 #
 #   1. Ensures .env exists and generates the admin password + serverId if unset
 #   2. Ensures Technitium DNS (bundled --profile technitium) is ready / reachable
@@ -16,12 +16,14 @@ source "${SCRIPT_DIR}/lib.sh"
 NO_START=0
 WITH_AUTHENTIK=0
 WITH_TECHNITIUM=0
+WITH_VAULT=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-start) NO_START=1; shift ;;
     --with-authentik) WITH_AUTHENTIK=1; shift ;;
     --with-technitium) WITH_TECHNITIUM=1; shift ;;
-    *) fail "Unknown option: $1 (usage: ./scripts/setup.sh [--no-start] [--with-authentik] [--with-technitium])" ;;
+    --with-vault) WITH_VAULT=1; shift ;;
+    *) fail "Unknown option: $1 (usage: ./scripts/setup.sh [--no-start] [--with-authentik] [--with-technitium] [--with-vault])" ;;
   esac
 done
 
@@ -119,9 +121,14 @@ else
   log "Starting the stack…"
   if command -v docker >/dev/null 2>&1; then
     PROFILES=()
-    # Always bring up cerulean; Technitium is opt-in profile
+    # Always bring up cerulean; Technitium/Vault are opt-in profiles
     if [ "$WITH_TECHNITIUM" = "1" ]; then
       PROFILES+=("--profile" "technitium")
+    fi
+    # The vault profile self-initialises, auto-unseals, and mints the scoped
+    # token the app reads from VAULT_TOKEN_FILE (see docs/vault-setup.md).
+    if [ "$WITH_VAULT" = "1" ]; then
+      PROFILES+=("--profile" "vault")
     fi
     [ "$(env_get NPM_MODE remote)" = "local" ] && PROFILES+=("--profile" "npm")
     ( cd "${CERULEAN_ROOT}" && docker compose up -d --build "${PROFILES[@]}" )
@@ -211,5 +218,12 @@ echo "  Technitium:  ${TECHNITIUM_URL:-http://host.docker.internal:5380}  — DN
 echo "  Admin login: admin  (password below)"
 echo "  Admin pass:  ${ADMIN}"
 echo "  Authentik:   $(env_get AUTHENTIK_ISSUER_URL '(not configured)')  — add --with-authentik to enable SSO"
-echo "  Vault:       $(env_get VAULT_ADDR '(not configured)')  — set VAULT_ADDR/VAULT_TOKEN to enable"
+if [ -n "$(env_get VAULT_ADDR)" ]; then
+  echo "  Vault:       $(env_get VAULT_ADDR)  — durable secret store (scoped token read from $(env_get VAULT_TOKEN_FILE /vault/token/cerulean.token))"
+  if ! docker ps --filter name=cerulean-vault --format '{{.Names}}' 2>/dev/null | grep -q cerulean-vault; then
+    echo "               not running yet — start it with: docker compose --profile vault up -d"
+  fi
+else
+  echo "  Vault:       (not configured) — add --with-vault, or set VAULT_ADDR+VAULT_TOKEN for an external Vault"
+fi
 echo "──────────────────────────────────────────────────────────"
