@@ -78,7 +78,7 @@ See Orchestrator page → *CRS* and *Service API keys* panels for live state, sy
 ## Secrets (HashiCorp Vault)
 
 ```bash
-docker compose --profile vault up -d   # bundled dev-mode Vault (VAULT_ADDR=http://localhost:8200, VAULT_TOKEN=cerulean-root)
+docker compose --profile vault up -d   # durable file-backed Vault: self-initialising, auto-unsealing, scoped token
 ```
 
 See [vault-setup.md](vault-setup.md).

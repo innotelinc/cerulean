@@ -97,9 +97,9 @@ zone is configurable.
 # Bundled Technitium (authoritative DNS + DHCP + blocking) — offline-ready
 docker compose --profile technitium up -d
 # With the full auth & trust stack provisioned automatically
-# (Authentik SSO + HashiCorp Vault secrets — set VAULT_ADDR/VAULT_TOKEN
-# in .env to enable the secret vault):
-./scripts/setup.sh --with-authentik
+# (Authentik SSO + HashiCorp Vault secrets — the vault profile initialises
+# itself and writes its own scoped token; see docs/vault-setup.md):
+./scripts/setup.sh --with-authentik --with-vault
 ```
 
 The portal is then at `http://<host>:3000` (or `https://<serverId>.lab.innotel.us`
@@ -113,7 +113,7 @@ Auth & trust compose profiles (each opt-in):
 
 ```bash
 docker compose --profile authentik up -d                     # Authentik SSO — one login for every platform
-docker compose --profile vault up -d                         # dev-mode HashiCorp Vault
+docker compose --profile vault up -d                         # durable HashiCorp Vault (file-backed, scoped token)
 # DNS/DHCP/blocking plane:
 docker compose --profile technitium up -d                    # Technitium DNS + DHCP + ad-blocking (recommended)
 # Edge:
@@ -380,8 +380,10 @@ TECHNITIUM_TOKEN=vault://cerulean/technitium#token
 ```
 
 The server also mirrors certificate private keys, ACME account keys and the root CA
-into Vault (KV v2) on a schedule and on demand (`POST /api/vault/sync`). A dev-mode
-Vault ships with the stack:
+into Vault (KV v2) on a schedule and on demand (`POST /api/vault/sync`). A durable,
+file-backed Vault ships with the stack: it self-initialises, auto-unseals on every
+restart, and hands the app a token scoped to `cerulean/*` — the unseal key and the
+root token stay in `data/vault/init/` (gitignored, operator-only).
 
 ```bash
 docker compose --profile vault up -d
