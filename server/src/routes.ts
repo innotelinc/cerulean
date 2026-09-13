@@ -883,6 +883,36 @@ router.put(
   }),
 );
 
+/**
+ * Remove a proxy host. This is the half of publishing that was missing: a name
+ * could be put on the edge and never taken off it, so a removed project kept
+ * answering and the host list only ever grew.
+ *
+ * The host is resolved before the delete for two reasons. NPM replies with
+ * `true`, so the names have to come from somewhere if the caller is to be told
+ * what was removed — and an id that is not there becomes a 404 here instead of a
+ * silent success that reports a deletion which never happened.
+ */
+router.delete(
+  "/npm/hosts/:id",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const hosts = await npm.listProxyHosts();
+    const existing = hosts.find((h) => h.id === id);
+    if (!existing) {
+      res.status(404).json({ error: "Proxy host not found" });
+      return;
+    }
+    await npm.deleteProxyHost(id);
+    db.addActivity(
+      "npm-host",
+      `Deleted NPM proxy host ${(existing.domain_names || []).join(", ")}`,
+    );
+    res.json({ deleted: true, id });
+  }),
+);
+
 // ── Private PKI ─────────────────────────────────────────────────────────
 router.get(
   "/pki/status",
