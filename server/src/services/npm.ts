@@ -386,6 +386,17 @@ class NpmClient {
   }
 
   /**
+   * Remove a proxy host from NPM.
+   *
+   * NPM answers a delete with `true` rather than with the host it removed, so a
+   * caller that needs to report what went has to have listed it first. The route
+   * does, because the name that disappeared is the useful part of the reply.
+   */
+  async deleteProxyHost(id: number): Promise<void> {
+    await this.request<unknown>("DELETE", `/nginx/proxy-hosts/${id}`);
+  }
+
+  /**
    * Gate (or ungate) a proxy host behind device client certificates issued by
    * the Cerulean internal CA. `on` requires a valid certificate — nginx then
    * auto-allows every trusted device and rejects everything else. The host

@@ -118,6 +118,15 @@ function installMockFetch() {
       mockHosts = mockHosts.map((h) => (h.id === id ? updated : h));
       return jsonResponse(updated);
     }
+    if (path.startsWith("/api/nginx/proxy-hosts/") && method === "DELETE") {
+      const id = Number(path.split("/").pop());
+      const remaining = mockHosts.filter((h) => h.id !== id);
+      if (remaining.length === mockHosts.length) {
+        return jsonResponse({ error: { message: "Not found" } }, 404);
+      }
+      mockHosts = remaining;
+      return jsonResponse(true);
+    }
     throw new Error(`Unexpected request: ${method} ${path}`);
   });
 }
@@ -388,5 +397,29 @@ describe("device mTLS on proxy hosts", () => {
   it("refuses to gate a host that has no SSL certificate yet", async () => {
     const host = makeHost({ id: 12, certificate_id: 0 });
     await expect(npm.setHostMtls(host, "on")).rejects.toThrow(/no SSL certificate/);
+  });
+});
+
+describe("npm.deleteProxyHost", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    mockHosts = [];
+    requests.length = 0;
+  });
+
+  it("deletes the host on NPM's own route", async () => {
+    installMockFetch();
+    mockHosts = [makeHost({ id: 42 })];
+
+    await npm.deleteProxyHost(42);
+
+    expect(exactCount("/api/nginx/proxy-hosts/42", "DELETE")).toBe(1);
+    expect(mockHosts).toEqual([]);
+  });
+
+  it("reports what NPM said when there is no such host", async () => {
+    installMockFetch();
+
+    await expect(npm.deleteProxyHost(42)).rejects.toThrow(/HTTP 404/);
   });
 });
