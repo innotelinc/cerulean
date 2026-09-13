@@ -275,6 +275,36 @@ def main():
     if provider:
         mapping_pks.update(provider.get("property_mappings") or [])
 
+    # ── Signing key ────────────────────────────────────────────────────
+    # An OAuth2 provider with no signing key emits HS256 id_tokens keyed on
+    # the client secret — verifiable by anyone holding that very secret. New
+    # providers get a dedicated RSA key pair so tokens are RS256 and can be
+    # verified against the published JWKS. The Cerulean app predates this and
+    # is left as-is unless AUTHENTIK_CERULEAN_SIGNING_KEY_NAME is set.
+    signing_key_name = env_for(
+        "SIGNING_KEY_NAME", "" if app_slug == "cerulean" else f"{app_slug}-signing-key"
+    )
+    signing_key_pk = None
+    if signing_key_name:
+        keys = ak.list("/crypto/certificatekeypairs/?page_size=100")
+        key = next((k for k in keys if k.get("name") == signing_key_name), None)
+        if key:
+            signing_key_pk = key["pk"]
+            print(f"  ✓ signing key '{signing_key_name}' exists")
+        else:
+            # The generate action names the resulting pair after common_name
+            # and ignores `name`, so pass the desired name as common_name too
+            # — otherwise the key can't be found again by name on re-runs.
+            created_key = ak.create("/crypto/certificatekeypairs/generate/", {
+                "name": signing_key_name,
+                "common_name": signing_key_name,
+                "key_type": "RSA",
+                "key_size": 4096,
+                "validity_days": 3650,
+            })
+            signing_key_pk = created_key["pk"]
+            print(f"  ✓ generated RSA signing key '{signing_key_name}'")
+
     provider_body = {
         "name": env_for("APP_NAME", app_slug.capitalize()),
         "authorization_flow": auth_flow_pk,
@@ -282,12 +312,21 @@ def main():
         "client_type": "confidential",
         "client_id": client_id,
         "client_secret": client_secret,
+        # An empty grant_types list authorizes NO grant at all — the authorize
+        # endpoint rejects every request with invalid_request.
+        "grant_types": ["authorization_code", "refresh_token"],
         "redirect_uris": [{"matching_mode": "strict", "url": redirect_uri}],
         "sub_mode": "hashed_user_id",
         "issuer_mode": "global",
         "include_claims_in_id_token": True,
         "property_mappings": sorted(mapping_pks),
     }
+    # Never clear a key that exists only on the provider: if this run did not
+    # select one, keep whatever the provider already has.
+    if not signing_key_pk and provider:
+        signing_key_pk = provider.get("signing_key")
+    if signing_key_pk:
+        provider_body["signing_key"] = signing_key_pk
     if provider:
         ak.update(f"/providers/oauth2/{provider['pk']}/", provider_body)
         provider_pk = provider["pk"]
