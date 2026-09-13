@@ -184,6 +184,14 @@ def main():
     client_id = env_for("CLIENT_ID", app_slug)
     client_secret = env_for("CLIENT_SECRET")
     redirect_uri = env_for("REDIRECT_URI")
+    # Comma-separated REDIRECT_URI registers several callbacks — apps served
+    # from more than one origin (e.g. zeus's apex/app/api/portal) derive the
+    # redirect from the request origin, so the provider must accept each.
+    redirect_uris = [
+        {"matching_mode": "strict", "url": u.strip()}
+        for u in redirect_uri.split(",")
+        if u.strip()
+    ]
 
     missing = [k for k, v in [
         ("AUTHENTIK_ISSUER_URL", api_url),
@@ -315,7 +323,7 @@ def main():
         # An empty grant_types list authorizes NO grant at all — the authorize
         # endpoint rejects every request with invalid_request.
         "grant_types": ["authorization_code", "refresh_token"],
-        "redirect_uris": [{"matching_mode": "strict", "url": redirect_uri}],
+        "redirect_uris": redirect_uris,
         "sub_mode": "hashed_user_id",
         "issuer_mode": "global",
         "include_claims_in_id_token": True,
@@ -330,7 +338,7 @@ def main():
     if provider:
         ak.update(f"/providers/oauth2/{provider['pk']}/", provider_body)
         provider_pk = provider["pk"]
-        print(f"  ✓ updated OIDC provider (pk {provider_pk}) with redirect {redirect_uri}")
+        print(f"  ✓ updated OIDC provider (pk {provider_pk}) with {len(redirect_uris)} redirect(s)")
     else:
         created = ak.create("/providers/oauth2/", provider_body)
         provider_pk = created["pk"]
