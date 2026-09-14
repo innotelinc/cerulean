@@ -273,7 +273,32 @@ def host_payload(entry, base_domain, forward_host, ssl_via_npm, letsencrypt_emai
 
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
-    for path in (os.path.join(here, "..", ".env"), ".env"):
+    env_paths = (os.path.join(here, "..", ".env"), ".env")
+
+    # Guard against a stale ambient NPM_* environment. load_env_file() only
+    # fills keys that are unset, so a leftover NPM_BASE_DOMAIN exported by
+    # another stack wins over this repo's .env and this script would create
+    # proxy hosts in a domain it does not own. Refuse instead of writing.
+    ambient_domain = (os.environ.get("NPM_BASE_DOMAIN") or "").strip().strip(".").lower()
+    file_domain = ""
+    for path in env_paths:
+        if not os.path.isfile(path):
+            continue
+        with open(path, encoding="utf-8") as fh:
+            for raw in fh:
+                key, _, value = raw.strip().partition("=")
+                if key.strip() == "NPM_BASE_DOMAIN":
+                    file_domain = value.strip().strip("\"'").strip(".").lower()
+                    break
+        if file_domain:
+            break
+    if ambient_domain and file_domain and ambient_domain != file_domain:
+        print(f"FAIL NPM_BASE_DOMAIN={ambient_domain} is exported in the environment but this "
+              f"repo's .env says {file_domain} — refusing to touch {ambient_domain} hosts "
+              f"(unset NPM_BASE_DOMAIN so .env decides).", file=sys.stderr)
+        return 1
+
+    for path in env_paths:
         load_env_file(path)
 
     npm_mode = env("NPM_MODE", "remote").lower()
