@@ -127,11 +127,15 @@ export function effectiveConnection(
 
 let cachedToken: string | null = null;
 let tokenExpiry = 0;
+// A *configured* token has no login behind it, so nothing can refresh it. Warned
+// about once rather than per call, because the fallback below runs on every request
+// for as long as the token stays dead.
+let warnedAboutRejectedToken = false;
 
-async function getApiToken(conn: TechnitiumConnection): Promise<string> {
-  // If a static API token is configured (Create API Token flow), use it directly — it never expires.
+async function getApiToken(conn: TechnitiumConnection, ignoreStaticToken = false): Promise<string> {
+  // If a static API token is configured (Create API Token flow), use it directly.
   const raw = conn.token?.trim();
-  if (raw) {
+  if (raw && !ignoreStaticToken) {
     // Technitium API tokens are 64 hex chars; if it looks like a token, use as-is.
     // Otherwise treat as already-valid bearer.
     return await vault.resolveSecretValue(raw);
@@ -175,9 +179,9 @@ async function technitiumRequest<T>(
   conn: TechnitiumConnection,
   apiPath: string,
   params: Record<string, string | number | boolean | undefined> = {},
-  opts: { method?: string; timeoutMs?: number } = {},
+  opts: { method?: string; timeoutMs?: number; ignoreStaticToken?: boolean } = {},
 ): Promise<T> {
-  const token = await getApiToken(conn);
+  const token = await getApiToken(conn, opts.ignoreStaticToken === true);
   const url = new URL(`${conn.url.replace(/\/$/, "")}${apiPath}`);
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== "") url.searchParams.set(k, String(v));
@@ -197,6 +201,26 @@ async function technitiumRequest<T>(
   }
   if (data.status === "invalid-token") {
     clearTechnitiumTokenCache();
+    // Clearing that cache only helps a token that was obtained by logging in. For a
+    // *configured* token it changes nothing, so the same answer came back on every
+    // request forever: this platform answered DNS reads with 500 from
+    // 2026-09-13T20:46Z until the token was removed by hand, each time telling the
+    // caller to retry, which was the one thing that could not work.
+    //
+    // With a password configured the retry can happen here instead — skip the token,
+    // sign in, carry on. It costs one extra round trip per call while the token is
+    // dead, which is the right price for a dead token not being an outage.
+    if (!opts.ignoreStaticToken && (conn.password || config.technitium.password)) {
+      if (conn.token?.trim() && !warnedAboutRejectedToken) {
+        warnedAboutRejectedToken = true;
+        console.warn(
+          `[technitium] the configured API token was rejected (invalid-token) for ${apiPath}; ` +
+            "falling back to the session login. Rotate or unset TECHNITIUM_TOKEN — the " +
+            "fallback can only use the credentials it is given.",
+        );
+      }
+      return technitiumRequest<T>(conn, apiPath, params, { ...opts, ignoreStaticToken: true });
+    }
     throw new Error(`Technitium session expired for ${apiPath} — retry`);
   }
   if (data.status === "error" || !res.ok) {
