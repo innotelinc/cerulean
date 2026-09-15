@@ -93,6 +93,10 @@ export interface Config {
   npm: {
     mode: string; // "remote" (default) | "local"
     apiUrl: string;
+    /** Browser-reachable admin URL — what the dashboard shows/links.
+     *  apiUrl may be a docker-internal name (NPM_MODE=local → cerulean-npm:81)
+     *  that only resolves inside the compose network. */
+    publicApiUrl: string;
     email: string;
     password: string;
     wildcardAttach: boolean;
@@ -189,6 +193,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     npmMode === "local"
       ? env.NPM_INTERNAL_API_URL || "http://cerulean-npm:81"
       : env.NPM_API_URL || env.NPM_INTERNAL_API_URL || "";
+  // The address a BROWSER can reach: NPM_MODE=local means the bundled NPM
+  // publishes its admin UI on this host (NPM_ADMIN_PORT, default 81), so the
+  // public form is the host's own admin port — not the docker-internal
+  // cerulean-npm:81 name, which no browser can resolve. An explicit
+  // NPM_PUBLIC_API_URL wins (remote edge on another box, custom port, …);
+  // remote mode simply exposes NPM_API_URL as-is.
+  const npmPublicApiUrl =
+    (env.NPM_PUBLIC_API_URL || "").replace(/\/$/, "") ||
+    (npmMode === "local"
+      ? `http://127.0.0.1:${env.NPM_ADMIN_PORT || "81"}`
+      : npmApiUrl.replace(/\/$/, ""));
 
   // Server identity: prefer explicit env, else auto-generate (persisted later in DB/file)
   const rawServerId = env.CERULEAN_SERVER_ID || env.SERVER_ID || "";
@@ -302,6 +317,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     npm: {
       mode: npmMode,
       apiUrl: npmApiUrl,
+      publicApiUrl: npmPublicApiUrl,
       email: env.NPM_EMAIL || "",
       password: env.NPM_PASSWORD || "",
       wildcardAttach: bool(env.NPM_WILDCARD_ATTACH, true),

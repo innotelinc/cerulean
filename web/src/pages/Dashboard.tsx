@@ -119,7 +119,12 @@ export default function Dashboard({
                   nginx proxy manager
                 </td>
                 <td className="muted">{status.npm.status}</td>
-                <td className="muted mono">{status.config.npmApiUrl || "—"}</td>
+                <td className="muted mono">
+                  {status.config.npmPublicApiUrl || status.config.npmApiUrl || "—"}
+                  {status.config.npmMode === "local" && (
+                    <a href={status.config.npmPublicApiUrl} target="_blank" rel="noreferrer" style={{ marginLeft: 8 }}>admin ↗</a>
+                  )}
+                </td>
               </tr>
               <tr>
                 <td>
