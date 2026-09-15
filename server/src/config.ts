@@ -199,10 +199,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   // cerulean-npm:81 name, which no browser can resolve. An explicit
   // NPM_PUBLIC_API_URL wins (remote edge on another box, custom port, …);
   // remote mode simply exposes NPM_API_URL as-is.
+  //
+  // Then NPM_HOST_IP, when the operator set it: it is the NPM host's own LAN
+  // address, which a browser on the same network can actually reach. Loopback
+  // is the last resort and is only correct when the person reading the
+  // dashboard is sitting on the NPM host itself.
   const npmPublicApiUrl =
     (env.NPM_PUBLIC_API_URL || "").replace(/\/$/, "") ||
     (npmMode === "local"
-      ? `http://127.0.0.1:${env.NPM_ADMIN_PORT || "81"}`
+      ? `http://${env.NPM_HOST_IP || "127.0.0.1"}:${env.NPM_ADMIN_PORT || "81"}`
       : npmApiUrl.replace(/\/$/, ""));
 
   // Server identity: prefer explicit env, else auto-generate (persisted later in DB/file)

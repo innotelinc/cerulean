@@ -201,6 +201,16 @@ Set `NPM_EMAIL` and `NPM_PASSWORD` in `.env`. In remote mode also set
 `NPM_API_URL`. Set `NPM_FORWARD_HOST` (portal host's LAN IP, auto-detected if blank).
 `./scripts/setup.sh` runs `./scripts/npm-proxy-hosts.py` automatically when NPM is configured.
 
+The dashboard links operators straight at the NPM admin UI, so it needs an
+address a **browser** can reach — not `cerulean-npm:81` (docker-internal) and not
+`127.0.0.1:81` (only valid on the NPM host itself). That address lives in
+`NPM_PUBLIC_API_URL`; leave it **empty** and `./scripts/setup.sh` fills it in at
+install time from `NPM_HOST_IP`, else this host's detected LAN IP, as
+`http://<host>:<NPM_ADMIN_PORT>`. Set it explicitly when a named edge fronts the
+admin UI — on this deployment the NPM admin UI is published on the LAN at
+`http://192.168.1.46:81` (set in `.env`) and named at the edge as
+`https://proxy.innotel.us`, which NPM serves from that same `:81`.
+
 ### 3. nginx proxy manager proxy hosts (the map)
 
 One subdomain per service. `scripts/npm-proxy-hosts.py` creates any missing
