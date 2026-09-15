@@ -36,10 +36,13 @@ import urllib.parse
 
 # ── The complete proxy host map ─────────────────────────────────────────────
 #
-# Only `secrets` (the Vault UI) keeps a LOCAL credential of its own and is
-# gated; everything else is the Cerulean app or its API, which already signs in
-# through Authentik (`auth` IS Authentik — gating it would lock the zone out)
-# and is called programmatically by other hosts. Same pattern as
+# Nothing here carries a forwarding-auth gate: no host writes an nginx
+# auth_request. `secrets` (the Vault UI) used to keep a local credential of its
+# own; it now signs in through Cerulean Authentik's OIDC auth method, configured
+# by scripts/vault-entrypoint.sh (the token method stays enabled as break-glass,
+# off the public name). Everything else is the Cerulean app or its API, which
+# already signs in through Authentik (`auth` IS Authentik — gating it would lock
+# the zone out) and is called programmatically by other hosts. Same pattern as
 # 2-voice/capstone.
 PROXY_HOSTS = [
     {

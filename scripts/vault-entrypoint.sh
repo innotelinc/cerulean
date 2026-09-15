@@ -156,6 +156,60 @@ path "${PREFIX}/metadata/${product}/*" {
 EOF
 done
 
+# ── 4c. Authentik OIDC sign-in for the UI ───────────────────────────────────
+# The Vault UI used to be the one surface on the host that carried its own
+# credential — a token pasted into the login box. It now signs in through
+# Cerulean Authentik; the token method stays enabled as break-glass and is
+# reachable off the public name only (see ips/docs/sign-in-posture.md).
+#
+# Skipped entirely when VAULT_OIDC_CLIENT_SECRET is empty, so a checkout with no
+# Authentik application still comes up. Every step here is best-effort: a way to
+# sign in must never be the reason the secret store refuses to start.
+if [ -n "${VAULT_OIDC_CLIENT_SECRET:-}" ]; then
+  # The app-scoped path, with its trailing slash, and NOT the bare instance URL:
+  # Vault requires the `issuer` in the discovery document to equal this URL, and
+  # for this provider Authentik advertises the application-scoped issuer. (The
+  # bare https://auth.../ has no discovery document at all.)
+  OIDC_DISCOVERY_URL="${VAULT_OIDC_DISCOVERY_URL:-https://auth.cerulean.innotel.us/application/o/vault/}"
+  OIDC_CLIENT_ID="${VAULT_OIDC_CLIENT_ID:-vault}"
+  OIDC_GROUP="${VAULT_OIDC_GROUP:-cerulean-platform}"
+  OIDC_REDIRECT="${VAULT_OIDC_REDIRECT:-https://secrets.cerulean.innotel.us/ui/vault/auth/oidc/oidc/callback}"
+  log "configuring Authentik OIDC sign-in (client: $OIDC_CLIENT_ID, group: $OIDC_GROUP)"
+  vault auth enable oidc >/dev/null 2>&1 || true   # already enabled is not a failure
+
+  # What an Authentik-issued session may do: read the store. Writes still need the
+  # scoped cerulean token (or break-glass root), so SSO grants sight of the
+  # secrets, not the ability to rewrite them.
+  vault policy write cerulean-read - >/dev/null 2>&1 <<EOF
+# Cerulean — read-only view of the platform secret store, for SSO sessions.
+path "${PREFIX}/data/*" {
+  capabilities = ["read", "list"]
+}
+path "${PREFIX}/metadata/*" {
+  capabilities = ["read", "list"]
+}
+path "sys/mounts" {
+  capabilities = ["read"]
+}
+EOF
+
+  # The role carries a MAP-valued field (bound_claims), which the Vault CLI
+  # serialises as a string and the server then rejects with "expected a map" — so
+  # these two writes go over the HTTP API instead of `vault write`.
+  oidc_write() {
+    wget -q -O /dev/null \
+      --header="X-Vault-Token: $ROOT_TOKEN" \
+      --header="Content-Type: application/json" \
+      --post-data="$2" "http://127.0.0.1:8200/v1$1"
+  }
+  oidc_write /auth/oidc/config \
+    "{\"oidc_discovery_url\":\"$OIDC_DISCOVERY_URL\",\"oidc_client_id\":\"$OIDC_CLIENT_ID\",\"oidc_client_secret\":\"$VAULT_OIDC_CLIENT_SECRET\",\"default_role\":\"operator\",\"oidc_scopes\":[\"openid\",\"profile\",\"email\",\"groups\"]}" \
+    || log "WARNING: could not write the OIDC config — the UI stays token-only"
+  oidc_write /auth/oidc/role/operator \
+    "{\"bound_audiences\":[\"$OIDC_CLIENT_ID\"],\"allowed_redirect_uris\":[\"$OIDC_REDIRECT\",\"http://localhost:8250/oidc/callback\"],\"user_claim\":\"email\",\"groups_claim\":\"groups\",\"oidc_scopes\":[\"openid\",\"profile\",\"email\",\"groups\"],\"bound_claims_type\":\"string\",\"bound_claims\":{\"groups\":\"$OIDC_GROUP\"},\"token_policies\":[\"cerulean-read\"],\"token_ttl\":\"1h\",\"token_max_ttl\":\"8h\"}" \
+    || log "WARNING: could not write the OIDC role"
+fi
+
 # ── 5. Scoped service token ─────────────────────────────────────────────────
 # Minted once and reused across restarts, and only replaced when it stops
 # authenticating (e.g. the store was wiped and re-initialised). It is a
