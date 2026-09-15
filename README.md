@@ -239,31 +239,24 @@ issue a certificate for a provisioned host's domain, Cerulean **automatically im
 wildcard certificate for `*.innotel.us` (or `*.<serverId>.lab.innotel.us`) is attached to every matching subdomain
 host as well, but never replaces a certificate a host already has.
 
-### Forward auth — gating apps that cannot do OIDC
+### SSO — signing in apps that cannot do OIDC
 
-Some upstreams have no SSO (n8n, Grist, SigNoz, FreePBX and Vault's own UI on
-Community/OSS builds). Those are gated at the edge instead: the proxy host
-carries an `auth_request` against the Authentik embedded outpost, and one
-**domain-level** proxy provider per zone covers every host beside it
-(`cookie_domain` is the zone apex — a `forward_single` provider would only
-authenticate the `auth.` host and let the rest through). The provider is matched
-by `X-Forwarded-Host`.
+Some upstreams have no SSO of their own (n8n, Grist, SigNoz, FreePBX, Vault's
+UI on Community/OSS builds, the *arr media apps). Those are **not** gated with
+an nginx `auth_request` any more — Authentik forward auth is retired. Each one
+is fronted by an `oauth2-proxy` **SSO gateway**: a real OIDC relying party that
+runs the browser through a code flow against Cerulean Authentik and, once the
+session exists, proxies the app. Every gateway shares one `_innotel_sso` cookie
+on `.innotel.us`, so a single sign-in covers them all, and the app's own login
+page is switched off so Authentik is the only door.
 
-That is two halves, and both have to work: an anonymous caller is bounced to
-`auth.<zone>.innotel.us/outpost.goauthentik.io/start`, **and** an authenticated
-caller reaches the app rather than the outpost. A provider that is attached to
-the outpost satisfies the first half on its own, so verify the second against
-the live edge with a real login:
+Two halves, and both have to work: an anonymous caller is redirected to
+`auth.<zone>.innotel.us`, **and** an authenticated caller reaches the app. There
+is no outpost endpoint to probe and no gate snippet to inspect, because neither
+exists in this model — verification is a real login against a real host.
 
-```bash
-npm run verify:forward-auth      # python3 scripts/verify-forward-auth.py
-```
-
-It creates a temporary Authentik user, joins the groups the gates require, walks
-the outpost dance per target host, and deletes the user even when a check fails
-(`0` pass / `1` gate failed / `2` unconfigured or the edge is unreachable). Add a
-row to `TARGETS` when a new host goes behind the gate, so the host you add is the
-one that gets checked.
+The pattern, and the first implementation (the NPM admin UI), are documented in
+`1-primary/npm/docs/stack.md`.
 
 ## Using Cerulean
 
