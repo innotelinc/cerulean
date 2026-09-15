@@ -4,8 +4,10 @@ name: cerulean
 
 include:
   # Canonical NPM Edge integration: NPM + MariaDB + backup-ui.
-  # Its services remain profile-gated. NPM Edge is a Group-3 repo.
-  - ../../3-media/npm/compose.cerulean.yml
+  # Its services remain profile-gated. NPM Edge is a Group-1 repo — the edge
+  # belongs with the trust layer (Cerulean issues the certs NPM terminates),
+  # not with the media stacks it happens to route.
+  - ../npm/compose.cerulean.yml
 
 services:
   cerulean:
