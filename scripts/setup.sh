@@ -12,6 +12,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "${SCRIPT_DIR}/lib.sh"
+# stack-lib (mirrored from the platform stack) owns the one host-address
+# helper, so the LAN IP is resolved the same way every platform script does.
+source "${SCRIPT_DIR}/stack-lib.sh"
 
 NO_START=0
 WITH_AUTHENTIK=0
@@ -40,6 +43,24 @@ if [ ! -f "$ENV_FILE" ]; then
   ok "Created .env from .env.example — review the host/email values"
 fi
 env_load
+
+# The browser-facing NPM admin URL. server/src/config.ts deliberately refuses to
+# guess a reachable address: with NPM_MODE=local and this unset it falls back to
+# 127.0.0.1, which is only valid ON the NPM host — so a rebuilt host must be told
+# its own address here, once, rather than inheriting a loopback link that breaks
+# the dashboard's NPM button from every other machine.
+if [ -z "$(env_get NPM_PUBLIC_API_URL)" ]; then
+  NPM_PUBLIC_HOST="$(env_get NPM_HOST_IP)"
+  [ -n "$NPM_PUBLIC_HOST" ] || NPM_PUBLIC_HOST="$(stack_lib_lan_ip)"
+  if [ -n "$NPM_PUBLIC_HOST" ]; then
+    env_set NPM_PUBLIC_API_URL "http://${NPM_PUBLIC_HOST}:$(env_get NPM_ADMIN_PORT 81)"
+    ok "Set NPM_PUBLIC_API_URL (the NPM admin UI as a browser reaches it)"
+  else
+    warn "Could not detect this host's LAN address — set NPM_PUBLIC_API_URL in .env"
+    warn "or the dashboard's NPM link will point at loopback."
+  fi
+fi
+
 ADMIN="$(env_get CERULEAN_ADMIN_PASSWORD)"
 if [ -z "$ADMIN" ] || [ "$ADMIN" = "change-me" ]; then
   ADMIN="$(openssl rand -base64 18 | tr -d '/+=' | head -c 24)"

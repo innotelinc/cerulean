@@ -54,6 +54,11 @@ env_load() {
   NPM_EMAIL="$(env_get NPM_EMAIL)"
   NPM_PASSWORD="$(env_get NPM_PASSWORD)"
   NPM_FORWARD_HOST="$(env_get NPM_FORWARD_HOST)"
+  NPM_HOST_IP="$(env_get NPM_HOST_IP)"
+  NPM_ADMIN_PORT="$(env_get NPM_ADMIN_PORT 81)"
+  # Browser-reachable admin URL — setup.sh derives it when empty, because the
+  # server falls back to loopback and that only resolves on the NPM host.
+  NPM_PUBLIC_API_URL="$(env_get NPM_PUBLIC_API_URL)"
   NPM_BASE_DOMAIN="$(env_get NPM_BASE_DOMAIN)"
   NPM_PROXY_SSL="$(env_get NPM_PROXY_SSL 0)"
 }

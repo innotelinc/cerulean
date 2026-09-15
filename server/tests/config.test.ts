@@ -71,3 +71,33 @@ describe("NPM mode (Technitium only — BIND no longer exists)", () => {
     expect(cfg.npm.apiUrl).toBe("http://external-npm:81");
   });
 });
+
+describe("NPM public (browser-reachable) API URL", () => {
+  // The dashboard links operators straight at the NPM admin UI, so this URL has
+  // to resolve from a BROWSER — not from the app container (cerulean-npm:81) and
+  // not from the NPM host itself (127.0.0.1).
+  it("prefers an explicit NPM_PUBLIC_API_URL over any derived address", () => {
+    const cfg = loadConfig({
+      ...baseEnv,
+      NPM_MODE: "local",
+      NPM_HOST_IP: "10.20.30.40",
+      NPM_PUBLIC_API_URL: "https://proxy.innotel.us:81/",
+    });
+    expect(cfg.npm.publicApiUrl).toBe("https://proxy.innotel.us:81");
+  });
+
+  it("uses NPM_HOST_IP in local mode instead of loopback", () => {
+    const cfg = loadConfig({ ...baseEnv, NPM_MODE: "local", NPM_HOST_IP: "192.168.1.46", NPM_ADMIN_PORT: "81" });
+    expect(cfg.npm.publicApiUrl).toBe("http://192.168.1.46:81");
+  });
+
+  it("falls back to loopback only when no host address is configured", () => {
+    const cfg = loadConfig({ ...baseEnv, NPM_MODE: "local" });
+    expect(cfg.npm.publicApiUrl).toBe("http://127.0.0.1:81");
+  });
+
+  it("ignores NPM_HOST_IP in remote mode — the remote NPM_API_URL is the edge", () => {
+    const cfg = loadConfig({ ...baseEnv, NPM_HOST_IP: "10.20.30.40" });
+    expect(cfg.npm.publicApiUrl).toBe("http://external-npm:81");
+  });
+});
