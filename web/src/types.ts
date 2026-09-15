@@ -320,6 +320,8 @@ export interface StatusResponse {
     acmeEmail: string;
     bindHost: string;
     npmApiUrl: string;
+    /** Browser-reachable NPM admin URL (apiUrl may be docker-internal). */
+    npmPublicApiUrl: string;
     tsigConfigured: boolean;
     technitiumUrl: string;
     bindMode: string;

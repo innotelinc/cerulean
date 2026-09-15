@@ -278,6 +278,7 @@ router.get(
         bindMode: "technitium",
         npmMode: config.npm.mode,
         npmApiUrl: config.npm.apiUrl,
+        npmPublicApiUrl: config.npm.publicApiUrl,
         tsigConfigured: false,
       },
     });
