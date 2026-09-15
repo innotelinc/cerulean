@@ -133,7 +133,7 @@ docker compose --profile npm up -d                           # bundled NPM Edge 
                                  ▼              ▼
                     ┌─────────────────┐    ┌──────────────────────┐
                     │ Technitium DNS  │    │ nginx proxy manager  │
-                    │ :53 · :5380     │    │ 192.168.1.71:81      │
+                    │ :53 · :5380     │    │ 192.168.1.46:81      │
                     │ DHCP :67 · block│    └──────────────────────┘
                     └─────────────────┘               ▲
                            ▲                          │
