@@ -35,6 +35,13 @@ import urllib.parse
 
 
 # ── The complete proxy host map ─────────────────────────────────────────────
+#
+# `forward_auth: False` opts a host out of the Authentik forward-auth gate.
+# Only `secrets` (the Vault UI) keeps a LOCAL credential of its own and is
+# gated; everything else is the Cerulean app or its API, which already signs in
+# through Authentik (`auth` IS Authentik — gating it would lock the zone out)
+# and is called programmatically by other hosts. Same pattern as
+# 2-voice/capstone.
 PROXY_HOSTS = [
     {
         "name": "cerulean",
@@ -42,6 +49,7 @@ PROXY_HOSTS = [
         "scheme": "http",
         "websocket": True,
         "purpose": "Cerulean dashboard + REST API",
+        "forward_auth": False,
     },
     {
         "name": "app",
@@ -49,6 +57,7 @@ PROXY_HOSTS = [
         "scheme": "http",
         "websocket": True,
         "purpose": "Cerulean application",
+        "forward_auth": False,
     },
     {
         "name": "api",
@@ -56,6 +65,7 @@ PROXY_HOSTS = [
         "scheme": "http",
         "websocket": False,
         "purpose": "Cerulean REST API",
+        "forward_auth": False,
     },
     {
         "name": "auth",
@@ -63,6 +73,7 @@ PROXY_HOSTS = [
         "scheme": "http",
         "websocket": True,
         "purpose": "Authentik — SSO and user management",
+        "forward_auth": False,
     },
     {
         "name": "secrets",
@@ -77,6 +88,7 @@ PROXY_HOSTS = [
         "scheme": "http",
         "websocket": True,
         "purpose": "DNS management",
+        "forward_auth": False,
     },
     {
         "name": "certs",
@@ -84,6 +96,7 @@ PROXY_HOSTS = [
         "scheme": "http",
         "websocket": True,
         "purpose": "Certificate management",
+        "forward_auth": False,
     },
     {
         "name": "admin",
@@ -91,8 +104,103 @@ PROXY_HOSTS = [
         "scheme": "http",
         "websocket": True,
         "purpose": "Administration",
+        "forward_auth": False,
     },
 ]
+
+
+# ── Cerulean Authentik forward auth ─────────────────────────────────────
+# Injected as a proxy host's nginx "advanced config": an auth_request against
+# the Authentik embedded outpost. The outpost runs the domain-level proxy
+# provider (`cerulean-zone-npm-forward-auth`), so ONE provider covers the whole
+# zone — the outpost matches the request by X-Forwarded-Host.
+#
+# NOTE: braces are doubled for .format() — only {outpost_url} is a field.
+FORWARD_AUTH_SNIPPET = """\
+# ── Cerulean Authentik forward auth (managed by npm-proxy-hosts.py) ──
+# Increase buffer size for large headers (SSO redirects are big).
+proxy_buffers 8 16k;
+proxy_buffer_size 32k;
+auth_request /outpost.goauthentik.io/auth/nginx;
+error_page 401 = @goauthentik_proxy_signin;
+auth_request_set $auth_cookie $upstream_http_set_cookie;
+add_header Set-Cookie $auth_cookie;
+auth_request_set $authentik_username $upstream_http_x_authentik_username;
+auth_request_set $authentik_groups $upstream_http_x_authentik_groups;
+auth_request_set $authentik_email $upstream_http_x_authentik_email;
+auth_request_set $authentik_name $upstream_http_x_authentik_name;
+auth_request_set $authentik_uid $upstream_http_x_authentik_uid;
+proxy_set_header X-authentik-username $authentik_username;
+proxy_set_header X-authentik-groups $authentik_groups;
+proxy_set_header X-authentik-email $authentik_email;
+proxy_set_header X-authentik-name $authentik_name;
+proxy_set_header X-authentik-uid $authentik_uid;
+location /outpost.goauthentik.io {{
+    proxy_pass {outpost_url}/outpost.goauthentik.io;
+    proxy_set_header Host $host;
+    proxy_set_header X-Original-URL $scheme://$http_host$request_uri;
+    # The outpost runs the forward-auth provider in `forward_domain` mode and
+    # identifies which app a request belongs to from the forwarded host. These
+    # live in NPM's generated `location /`, which a custom location does NOT
+    # inherit — without them the embedded outpost logs "failed to detect a
+    # forward URL from nginx" and 401s/500s the auth subrequest.
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    add_header Set-Cookie $auth_cookie;
+    auth_request_set $auth_cookie $upstream_http_set_cookie;
+    proxy_pass_request_body off;
+    proxy_set_header Content-Length "";
+}}
+location @goauthentik_proxy_signin {{
+    internal;
+    add_header Set-Cookie $auth_cookie;
+    return 302 {signin_url}/outpost.goauthentik.io/start?rd=$scheme://$http_host$request_uri;
+}}
+"""
+
+
+def forward_auth_snippet(outpost_url, signin_url):
+    """Render the auth_request nginx snippet for one proxy host.
+
+    outpost_url is server-side only (NPM → Authentik over the LAN, direct —
+    never through NPM's own vhosts); signin_url is what the BROWSER is
+    redirected to on 401, so it must be the public auth domain.
+    """
+    return FORWARD_AUTH_SNIPPET.format(outpost_url=outpost_url.rstrip("/"),
+                                       signin_url=signin_url.rstrip("/"))
+
+
+def build_outpost_url(upstream_host):
+    """URL of the Authentik embedded outpost as NPM reaches it.
+
+    NPM must hit the outpost DIRECTLY (http://<upstream>:9000) — routing it
+    through https://auth.<domain> would re-enter NPM's own vhost selection
+    with the app's Host header and loop the request back to the app vhost.
+    """
+    return f"http://{upstream_host}:9000"
+
+
+def resolve_forward_auth(base_domain, upstream):
+    """Resolve forward auth from the environment: (enabled, outpost, signin, excluded)."""
+    enabled = env("NPM_FORWARD_AUTH", "").strip().lower() not in {"0", "false", "no", "off"}
+    excluded = {s.strip() for s in env("NPM_FORWARD_AUTH_EXCLUDE", "").split(",") if s.strip()}
+    if "all" in excluded:
+        enabled = False
+    outpost = build_outpost_url(upstream)
+    signin_url = (env("NPM_AUTHENTIK_URL", "") or "").strip().rstrip("/")
+    if not signin_url and base_domain:
+        signin_url = f"https://auth.{base_domain}"
+    return enabled, outpost, signin_url or outpost, excluded
+
+
+def snippet_for_host(entry, enabled, outpost_url, signin_url, excluded):
+    """The auth snippet this host should carry ('' = no forward auth)."""
+    if not enabled or entry.get("forward_auth") is False:
+        return ""
+    if entry["name"] in excluded:
+        return ""
+    return forward_auth_snippet(outpost_url, signin_url)
 
 
 # ── .env + environment helpers ──────────────────────────────────────────────
@@ -242,7 +350,8 @@ def ensure_a_record_technitium(domain, ip, zone, technitium_url):
         return False
 
 
-def host_payload(entry, base_domain, forward_host, ssl_via_npm, letsencrypt_email):
+def host_payload(entry, base_domain, forward_host, ssl_via_npm, letsencrypt_email,
+                 auth_snippet=""):
     domain = f"{entry['name']}.{base_domain}"
     payload = {
         "domain_names": [domain],
@@ -256,7 +365,7 @@ def host_payload(entry, base_domain, forward_host, ssl_via_npm, letsencrypt_emai
         "caching_enabled": False,
         "allow_websocket_upgrade": bool(entry.get("websocket", True)),
         "access_list_id": 0,
-        "advanced_config": "",
+        "advanced_config": auth_snippet,
         "meta": {"letsencrypt_agree": False, "dns_challenge": False},
     }
     if ssl_via_npm:
@@ -352,10 +461,26 @@ def main():
 
     print(f"nginx proxy manager: {api_url}")
     print(f"Base domain: {base_domain}   Forward host: {forward_host}")
+
+    # Authentik forward auth: one domain-level proxy provider covers the whole
+    # zone, so a gated host only needs the auth_request snippet in its nginx
+    # "advanced config". See FORWARD_AUTH_SNIPPET for which hosts opt out.
+    fa_enabled, fa_outpost, fa_signin, fa_excluded = resolve_forward_auth(base_domain, forward_host)
+    if fa_enabled:
+        gated = [e["name"] for e in PROXY_HOSTS
+                 if snippet_for_host(e, True, fa_outpost, fa_signin, fa_excluded)]
+        print(f"Authentik forward auth on for {len(gated)} host(s): "
+              f"{', '.join(gated) or '(none)'} (outpost {fa_outpost}, sign-in {fa_signin})")
+    else:
+        print("WARN Authentik forward auth is OFF — the Vault UI would not require a Cerulean session.",
+              file=sys.stderr)
+
     print("Proxy hosts:")
 
     for entry in PROXY_HOSTS:
-        payload, domain = host_payload(entry, base_domain, forward_host, ssl_via_npm, letsencrypt_email)
+        auth_snippet = snippet_for_host(entry, fa_enabled, fa_outpost, fa_signin, fa_excluded)
+        payload, domain = host_payload(entry, base_domain, forward_host, ssl_via_npm,
+                                       letsencrypt_email, auth_snippet)
         if npm_host_ip and base_domain in domain:
             ok = ensure_a_record_technitium(domain, npm_host_ip, zone, technitium_url)
             print(f"  DNS {'✓' if ok else '✗'} A {domain} → {npm_host_ip} (Technitium)")

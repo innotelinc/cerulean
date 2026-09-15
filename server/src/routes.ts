@@ -140,6 +140,17 @@ function certToJson(c: CertificateRow) {
 
 // ── Auth ────────────────────────────────────────────────────────────────
 router.post("/auth/login", (req, res) => {
+  // Password sign-in is break-glass only (config.auth.localEnabled, driven by
+  // BREAKGLASS_LOGIN). Refuse before comparing anything so no session can be
+  // minted while it is off, even if the endpoint is called directly.
+  if (!config.auth.localEnabled) {
+    res.status(403).json({
+      error:
+        "Password sign-in is disabled — sign in with Authentik. Set BREAKGLASS_LOGIN=1 and restart Cerulean to re-enable the local fallback.",
+    });
+    return;
+  }
+
   const { password } = req.body || {};
   const token = login(password);
   if (!token) {

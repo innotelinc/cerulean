@@ -12,6 +12,7 @@
     "build": "npm run build -w server && npm run build -w web",
     "typecheck": "npm run typecheck -w server && npm run typecheck -w web",
     "test": "npm run test -w server",
+    "verify:forward-auth": "python3 scripts/verify-forward-auth.py",
     "start": "npm run start -w server"
   },
   "devDependencies": {
