@@ -162,9 +162,13 @@ docker compose --profile npm up -d                           # bundled NPM Edge 
 Cerulean's DNS plane is now **Technitium** over HTTP API — no SSH, no TSIG, no `nsupdate`.
 
 - **Bundled (recommended):** `docker compose --profile technitium up -d` runs
-  `technitium/dns-server` as `cerulean-technitium` (ports 53/tcp+udp, 5380 for
-  the web console, 67/udp for DHCP). Cerulean reaches it at
-  `http://cerulean-technitium:5380`. Set `TECHNITIUM_ADMIN_PASSWORD` in `.env`
+  `technitium/dns-server` as `cerulean-technitium` (ports 53/tcp+udp, 67/udp for
+  DHCP, and 5380 for the web console — which is **bound to loopback + the
+  docker0 gateway, never the LAN**, since it is the DNS/DHCP admin plane;
+  containers dial `http://172.17.0.1:5380`, which `TECHNITIUM_URL` defaults to).
+  Set `TECHNITIUM_WEB_SERVICE_LOCAL_ADDRESSES` to change the bind and
+  `scripts/setup.sh` re-applies it to an existing config directory, since the
+  environment variable is only read on first start. Set `TECHNITIUM_ADMIN_PASSWORD` in `.env`
   for the web console password; `TECHNITIUM_TOKEN` for an API token
   (or use `TECHNITIUM_USER`/`TECHNITIUM_PASSWORD`). The container stores
   state in `./data/technitium` (`/etc/dns`).

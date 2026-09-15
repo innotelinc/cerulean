@@ -79,6 +79,20 @@ PROXY_HOSTS = [
         "scheme": "http",
         "websocket": False,
         "purpose": "HashiCorp Vault — secrets management (KV v2)",
+        # Land the UI on the OIDC sign-in. Vault has no "default auth method"
+        # setting to point at (`sys/config/ui` is Enterprise-only), so the entry
+        # documents are redirected to the auth page with the method preselected.
+        # Vault's ember app routes /ui/vault/auth client-side, so redirecting
+        # that path would never fire — the redirect has to catch the document
+        # request for `/` or `/ui/`, which is what its router boots from. The
+        # Regex omits the query string (it is compared against $request_uri,
+        # query and all) so `?with=oidc` does not match and cannot loop, and the
+        # OIDC callback path is far longer than these, so it is left alone.
+        # `/auth/oidc/config` sets default_role=operator (scripts/vault-entrypoint.sh),
+        # so the Role field can stay empty.
+        "advanced_config": (
+            'if ($request_uri ~ "^/(ui/?)?$") { return 302 /ui/vault/auth?with=oidc; }'
+        ),
     },
     {
         "name": "dns",
@@ -266,8 +280,10 @@ def host_payload(entry, base_domain, forward_host, ssl_via_npm, letsencrypt_emai
         "access_list_id": 0,
         # No gate is ever injected: identity is Authentik OIDC, and a host
         # that needs SSO gets it from an oauth2-proxy gateway, not from an
-        # nginx auth_request. See the npm repo's docs/stack.md.
-        "advanced_config": "",
+        # nginx auth_request. See the npm repo's docs/stack.md. A host may still
+        # carry its own advanced_config when it needs a redirect the app cannot
+        # do itself (`secrets`, i.e. Vault) — that is not a gate.
+        "advanced_config": entry.get("advanced_config", ""),
         "meta": {"letsencrypt_agree": False, "dns_challenge": False},
     }
     if ssl_via_npm:
