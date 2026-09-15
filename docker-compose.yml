@@ -199,6 +199,14 @@ services:
       # Products needing a token narrowed to <prefix>/data/<product> rather than
       # the mount-wide grant. Space-separated; empty = mount-wide token only.
       VAULT_PRODUCT_TOKENS: ${VAULT_PRODUCT_TOKENS:-}
+      # Authentik OIDC sign-in for the UI (step 4c of the bootstrap). Empty
+      # secret = the step is skipped and the UI keeps its token login, so a
+      # checkout with no Authentik application still comes up.
+      VAULT_OIDC_CLIENT_ID: ${VAULT_OIDC_CLIENT_ID:-vault}
+      VAULT_OIDC_CLIENT_SECRET: ${VAULT_OIDC_CLIENT_SECRET:-}
+      VAULT_OIDC_DISCOVERY_URL: ${VAULT_OIDC_DISCOVERY_URL:-https://auth.cerulean.innotel.us/application/o/vault/}
+      VAULT_OIDC_GROUP: ${VAULT_OIDC_GROUP:-cerulean-platform}
+      VAULT_OIDC_REDIRECT: ${VAULT_OIDC_REDIRECT:-https://secrets.cerulean.innotel.us/ui/vault/auth/oidc/oidc/callback}
     volumes:
       # Encrypted storage — the durable part; survives restarts and rebuilds.
       - ./data/vault/file:/vault/file
