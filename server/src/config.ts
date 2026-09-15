@@ -223,7 +223,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         env.AUTHENTIK_REDIRECT_URI ||
         `http://localhost:${env.CERULEAN_PORT || 3000}/api/auth/oidc/callback`,
       scopes: env.AUTHENTIK_SCOPES || "openid profile email",
-      localEnabled: bool(env.AUTH_LOCAL_ENABLED, true),
+      // Identity is Cerulean's Authentik, so the admin-password path is OFF by
+      // default. BREAKGLASS_LOGIN=1 (or the legacy AUTH_LOCAL_ENABLED) turns
+      // the local fallback back on for recovery. The server enforces this in
+      // POST /api/auth/login — the flag only hiding the form would not be a
+      // control.
+      localEnabled: bool(env.BREAKGLASS_LOGIN, bool(env.AUTH_LOCAL_ENABLED, false)),
     },
 
     authentikAdmin: {

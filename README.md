@@ -226,6 +226,32 @@ issue a certificate for a provisioned host's domain, Cerulean **automatically im
 wildcard certificate for `*.innotel.us` (or `*.<serverId>.lab.innotel.us`) is attached to every matching subdomain
 host as well, but never replaces a certificate a host already has.
 
+### Forward auth — gating apps that cannot do OIDC
+
+Some upstreams have no SSO (n8n, Grist, SigNoz, FreePBX and Vault's own UI on
+Community/OSS builds). Those are gated at the edge instead: the proxy host
+carries an `auth_request` against the Authentik embedded outpost, and one
+**domain-level** proxy provider per zone covers every host beside it
+(`cookie_domain` is the zone apex — a `forward_single` provider would only
+authenticate the `auth.` host and let the rest through). The provider is matched
+by `X-Forwarded-Host`.
+
+That is two halves, and both have to work: an anonymous caller is bounced to
+`auth.<zone>.innotel.us/outpost.goauthentik.io/start`, **and** an authenticated
+caller reaches the app rather than the outpost. A provider that is attached to
+the outpost satisfies the first half on its own, so verify the second against
+the live edge with a real login:
+
+```bash
+npm run verify:forward-auth      # python3 scripts/verify-forward-auth.py
+```
+
+It creates a temporary Authentik user, joins the groups the gates require, walks
+the outpost dance per target host, and deletes the user even when a check fails
+(`0` pass / `1` gate failed / `2` unconfigured or the edge is unreachable). Add a
+row to `TARGETS` when a new host goes behind the gate, so the host you add is the
+one that gets checked.
+
 ## Using Cerulean
 
 1. **Orchestrator** — check Technitium reachability, server identity (`<serverId>.lab.innotel.us`), wildcard cert (PKI/ACME), DHCP scopes & leases, and ad-blocking in one place; register or rotate the wildcard there.

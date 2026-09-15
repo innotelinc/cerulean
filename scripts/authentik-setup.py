@@ -345,9 +345,18 @@ def main():
         print(f"  ✓ created OIDC provider (pk {provider_pk})")
 
     # Ensure the application is bound to the provider (URL key is the slug).
-    apps = ak.list(f"/core/applications/?slug={urllib.parse.quote(app_slug)}")
+    #
+    # NOTE: two Authentik behaviours bite here.
+    #   1. /core/applications/ IGNORES a `slug=` filter, so filtering happens
+    #      below. Treating a non-empty response as "this app exists" made
+    #      provisioning a NEW app fail with 404 on PUT.
+    #   2. Without superuser_full_list=true the list is filtered by the token
+    #      user's policies, so the app being provisioned may simply be absent
+    #      from it — and the script would try to create an existing app.
+    apps = ak.list("/core/applications/?superuser_full_list=true")
+    existing = next((a for a in apps if a.get("slug") == app_slug), None)
     app_body = {"name": env_for("APP_NAME", app_slug.capitalize()), "slug": app_slug, "provider": provider_pk}
-    if apps:
+    if existing:
         ak.update(f"/core/applications/{app_slug}/", app_body)
         print(f"  ✓ updated application '{app_slug}'")
     else:

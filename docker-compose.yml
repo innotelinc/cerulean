@@ -1,7 +1,11 @@
+# Project name is pinned so container/volume names never depend on where this
+# repo is checked out (the mesh puts it in 1-primary/cerulean).
+name: cerulean
+
 include:
   # Canonical NPM Edge integration: NPM + MariaDB + backup-ui.
-  # Its services remain profile-gated.
-  - ../npm/compose.cerulean.yml
+  # Its services remain profile-gated. NPM Edge is a Group-3 repo.
+  - ../../3-media/npm/compose.cerulean.yml
 
 services:
   cerulean:

@@ -76,7 +76,11 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
           </>
         ) : (
           !oidcEnabled && (
-            <p className="error">No authentication method is configured.</p>
+            <p className="error">
+              No authentication method is configured. Set the Authentik
+              (<code>AUTHENTIK_*</code>) variables, or set{" "}
+              <code>BREAKGLASS_LOGIN=1</code> for recovery.
+            </p>
           )
         )}
       </form>
