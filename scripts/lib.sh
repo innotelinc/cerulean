@@ -42,9 +42,12 @@ env_load() {
   CERULEAN_SERVER_ID="$(env_get CERULEAN_SERVER_ID)"
   CERULEAN_LAB_DOMAIN="$(env_get CERULEAN_LAB_DOMAIN lab.innotel.us)"
   # Technitium
-  # Technitium is host-networked, so the default is the host gateway
-  # (mapped in docker-compose.yml as host.docker.internal), never 127.0.0.1.
-  TECHNITIUM_URL="$(env_get TECHNITIUM_URL http://host.docker.internal:5380)"
+  # Technitium is host-networked and its console binds loopback + docker0 only
+  # (DNS_SERVER_WEB_SERVICE_LOCAL_ADDRESSES), so the default is the docker0
+  # gateway — reachable from the host and from every container alike. Never
+  # 127.0.0.1 (that is the caller itself) and never host.docker.internal (that
+  # resolves to the *caller's* bridge, which the console does not bind).
+  TECHNITIUM_URL="$(env_get TECHNITIUM_URL http://172.17.0.1:5380)"
   TECHNITIUM_TOKEN="$(env_get TECHNITIUM_TOKEN)"
   TECHNITIUM_PASSWORD="$(env_get TECHNITIUM_PASSWORD)"
   CERULEAN_ZONE="$(env_get CERULEAN_ZONE)"
@@ -67,6 +70,25 @@ technitium_configured() {
   # Considered configured if URL points somewhere (even default), but for
   # setup guidance we want token/password present
   [ -n "$TECHNITIUM_TOKEN" ] || [ -n "$TECHNITIUM_PASSWORD" ] || [ -n "$(env_get TECHNITIUM_USER)" ]
+}
+
+# A usable Technitium API token on stdout: the pre-minted TECHNITIUM_TOKEN when
+# set (service account), otherwise a fresh session from TECHNITIUM_USER/PASSWORD.
+# Returns non-zero when neither works, so callers can warn instead of dying.
+technitium_token() {
+  if [ -n "${TECHNITIUM_TOKEN:-}" ]; then
+    printf '%s' "$TECHNITIUM_TOKEN"
+    return 0
+  fi
+  local pw user
+  pw="$(env_get TECHNITIUM_ADMIN_PASSWORD)"
+  [ -n "$pw" ] || pw="$(env_get TECHNITIUM_PASSWORD)"
+  [ -n "$pw" ] || return 1
+  user="$(env_get TECHNITIUM_USER admin)"
+  curl -sf -G "${TECHNITIUM_URL:-http://172.17.0.1:5380}/api/user/login" \
+    --data-urlencode "user=${user}" --data-urlencode "pass=${pw}" 2>/dev/null \
+    | python3 -c 'import json,sys;print(json.load(sys.stdin).get("token") or "")' 2>/dev/null \
+    | { read -r tok; [ -n "$tok" ] && printf '%s' "$tok"; } || return 1
 }
 
 npm_configured() {

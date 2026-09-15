@@ -148,3 +148,24 @@ vault kv put cerulean/technitium token='the-technitium-api-token'
 `vault://<path>` without `#key` returns the first value of the secret. The
 `/status` endpoint and the Settings page show Vault connectivity; failures to
 resolve a reference surface as a clear error when the credential is used.
+
+## The UI lands on OIDC
+
+`https://secrets.cerulean.innotel.us` sends you straight to the OIDC sign-in.
+Vault offers no setting for that in OSS (`sys/config/ui` is Enterprise-only), so
+the redirect lives on the proxy host: `scripts/npm-proxy-hosts.py` renders a
+per-host `advanced_config`, and the `secrets` host uses it to send `/` and `/ui/`
+to `/ui/vault/auth?with=oidc`.
+
+It has to catch the *document* request rather than `/ui/vault/auth` itself,
+because Vault's UI is an ember app that routes to the auth page client-side — a
+server-side redirect on that path would never fire. The match omits the query
+string, so the redirected request does not match again and cannot loop, and the
+OIDC callback path is far longer than those two, so it is left alone.
+`/auth/oidc/config` sets `default_role=operator`, so the form's Role field can
+stay empty.
+
+The **token method stays enabled** — that is the break-glass path if Authentik
+is down, and Vault cannot disable it. `scripts/verify-sso.py` asserts the
+redirect, that `/v1/auth/oidc/oidc/auth_url` returns a real Authentik URL for the
+role, and that an unauthenticated `/v1/sys/mounts` is refused.
