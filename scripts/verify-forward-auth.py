@@ -50,11 +50,30 @@ import urllib.request
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# host, the zone's Authentik host, and the Authentik group the gate requires
-# (None = no binding, any authenticated user passes).
+# host, the Authentik host its anonymous bounce lands on, and the Authentik
+# group the gate requires (None = no binding, any authenticated user passes).
+#
+# `zone` is where the HOST's own NPM snippet points the browser, which is not
+# always the host's own zone — the sign-in host is what selects the provider,
+# and the provider's `cookie_domain` is what the outpost session cookie is
+# scoped to, so a host only works if that cookie can reach it.
+#
+# That is why `admin.zeus.innotel.us` (another edge door to the NPM admin UI,
+# on `:81` like `proxy.innotel.us` and `admin.monarch.innotel.us`) is checked
+# here: it used to sign in at `auth.cerulean.innotel.us`, whose provider cookie
+# is scoped to `cerulean.innotel.us` and can never reach a `zeus.innotel.us`
+# host, so the gate bounced forever no matter who you were. It now signs in at
+# its own zone's `auth.zeus`, exactly like the working `pbx.zeus` and
+# `admin.monarch` doors.
+#
+# One host per gate is enough, but the ones named here are the ones checked.
 TARGETS = [
-    ("secrets.cerulean.innotel.us", "auth.cerulean.innotel.us", None),
-    ("pbx.zeus.innotel.us", "auth.zeus.innotel.us", None),
+    ("secrets.cerulean.innotel.us", "auth.cerulean.innotel.us", "Cerulean"),
+    ("proxy.innotel.us", "auth.innotel.us", "cerulean-platform"),
+    ("admin.zeus.innotel.us", "auth.zeus.innotel.us", "Zeus"),
+    ("pbx.zeus.innotel.us", "auth.zeus.innotel.us", "Zeus"),
+    ("admin.monarch.innotel.us", "auth.monarch.innotel.us", "Monarch"),
+    ("radarr.monarch.innotel.us", "auth.monarch.innotel.us", "Monarch"),
     ("n8n.capstone.innotel.us", "auth.capstone.innotel.us", "Capstone"),
 ]
 
@@ -294,42 +313,80 @@ def main():
         created_pk = user["pk"]
         api.call("POST", f"/core/users/{created_pk}/set_password/", {"password": password})
         groups = sorted({t[2] for t in cfg.targets if len(t) > 2 and t[2]})
+        print(f"  {OK}  created {TEMP_USERNAME} (pk={created_pk}) in no group yet")
+        print()
+
+        failures = []
+
+        def bounce_ok(host, zone):
+            status, location, _ = Session().get(f"https://{host}/")
+            check(
+                status in (301, 302, 307, 308) and zone in (location or ""),
+                f"anonymous request is bounced to {zone} (got HTTP {status})",
+            )
+
+        def reached_app(host, status, final):
+            """Did the request actually land on the app, rather than stop at
+            the outpost or Authentik's authorize page?"""
+            return status < 400 and final.startswith(f"https://{host}")
+
+        # ── phase 1: the identity is in NO gate group, so every gated host has
+        #    to refuse it. This is the half a group binding exists to enforce —
+        #    before the bindings, every authenticated identity sailed through.
+        print("[2] a non-member (no groups) is refused by every gate")
+        for host, zone, group in cfg.targets:
+            print(f"    {host}")
+            try:
+                bounce_ok(host, zone)
+                if not group:
+                    print(f"      {OK}  no group binding — refusal not expected")
+                    continue
+                status, final, _ = login_and_fetch(Session(), host, TEMP_USERNAME, password)
+                check(
+                    not reached_app(host, status, final),
+                    f"refused (got HTTP {status} at {final})",
+                )
+                print(f"      {OK}  refused, HTTP {status}")
+            except CheckFailed as err:
+                print(f"  {BAD}  {err}")
+                failures.append(f"{host} (non-member): {err}")
+        print()
+
+        # ── phase 2: add ONE group at a time and confirm it opens exactly the
+        #    hosts bound to it. Adding every group at once would not catch a
+        #    gate bound to the WRONG group — the mistake that matters.
+        print("[3] each group opens exactly the hosts bound to it")
         for name in groups:
             pk = api.group_pk(name)
             if not pk:
                 raise CannotRun(f"Authentik group {name!r} not found (a gate requires it)")
             api.call("POST", f"/core/groups/{pk}/add_user/", {"pk": created_pk})
-        print(f"  {OK}  created {TEMP_USERNAME} (pk={created_pk}) groups={groups or '-'}")
+            bound = [t for t in cfg.targets if len(t) > 2 and t[2] == name]
+            print(f"    + {name} -> {', '.join(t[0] for t in bound)}")
+            for host, zone, _ in bound:
+                try:
+                    session = Session()
+                    status, final, _ = login_and_fetch(session, host, TEMP_USERNAME, password)
+                    check(
+                        reached_app(host, status, final),
+                        f"reaches the app, not the outpost (landed on {final})",
+                    )
+                    proxy_cookies = [c.name for c in session.jar
+                                     if c.name.startswith("authentik_proxy")]
+                    check(bool(proxy_cookies), f"outpost session cookie issued ({proxy_cookies})")
+                    print(f"      {OK}  {host} -> HTTP {status}")
+                except CheckFailed as err:
+                    print(f"  {BAD}  {host}: {err}")
+                    failures.append(f"{host} (member of {name}): {err}")
         print()
-
-        failures = []
-        for i, (host, zone, _group) in enumerate(cfg.targets, start=2):
-            print(f"[{i}] {host}")
-            try:
-                status, location, _ = Session().get(f"https://{host}/")
-                check(
-                    status in (301, 302, 307, 308) and zone in (location or ""),
-                    f"anonymous request is bounced to {zone} (got HTTP {status})",
-                )
-
-                session = Session()
-                status, final, _ = login_and_fetch(session, host, TEMP_USERNAME, password)
-                check(
-                    not ("outpost" in final and zone in final),
-                    f"authenticated request reaches the app, not the outpost (landed on {final})",
-                )
-                proxy_cookies = [c.name for c in session.jar if c.name.startswith("authentik_proxy")]
-                check(bool(proxy_cookies), f"outpost session cookie issued ({proxy_cookies})")
-                print(f"       -> HTTP {status} {final}")
-            except CheckFailed as err:
-                print(f"  {BAD}  {err}")
-                failures.append(f"{host}: {err}")
-            print()
 
         if failures:
             print("FAIL:", *failures, sep="\n  ")
             return 1
-        print("PASS — every gated host is closed anonymously and open to an authenticated user")
+        print(
+            f"PASS — {len(cfg.targets)} gated hosts: refused to a non-member and "
+            "open to a member of the group each one requires"
+        )
         return 0
     except CannotRun as err:
         print(f"\nSKIP: {err}", file=sys.stderr)
