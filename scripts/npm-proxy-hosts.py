@@ -208,6 +208,21 @@ class Npm:
     def update_host(self, host_id, payload):
         return self._request("PUT", f"/nginx/proxy-hosts/{host_id}", payload)
 
+    def certificates(self):
+        return self._request("GET", "/nginx/certificates") or []
+
+    # Redirection hosts are a separate NPM resource. Its schema rejects an
+    # `enabled` key outright, so this payload is deliberately narrower than the
+    # proxy-host one — do not "align" them.
+    def list_redirections(self):
+        return self._request("GET", "/nginx/redirection-hosts") or []
+
+    def create_redirection(self, payload):
+        return self._request("POST", "/nginx/redirection-hosts", payload)
+
+    def update_redirection(self, redirection_id, payload):
+        return self._request("PUT", f"/nginx/redirection-hosts/{redirection_id}", payload)
+
 
 # ── Technitium A-record provisioning ────────────────────────────────────────
 def _technitium_token(technitium_url):
@@ -262,6 +277,114 @@ def ensure_a_record_technitium(domain, ip, zone, technitium_url):
         return False
     except Exception:
         return False
+
+
+def ensure_cname_technitium(domain, target, zone, technitium_url):
+    """Create/ensure a CNAME via Technitium HTTP API. Returns bool.
+
+    The zone's convention is that every vhost CNAMEs to the apex (`innotel.us`),
+    which owns the single A record — so aliases belong here as CNAMEs, not as
+    extra A records. Technitium also refuses an A wherever a CNAME already
+    exists, so writing one here would fail on any name already published.
+    """
+    tok = _technitium_token(technitium_url)
+    if not tok:
+        return False
+    params = urllib.parse.urlencode({
+        "domain": domain, "zone": zone, "type": "CNAME", "ttl": "300", "cname": target,
+    })
+    try:
+        req = urllib.request.Request(f"{technitium_url.rstrip('/')}/api/zones/records/add?{params}")
+        req.add_header("Authorization", f"Bearer {tok}")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+            return data.get("status") in ("ok", None)
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace") if e.fp else ""
+        if "already exists" in body.lower() or "duplicate" in body.lower():
+            return True
+        return False
+    except Exception:
+        return False
+
+
+# ── www aliases ─────────────────────────────────────────────────────────────
+# Origins whose bare `www.` must land on the canonical origin. A visitor who
+# types it otherwise gets NXDOMAIN — the name exists nowhere, in the zone or at
+# the edge — which is a real hole for every origin listed as missing it.
+#
+# Why a redirect and not a second proxy host: the OIDC redirect_uri registered
+# with Authentik is the apex, so a sign-in started on www is refused with a
+# redirect_uri mismatch — a page that looks fine whose login is broken. A 301 to
+# the apex keeps one canonical origin and one cookie domain, and www still works.
+#
+# 2-voice/zeus declares its own `www` in scripts/npm-proxy-hosts.py. That script
+# prunes redirection hosts it does not declare, so naming zeus here too would put
+# two writers on one name and one of them would delete it. Every other public
+# origin is listed here: the zone's owner is the right home for a zone-wide alias.
+# Origins are named as FULL FQDNs, not as subdomains of this script's own base
+# domain. This script runs under whichever domain its stack owns
+# (`cerulean.innotel.us`), while the alias belongs to the estate apex — a
+# relative name would publish `www.capstone.cerulean.innotel.us`, a host nobody
+# asked for, instead of `www.capstone.innotel.us`.
+WWW_ALIASES = ["capstone.innotel.us", "olympus.innotel.us", "monarch.innotel.us"]
+
+
+def ensure_www_aliases(npm, existing_redirections, certs, technitium_url, do_dns):
+    """Ensure `www.<origin>` CNAMEs to the apex and 301s to the canonical origin.
+
+    Create-or-update only. This NPM is shared by every stack in the estate, so
+    nothing here is ever deleted — a prune scoped to one stack's domain cannot
+    know whose alias it is looking at.
+    """
+    print("www aliases:")
+    for apex in WWW_ALIASES:
+        domain = f"www.{apex}"
+        # Every vhost in these zones is a CNAME to the zone apex, which owns the
+        # single A record — so the alias genuinely is `www` → apex.
+        zone = apex.split(".", 1)[1] if "." in apex else apex
+        if do_dns:
+            ok = ensure_cname_technitium(domain, zone, zone, technitium_url)
+            print(f"  DNS {'✓' if ok else '✗'} CNAME {domain} → {zone}")
+        # The certificate that covers an origin is its wildcard: NPM's
+        # `domain_names` lists only the primary name (`capstone.innotel.us`)
+        # while the SANs underneath are `*.capstone.innotel.us`. Both spellings
+        # are accepted so a single-name cert is matched too.
+        cert_id = 0
+        for cert in certs:
+            names = [n.lower() for n in (cert.get("domain_names") or [])]
+            if apex in names or f"*.{apex}" in names:
+                cert_id = cert["id"]
+                break
+        payload = {
+            "domain_names": [domain],
+            "forward_scheme": "https",
+            "forward_domain_name": apex,
+            "forward_http_code": 301,
+            "preserve_path": True,
+            "certificate_id": cert_id,
+            "ssl_forced": bool(cert_id),
+            "block_exploits": False,
+            # NOT NULL with no default in NPM's schema. The API's own insert
+            # omits it, and MySQL's strict mode then rejects the whole row with
+            # a flat ``{"message": "Internal Error"}`` — so an alias created
+            # without it 500s, on the API and in the UI alike.
+            "advanced_config": "",
+            "http2_support": True,
+        }
+        if not cert_id:
+            print(f"    NOTE nothing covers {domain} yet — Cerulean attaches the "
+                  f"origin's wildcard once issued", file=sys.stderr)
+        found = next(
+            (r for r in existing_redirections if domain in (r.get("domain_names") or [])),
+            None,
+        )
+        if found is None:
+            npm.create_redirection(payload)
+            print(f"  ✓ created  {domain} → 301 https://{apex}")
+        else:
+            npm.update_redirection(found["id"], payload)
+            print(f"  ✓ updated  {domain} → 301 https://{apex}")
 
 
 def host_payload(entry, base_domain, forward_host, ssl_via_npm, letsencrypt_email):
@@ -402,6 +525,17 @@ def main():
                 payload["meta"] = found.get("meta", {})
             npm.update_host(found["id"], payload)
             print(f"  ✓ updated  {domain} → {payload['forward_scheme']}://{forward_host}:{payload['forward_port']}")
+
+    if WWW_ALIASES:
+        try:
+            redirections = npm.list_redirections()
+            certs = npm.certificates()
+        except (RuntimeError, urllib.error.URLError, OSError) as e:
+            print(f"WARN could not read NPM redirection hosts ({e}) — skipping www aliases",
+                  file=sys.stderr)
+        else:
+            ensure_www_aliases(npm, redirections, certs, technitium_url,
+                               bool(npm_host_ip))
 
     print("Done. When a certificate is issued for a host's domain, Cerulean")
     print("imports it into NPM and attaches it to the matching proxy host automatically.")
