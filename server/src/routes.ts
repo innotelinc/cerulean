@@ -801,99 +801,110 @@ router.delete("/certificates/:id", tenantGuard, (req, res) => {
 });
 
 // ── nginx proxy manager ────────────────────────────────────────────────
-router.get(
-  "/npm/hosts",
-  requireAuth,
-  asyncHandler(async (_req, res) => {
-    res.json(await npm.listProxyHosts());
-  }),
-);
+//
+// These are the routes that put a NAME on the edge, which is what publishing a
+// site ends in. They are reachable two ways — a signed-in session (`/npm/*`) and
+// a service key (`/service/npm/*`) — so the bodies live in functions that take
+// the tenant explicitly. Two copies of "create a proxy host" is how the two
+// paths drift, and the drift here is a name that only one of them can publish.
 
-router.get(
-  "/npm/certificates",
-  requireAuth,
-  asyncHandler(async (_req, res) => {
-    res.json(await npm.listCertificates());
-  }),
-);
+/** The tenant a session request belongs to. */
+function sessionTenantId(_req: import("express").Request, res: import("express").Response): number {
+  return tenantOf(res).id;
+}
 
-router.post(
-  "/npm/export-cert",
-  tenantGuard,
-  asyncHandler(async (req, res) => {
-    const cert = db.getCertificate(Number(req.body?.certificate_id), tenantOf(res).id);
-    if (!cert) {
-      res.status(404).json({ error: "Certificate not found" });
-      return;
-    }
-    if (!cert.certificate || !cert.key) {
-      res.status(409).json({ error: "Certificate material is not available yet" });
-      return;
-    }
-    const niceName =
-      String(req.body?.nice_name || "").trim() || `cerulean-${cert.domain}${cert.wildcard ? "-wildcard" : ""}`;
-    const npmCertId = await npm.importCertificate({
-      niceName,
-      domainNames: JSON.parse(cert.domains_json),
-      certificate: cert.certificate,
-      key: cert.key,
-    });
-    db.addActivity("npm-export", `Exported certificate for ${cert.domain} to nginx proxy manager`, `npm-cert=${npmCertId}`);
-    res.status(201).json({ npmCertificateId: npmCertId, niceName });
-  }),
-);
+type TenantId = (req: import("express").Request, res: import("express").Response) => number;
 
-router.post(
-  "/npm/hosts",
-  requireAuth,
-  asyncHandler(async (req, res) => {
-    const { domain, forward_host, forward_port, forward_scheme = "http", certificate_id, ssl_forced = true, http2_support = true } = req.body || {};
-    if (!domain || !forward_host || !forward_port) {
-      res.status(400).json({ error: "domain, forward_host and forward_port are required" });
-      return;
-    }
-    const host = await npm.createProxyHost({
-      domainNames: [String(domain).toLowerCase()],
-      forwardScheme: forward_scheme === "https" ? "https" : "http",
-      forwardHost: String(forward_host),
-      forwardPort: Number(forward_port),
-      certificateId: certificate_id !== undefined ? Number(certificate_id) : undefined,
-      sslForced: Boolean(ssl_forced),
-      http2Support: Boolean(http2_support),
-    });
-    db.addActivity("npm-host", `Created NPM proxy host ${domain} → ${forward_host}:${forward_port}`);
-    res.status(201).json(host);
-  }),
-);
+async function npmHostsList(
+  _req: import("express").Request,
+  res: import("express").Response,
+): Promise<void> {
+  res.json(await npm.listProxyHosts());
+}
 
-router.put(
-  "/npm/hosts/:id",
-  requireAuth,
-  asyncHandler(async (req, res) => {
-    const hosts = await npm.listProxyHosts();
-    const existing = hosts.find((h) => h.id === Number(req.params.id));
-    if (!existing) {
-      res.status(404).json({ error: "Proxy host not found" });
-      return;
-    }
-    const { forward_host, forward_port, forward_scheme, certificate_id, ssl_forced, http2_support, websocket_support } = req.body || {};
-    const updated = await npm.updateProxyHost(
-      existing.id,
-      {
-        ...existing,
-        forward_host: forward_host !== undefined ? String(forward_host) : existing.forward_host,
-        forward_port: forward_port !== undefined ? Number(forward_port) : existing.forward_port,
-        forward_scheme: forward_scheme === "https" ? "https" : forward_scheme !== undefined ? "http" : existing.forward_scheme,
-        ssl_forced: ssl_forced !== undefined ? Boolean(ssl_forced) : existing.ssl_forced,
-        http2_support: http2_support !== undefined ? Boolean(http2_support) : existing.http2_support,
-        allow_websocket_upgrade: websocket_support !== undefined ? Boolean(websocket_support) : existing.allow_websocket_upgrade ?? true,
-      },
-      certificate_id !== undefined ? Number(certificate_id) : existing.certificate_id,
-    );
-    db.addActivity("npm-host", `Updated NPM proxy host ${(existing.domain_names || []).join(", ")}`);
-    res.json(updated);
-  }),
-);
+async function npmCertificatesList(
+  _req: import("express").Request,
+  res: import("express").Response,
+): Promise<void> {
+  res.json(await npm.listCertificates());
+}
+
+/** Push a certificate's PEM material into NPM, returning NPM's own certificate id. */
+async function npmExportCertificate(
+  req: import("express").Request,
+  res: import("express").Response,
+  tenantId: number,
+): Promise<void> {
+  const cert = db.getCertificate(Number(req.body?.certificate_id), tenantId);
+  if (!cert) {
+    res.status(404).json({ error: "Certificate not found" });
+    return;
+  }
+  if (!cert.certificate || !cert.key) {
+    res.status(409).json({ error: "Certificate material is not available yet" });
+    return;
+  }
+  const niceName =
+    String(req.body?.nice_name || "").trim() || `cerulean-${cert.domain}${cert.wildcard ? "-wildcard" : ""}`;
+  const npmCertId = await npm.importCertificate({
+    niceName,
+    domainNames: JSON.parse(cert.domains_json),
+    certificate: cert.certificate,
+    key: cert.key,
+  });
+  db.addActivity("npm-export", `Exported certificate for ${cert.domain} to nginx proxy manager`, `npm-cert=${npmCertId}`);
+  res.status(201).json({ npmCertificateId: npmCertId, niceName });
+}
+
+async function npmHostCreate(
+  req: import("express").Request,
+  res: import("express").Response,
+): Promise<void> {
+  const { domain, forward_host, forward_port, forward_scheme = "http", certificate_id, ssl_forced = true, http2_support = true } = req.body || {};
+  if (!domain || !forward_host || !forward_port) {
+    res.status(400).json({ error: "domain, forward_host and forward_port are required" });
+    return;
+  }
+  const host = await npm.createProxyHost({
+    domainNames: [String(domain).toLowerCase()],
+    forwardScheme: forward_scheme === "https" ? "https" : "http",
+    forwardHost: String(forward_host),
+    forwardPort: Number(forward_port),
+    certificateId: certificate_id !== undefined ? Number(certificate_id) : undefined,
+    sslForced: Boolean(ssl_forced),
+    http2Support: Boolean(http2_support),
+  });
+  db.addActivity("npm-host", `Created NPM proxy host ${domain} → ${forward_host}:${forward_port}`);
+  res.status(201).json(host);
+}
+
+async function npmHostUpdate(
+  req: import("express").Request,
+  res: import("express").Response,
+): Promise<void> {
+  const hosts = await npm.listProxyHosts();
+  const existing = hosts.find((h) => h.id === Number(req.params.id));
+  if (!existing) {
+    res.status(404).json({ error: "Proxy host not found" });
+    return;
+  }
+  const { forward_host, forward_port, forward_scheme, certificate_id, ssl_forced, http2_support, websocket_support } = req.body || {};
+  const updated = await npm.updateProxyHost(
+    existing.id,
+    {
+      ...existing,
+      forward_host: forward_host !== undefined ? String(forward_host) : existing.forward_host,
+      forward_port: forward_port !== undefined ? Number(forward_port) : existing.forward_port,
+      forward_scheme: forward_scheme === "https" ? "https" : forward_scheme !== undefined ? "http" : existing.forward_scheme,
+      ssl_forced: ssl_forced !== undefined ? Boolean(ssl_forced) : existing.ssl_forced,
+      http2_support: http2_support !== undefined ? Boolean(http2_support) : existing.http2_support,
+      allow_websocket_upgrade: websocket_support !== undefined ? Boolean(websocket_support) : existing.allow_websocket_upgrade ?? true,
+    },
+    certificate_id !== undefined ? Number(certificate_id) : existing.certificate_id,
+  );
+  db.addActivity("npm-host", `Updated NPM proxy host ${(existing.domain_names || []).join(", ")}`);
+  res.json(updated);
+}
 
 /**
  * Remove a proxy host. This is the half of publishing that was missing: a name
@@ -905,25 +916,36 @@ router.put(
  * what was removed — and an id that is not there becomes a 404 here instead of a
  * silent success that reports a deletion which never happened.
  */
-router.delete(
-  "/npm/hosts/:id",
-  requireAuth,
-  asyncHandler(async (req, res) => {
-    const id = Number(req.params.id);
-    const hosts = await npm.listProxyHosts();
-    const existing = hosts.find((h) => h.id === id);
-    if (!existing) {
-      res.status(404).json({ error: "Proxy host not found" });
-      return;
-    }
-    await npm.deleteProxyHost(id);
-    db.addActivity(
-      "npm-host",
-      `Deleted NPM proxy host ${(existing.domain_names || []).join(", ")}`,
-    );
-    res.json({ deleted: true, id });
-  }),
+async function npmHostDelete(
+  req: import("express").Request,
+  res: import("express").Response,
+): Promise<void> {
+  const id = Number(req.params.id);
+  const hosts = await npm.listProxyHosts();
+  const existing = hosts.find((h) => h.id === id);
+  if (!existing) {
+    res.status(404).json({ error: "Proxy host not found" });
+    return;
+  }
+  await npm.deleteProxyHost(id);
+  db.addActivity(
+    "npm-host",
+    `Deleted NPM proxy host ${(existing.domain_names || []).join(", ")}`,
+  );
+  res.json({ deleted: true, id });
+}
+
+router.get("/npm/hosts", requireAuth, asyncHandler(npmHostsList));
+router.get("/npm/certificates", requireAuth, asyncHandler(npmCertificatesList));
+
+router.post(
+  "/npm/export-cert",
+  tenantGuard,
+  asyncHandler((req, res) => npmExportCertificate(req, res, sessionTenantId(req, res))),
 );
+router.post("/npm/hosts", requireAuth, asyncHandler(npmHostCreate));
+router.put("/npm/hosts/:id", requireAuth, asyncHandler(npmHostUpdate));
+router.delete("/npm/hosts/:id", requireAuth, asyncHandler(npmHostDelete));
 
 // ── Private PKI ─────────────────────────────────────────────────────────
 router.get(
@@ -1707,6 +1729,42 @@ router.post("/service/pki/certificates", serviceBridgeAuth(["pki:write", "pki", 
   const row = await pki.issueClientCertificate({ name: String(req.body?.name || ""), email: req.body?.email ? String(req.body.email) : undefined, validityDays: req.body?.validity_days !== undefined ? Number(req.body.validity_days) : undefined }, tenantId);
   res.status(201).json(row);
 }));
+
+// nginx proxy manager over the bridge. Publishing a site is the DNS record *and*
+// the name on the edge, and the DNS half was already here while the edge half
+// was session-only — so a stack with a service key could point a name at a host
+// and not put it on the edge, which is half a publish. Same bodies as `/npm/*`,
+// under `npm:*`, resolved to the key's own tenant.
+router.get(
+  "/service/npm/hosts",
+  serviceBridgeAuth(["npm", "npm:read", "*"]),
+  asyncHandler(npmHostsList),
+);
+router.get(
+  "/service/npm/certificates",
+  serviceBridgeAuth(["npm", "npm:read", "*"]),
+  asyncHandler(npmCertificatesList),
+);
+router.post(
+  "/service/npm/export-cert",
+  serviceBridgeAuth(["npm:write", "npm", "*"]),
+  asyncHandler((req, res) => npmExportCertificate(req, res, serviceTenantId(req))),
+);
+router.post(
+  "/service/npm/hosts",
+  serviceBridgeAuth(["npm:write", "npm", "*"]),
+  asyncHandler(npmHostCreate),
+);
+router.put(
+  "/service/npm/hosts/:id",
+  serviceBridgeAuth(["npm:write", "npm", "*"]),
+  asyncHandler(npmHostUpdate),
+);
+router.delete(
+  "/service/npm/hosts/:id",
+  serviceBridgeAuth(["npm:write", "npm", "*"]),
+  asyncHandler(npmHostDelete),
+);
 
 // ── Maintenance ─────────────────────────────────────────────────────────
 router.post(

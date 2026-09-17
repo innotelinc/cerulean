@@ -20,7 +20,16 @@ leans on. Four things are asserted:
      the `operator` role are configured, and an unauthenticated read is refused.
   4. The Technitium console is the DNS/DHCP admin plane and is host-networked, so
      it must listen on loopback + the docker0 gateway only. The shared
-     oauth2-proxy session store is checked the same way.
+     oauth2-proxy session store is the opposite case and is checked as such: it is
+     published on this host's LAN address ON PURPOSE, because every gateway on
+     every host shares one store and a gateway on another host cannot reach this
+     host's 172.17.0.1. What must hold there is the password, since a LAN
+     neighbour who can reach the port must not be able to read anyone's session.
+  5. The console's OWN sign-in is Authentik. Closing the port is only half of it:
+     a gateway in front of the console proves *someone* signed in and never *who*,
+     so the console would keep a password of its own. Its `/sso/login` is asked
+     with the headers the gateway sends, and it must leave for this IdP as the
+     client the provider has registered, for the callback it has registered.
 
 The temporary identities are deleted on the way out, including when a check
 fails. Nothing here is destructive: no container is started, stopped or edited.
@@ -34,6 +43,9 @@ Config (environment, falling back to this repo's .env):
     AUTHENTIK_BOOTSTRAP_TOKEN   Authentik API token (admin). Required.
     CERULEAN_SSO_BASE           base domain for the admin names
                                 (default NPM_BASE_DOMAIN, else cerulean.innotel.us)
+    TECHNITIUM_SSO_NAME         the console's public name
+                                (default dns.internal.innotel.us)
+    AUTHENTIK_TECHNITIUM_CLIENT_ID  the console's OIDC client (default technitium)
     LAN_IP                      the host's LAN address (default: auto-detected)
 
 Exit codes: 0 = pass, 1 = a check failed, 2 = cannot run (unconfigured or the
@@ -158,6 +170,13 @@ class Config:
                           default="cerulean-platform")
         self.lan_ip = (args.host_ip or pick("LAN_IP") or detect_lan_ip())
         self.session_store_host = pick("DOCKER_BRIDGE_GATEWAY", default=DOCKER_BRIDGE_GATEWAY)
+        # The console's own OIDC relying party, as scripts/technitium-sso.py
+        # configures it. Defaulted rather than required: the name is a property of
+        # this zone, and a deployment that renamed it says so in .env.
+        self.console_name = pick(
+            "TECHNITIUM_SSO_NAME", default="dns.internal.innotel.us"
+        ).strip("/")
+        self.console_client_id = pick("AUTHENTIK_TECHNITIUM_CLIENT_ID", default="technitium")
         self.vault_role = pick("VAULT_OIDC_ROLE", default="operator")
         self.vault_redirect = pick(
             "VAULT_OIDC_REDIRECT",
@@ -213,10 +232,17 @@ class Client:
                 return c.value
         return None
 
-    def get(self, url):
+    def get(self, url, headers=None):
         if url.startswith("/"):  # IdP-relative
             url = self.base + url
-        status, location, body = self._open(urllib.request.Request(url))
+        req = urllib.request.Request(url)
+        # Only used for the console, whose public name arrives as forwarded headers
+        # rather than as a Host: the gateway terminates the name and proxies to
+        # loopback, so without them the console forms a callback of
+        # `http://127.0.0.1:5380/sso/callback` and the provider refuses it.
+        for key, value in (headers or {}).items():
+            req.add_header(key, value)
+        status, location, body = self._open(req)
         self._trace("GET", url, status)
         return status, location, body
 
@@ -339,6 +365,22 @@ def check(condition, message):
         print(f"  {OK}  {message}")
     else:
         raise CheckFailed(message)
+
+
+def redis_probe(host, port=SESSION_STORE_PORT, timeout=4.0):
+    """Redis's own protocol: `redis-cli` is not assumed on the host.
+
+    A password-protected server answers an unauthenticated PING with
+    `-NOAUTH Authentication required.`, which is the answer this check wants — an
+    `+PONG` is the finding, because it means every session in the shared store is
+    readable by anything that can open the port.
+    """
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as conn:
+            conn.sendall(b"PING\r\n")
+            return conn.recv(128).decode("utf-8", "replace")
+    except OSError as err:
+        return f"(no answer: {err})"
 
 
 def port_state(ip, port, timeout=4.0):
@@ -545,12 +587,49 @@ def main():
               f"console: {cfg.session_store_host}:{CONSOLE_PORT} answers "
               f"(the address containers dial)")
 
-        # ── 7. the shared session store is off the LAN too ─────────────────
-        print("[7] the shared SSO session store is off the LAN")
-        check(not port_state(cfg.lan_ip, SESSION_STORE_PORT),
-              f"session store: {cfg.lan_ip}:{SESSION_STORE_PORT} refused on the LAN")
+        # ── 7. the console's own sign-in is Authentik, not a password ──────
+        # Closing the port is only half of it. The console has a login of its own,
+        # and a gateway in front of it cannot replace that login — it can only prove
+        # that *someone* signed in, never *who*. Technitium speaks OIDC itself, so
+        # the assertion is that its own sign-in button leaves for this IdP, with the
+        # callback the provider has registered: a callback that is not registered
+        # dies at the IdP after the person has already signed in.
+        print("[7] the Technitium console signs in through Authentik")
+        status, location, _ = Client(cfg).get(
+            f"http://127.0.0.1:{CONSOLE_PORT}/sso/login",
+            {
+                "X-Forwarded-Proto": "https",
+                "X-Forwarded-Host": cfg.console_name,
+            },
+        )
+        check(status == 302 and (location or "").startswith(cfg.idp),
+              f"console /sso/login -> HTTP {status} to {(location or '-')[:64]}")
+        check(f"client_id={cfg.console_client_id}" in (location or ""),
+              f"console signs in as client_id={cfg.console_client_id} "
+              f"(got {(location or '-')[:96]})")
+        want_redirect = urllib.parse.quote(f"https://{cfg.console_name}/sso/callback", safe="")
+        check(f"redirect_uri={want_redirect}" in (location or ""),
+              f"console sends redirect_uri={urllib.parse.unquote(want_redirect)} "
+              f"(the provider must have it registered)")
+
+        # ── 8. the shared session store is shared, and password-protected ──
+        # NOT "off the LAN". Every SSO gateway on every host shares ONE store, so a
+        # gateway on another host has to be able to dial this one, and that is over
+        # the LAN address — 172.17.0.1 is each host's own docker0. This check used
+        # to assert the LAN bind was absent, which the deployment deliberately does
+        # not do, so it failed on a correct install and would have been trained away.
+        # The property that matters is the password: a LAN neighbour who can open
+        # the port must still not be able to read a session.
+        print("[8] the shared SSO session store is shared by design, and protected")
         check(port_state(cfg.session_store_host, SESSION_STORE_PORT),
-              f"session store: {cfg.session_store_host}:{SESSION_STORE_PORT} answers")
+              f"session store: {cfg.session_store_host}:{SESSION_STORE_PORT} answers "
+              f"(the address this host's containers dial)")
+        check(port_state(cfg.lan_ip, SESSION_STORE_PORT),
+              f"session store: {cfg.lan_ip}:{SESSION_STORE_PORT} answers "
+              f"(the sibling hosts' gateways dial this)")
+        reply = redis_probe(cfg.session_store_host)
+        check(reply.startswith("-NOAUTH") or reply.startswith("-ERR"),
+              f"session store refuses an unauthenticated PING ({reply.strip()[:64] or 'no reply'})")
 
         if failures:
             print(f"\n{BAD} — {failures} target(s) did not pass", file=sys.stderr)

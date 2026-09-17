@@ -28,7 +28,7 @@ the canonical single-responsibility architecture.
 
 - Authentik — identity, SSO, organizations
 - HashiCorp Vault — secrets, TLS private keys, CA keys
-- Technitium DNS Server — DNS, DHCP, blocking backend (bundled via `technitium/dns-server`, or remote via `TECHNITIUM_URL`)
+- Technitium DNS Server — DNS, DHCP, blocking backend (bundled via `technitium/dns-server`, or remote via `TECHNITIUM_URL`). Its console signs in through Authentik itself (`scripts/technitium-sso.py`) behind the `cerulean-technitium-sso` gateway: the gateway keeps the console off the LAN, the console's own OIDC says *who* is on it.
 - CRS home `https://lab.innotel.us` + regional masters (slaves register & pull replica when online; offline → `isolated-master` self-sufficient; legacy `SERVER_REGISTER_URL` still honored)
 
 ## Explicitly does NOT own

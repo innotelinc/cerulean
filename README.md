@@ -262,6 +262,18 @@ exists in this model — verification is a real login against a real host.
 The pattern, and the first implementation (the NPM admin UI), are documented in
 `1-primary/npm/docs/stack.md`.
 
+**When the upstream can do OIDC itself, the gateway is only half the job.** A
+gateway proves *someone* signed in; it cannot tell the app *who*, so the app still
+has to ask for a password of its own — which is a credential outside Authentik,
+never rotated with the others. The Technitium console (the DNS/DHCP admin plane)
+is the case in point: it speaks OIDC itself, the gateway stays in front of it
+because the console answers nothing on the LAN, and
+`scripts/technitium-sso.py` points the console's own sign-in at Cerulean
+Authentik with a group map. `scripts/verify-sso.py` asserts it: the console's
+`/sso/login` must leave for this IdP as the client the provider has registered,
+for the callback it has registered — a callback that is missing dies at the IdP
+after the person has already signed in.
+
 ## Using Cerulean
 
 1. **Orchestrator** — check Technitium reachability, server identity (`<serverId>.lab.innotel.us`), wildcard cert (PKI/ACME), DHCP scopes & leases, and ad-blocking in one place; register or rotate the wildcard there.
@@ -393,7 +405,9 @@ pin a different release.
 
 The OIDC provider and application are created automatically by
 `scripts/authentik-setup.py` (it logs in with `AUTHENTIK_ADMIN_USER` /
-`AUTHENTIK_ADMIN_PASSWORD`). On the very first boot, create the Authentik admin
+`AUTHENTIK_ADMIN_PASSWORD`). Any other app gets its own provider with the same
+script and a slug — `python3 scripts/authentik-setup.py technitium` creates the
+console's, reading `AUTHENTIK_TECHNITIUM_*` from `.env` (setup.sh does both). On the very first boot, create the Authentik admin
 with `docker compose --profile authentik exec authentik-server ak
 createsuperuser`, or set `AUTHENTIK_BOOTSTRAP_PASSWORD` before the first start.
 The `auth.cerulean.innotel.us` proxy host fronts Authentik on port 9000.
