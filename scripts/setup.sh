@@ -257,6 +257,44 @@ if [ "$WITH_AUTHENTIK" = "1" ] || [ -n "$AUTHENTIK_ISSUER_URL" ]; then
   echo "      docker compose --profile authentik exec authentik-server ak createsuperuser"
   echo "  (or set AUTHENTIK_BOOTSTRAP_PASSWORD in .env before the first start)."
   echo "  OIDC: ${AUTHENTIK_ISSUER_URL}  ·  redirect: ${REDIRECT_URI}"
+
+  # ── the Technitium console's own sign-in ──────────────────────────────────
+  # The console is part of this stack (the `technitium` profile), so its OIDC
+  # client is created here rather than left to the operator: the console's
+  # gateway proves *someone* signed in and never *who*, so without this the
+  # console keeps a password of its own and the DNS/DHCP admin plane has a
+  # credential outside Authentik. A provider that does not exist is a sign-in
+  # button that fails at the callback, after the person has already signed in.
+  if command -v python3 >/dev/null 2>&1 && command -v openssl >/dev/null 2>&1; then
+    if [ -z "$(env_get AUTHENTIK_TECHNITIUM_CLIENT_SECRET)" ]; then
+      env_set AUTHENTIK_TECHNITIUM_CLIENT_SECRET \
+        "$(openssl rand -hex 32)"
+      if [ -z "$(env_get AUTHENTIK_TECHNITIUM_CLIENT_ID)" ]; then
+        env_set AUTHENTIK_TECHNITIUM_CLIENT_ID technitium
+      fi
+      if [ -z "$(env_get AUTHENTIK_TECHNITIUM_REDIRECT_URI)" ]; then
+        env_set AUTHENTIK_TECHNITIUM_REDIRECT_URI \
+          "https://dns.internal.$(env_get NPM_BASE_DOMAIN "${SERVER_ID:-cerulean}.${LAB_DOMAIN}")/sso/callback"
+      fi
+      ok "Generated OIDC client secret for the Technitium console"
+    fi
+    # Real if-statements, not `A && B`: under `set -e` a statement whose test fails
+    # ends the script, which is how a probe turns into a silent early exit.
+    if python3 "${SCRIPT_DIR}/authentik-setup.py" technitium; then
+      ok "Technitium console OIDC provider is configured"
+    else
+      warn "the console's OIDC provider was not created — re-run:"
+      warn "  python3 scripts/authentik-setup.py technitium"
+    fi
+    # Only when the console is actually answering: it binds loopback + docker0, so
+    # a remote or not-yet-started console is "cannot judge", not a failure.
+    if python3 "${SCRIPT_DIR}/technitium-sso.py" --check; then
+      ok "Technitium console signs in through Authentik"
+    else
+      warn "the console's own SSO is not configured yet — with the console up, run:"
+      warn "  python3 scripts/technitium-sso.py"
+    fi
+  fi
 fi
 
 echo
