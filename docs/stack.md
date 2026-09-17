@@ -39,6 +39,42 @@ the canonical single-responsibility architecture.
 
 > **Current state:** Technitium HTTP API replaces RFC2136/nsupdate/SSH+BIND. CRS master/slave to `lab.innotel.us` + service-key bridge for other stacks. Service API mirrors domains/certs/DNS/DHCP/blocking/PKI. Default wildcard 90-day, offline-first.
 
+## Roadmap — where Cerulean stands (17 September 2026)
+
+**Live and verified on the deployment:**
+
+- [x] **Trust plane is the estate's front door** — Authentik (SSO), the NPM edge,
+      Technitium DNS, and Vault are the four containers that stayed up through the
+      17 Sep capacity pass on `.46`; every public host in the estate resolves and
+      terminates here.
+- [x] **The Technitium console signs in through Authentik** — `scripts/technitium-sso.py`
+      configures the console's own OIDC client (`authentik-setup.py technitium` creates
+      it); `verify-sso.py` proves the whole posture end to end. The DNS/DHCP admin
+      plane has no password of its own left.
+- [x] **Estate hostnames provisioned through Cerulean** — `admin.distro.innotel.us`
+      DNS + NPM host added (idempotent), joining `distro.` and `cp.distro.` on the
+      wildcard; Olympus preview names (`*-preview.studio.olympus.innotel.us`) register
+      through the service API.
+- [x] **OIDC callback lists** — the estate's multi-origin apps (Distro, Zeus) now
+      register every origin they answer on; Cerulean's `AUTHENTIK_*_REDIRECT_URI`
+      takes the comma-separated list and provisioning is idempotent.
+- [x] **Nightly disk hygiene** — `scripts/docker-cleanup.sh` (canonical here in ips,
+      mirrored into every member repo) runs at 04:17 on all four docker hosts.
+
+**Open, in priority order:**
+
+1. **Per-tenant Technitium drift check** — a tenant-registered provider is used
+      for record operations but nothing compares its zones to Cerulean's own view.
+      A scheduled audit would catch a tenant whose Technitium silently diverges.
+2. **Vault-first everywhere** — Monarch and Capstone still carry resolved values
+      in host `.env` files (no runtime resolver yet). Cerulean could offer a
+      `vault://`-resolving env-file sidecar so consumers stop storing plaintext.
+3. **www aliases beyond the big three** — `WWW_ALIASES` covers capstone/olympus/
+      monarch; distro and zeus apexes deserve the same 301 treatment.
+4. **Renewal sweep evidence in the dashboard** — the sweep runs; its last-run
+      result should be visible per certificate, not only in logs.
+
+
 ## Deployment — Technitium
 
 Bundled (recommended, offline-ready):
