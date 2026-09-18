@@ -1,37 +1,41 @@
 #!/usr/bin/env python3
 """tenant-dns-drift.py — audit per-tenant Technitium providers against Cerulean's view.
 
-Cerueleun lets a tenant register its own Technitium server (Settings → DNS
+Cerulean lets a tenant register its own Technitium server (Settings → DNS
 Providers): record operations on that tenant's zones run against the tenant's
 **default** provider, not the platform's. That is a second writer for the
 tenant's DNS, and nothing compared the two — a tenant whose Technitium loses a
 zone (restore, upgrade, fat-fingered delete) diverges silently while Cerulean's
 dashboard keeps saying the zone exists.
 
-What this checks, per registered provider:
+What this checks, per tenant with a registered default provider:
 
-  1. **Reachability** — the provider answers `/api/zones/list` with its
-     credentials.
-  2. **Zone presence** — every zone Cerulean knows for that tenant exists on
-     the tenant's own Technitium (and vice versa: zones only the tenant knows
-     about are reported as tenant-only).
-  3. **SOA serial sanity** (optional, `--deep`) — the apex SOA serial on the
-     tenant's server is compared with the platform's for zones that exist on
-     both, so a stale restore is visible.
+  1. **Reachability** — the provider's URL answers at all.
+  2. **Zone presence** — every zone Cerulean knows for that tenant is checked
+     against the zones the provider actually serves. Presence on the provider
+     is read through Cerulean's service bridge so the audit never needs (and
+     never receives) provider credentials; with optional direct credentials in
+     the environment the script talks to the provider's Technitium itself.
+  3. **SOA serial sanity** (`--deep`) — for shared zones, the apex SOA serial
+     the tenant's provider serves (records endpoint, tenant-scoped) is compared
+     with the platform Technitium's serial for the same zone, so a stale
+     restore is visible.
 
 Credentials come from the Cerulean deployment itself, via its service API:
 
   CERULEAN_API_URL   e.g. https://api.cerulean.innotel.us  (or http://host:3003)
-  CERULEAN_TOKEN     a service key (`ceru_…`) with `dns:read` scope, or
+  CERULEAN_TOKEN     a service key (`ceru_…`) with dns/tenant read scopes, or
   CERULEAN_EMAIL / CERULEAN_PASSWORD   an operator login instead
+
+Optional direct-provider check (skipped when unset):
+  TECHNITIUM_URL / TECHNITIUM_TOKEN   or  TECHNITIUM_USER / TECHNITIUM_PASSWORD
 
 Read-only: the script never writes to either Technitium. Exit codes:
   0 every provider matches · 1 drift or unreachability found ·
   2 the check itself could not run (bad credentials, no providers).
 
 Cron (on the Cerulean host):
-  23 5 * * * root CERULEAN_API_URL=… CERULEAN_TOKEN=… \\
-      /usr/local/sbin/tenant-dns-drift.py --quiet
+  23 5 * * * root /usr/local/sbin/tenant-dns-drift-cron.sh --quiet
 """
 
 from __future__ import annotations
@@ -51,19 +55,23 @@ TIMEOUT = 15
 # ── Cerulean service API ─────────────────────────────────────────────────────
 
 class Cerulean:
-    def __init__(self, base: str, token: str = "", email: str = "", password: str = ""):
+    def __init__(self, base: str, token: str = ""):
         self.base = base.rstrip("/")
         self.token = token
-        self.email = email
-        self.password = password
 
-    def _headers(self) -> dict[str, str]:
+    def _headers(self, tenant: str = "") -> dict[str, str]:
         if not self.token:
             raise SystemExit("tenant-dns-drift: no Cerulean credential (set CERULEAN_TOKEN)")
-        return {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}
+        hdr = {
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/json",
+        }
+        if tenant:
+            hdr["X-Cerulean-Tenant"] = tenant
+        return hdr
 
-    def get(self, path: str) -> object:
-        req = urllib.request.Request(f"{self.base}{path}", headers=self._headers())
+    def get(self, path: str, tenant: str = "") -> object:
+        req = urllib.request.Request(f"{self.base}{path}", headers=self._headers(tenant))
         try:
             with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
                 return json.load(resp)
@@ -87,32 +95,47 @@ def login_token(base: str, email: str, password: str) -> str:
         raise SystemExit(f"tenant-dns-drift: Cerulean login failed (HTTP {exc.code})") from exc
 
 
-# ── Technitium client (read-only) ────────────────────────────────────────────
+# ── Technitium clients ───────────────────────────────────────────────────────
 
-def technitium_zones(url: str, token: str = "", user: str = "", password: str = "") -> set[str]:
-    """Return the set of zone names a Technitium server serves."""
+def reachable(url: str) -> tuple[bool, str]:
+    """A provider is reachable when its URL answers with any HTTP status."""
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        req = urllib.request.Request(url.rstrip("/"), method="GET")
+        with urllib.request.urlopen(req, timeout=TIMEOUT, context=ctx) as resp:
+            return True, f"HTTP {resp.status}"
+    except urllib.error.HTTPError as exc:
+        return True, f"HTTP {exc.code}"  # an answer at all — endpoint is alive
+    except Exception as exc:  # noqa: BLE001 — any transport failure = unreachable
+        return False, str(exc)
+
+
+def direct_technitium_zones(url: str) -> set[str] | None:
+    """Zones on a Technitium server using env credentials, or None when the
+    operator did not provide them / the URL does not match."""
+    env_url = (os.environ.get("TECHNITIUM_URL") or "").strip().rstrip("/")
+    if not env_url or env_url != url.rstrip("/"):
+        return None
+    token = (os.environ.get("TECHNITIUM_TOKEN") or "").strip()
+    user = (os.environ.get("TECHNITIUM_USER") or "").strip()
+    password = (os.environ.get("TECHNITIUM_PASSWORD") or "").strip()
+    if not token and not (user and password):
+        return None
     base = url.rstrip("/")
-    if token:
-        auth = {"token": token}
-    elif user and password:
-        auth = {"user": user, "pass": password}
-    else:
-        raise ValueError("provider has neither an API token nor user/password")
-
-    # Login exchange when only user/password is available.
-    if "user" in auth:
-        qs = urllib.parse.urlencode(auth)
+    if not token:
+        qs = urllib.parse.urlencode({"user": user, "pass": password})
         req = urllib.request.Request(f"{base}/api/user/login?{qs}")
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
             payload = json.load(resp)
         if payload.get("status") != "ok":
             raise RuntimeError(f"login failed: {payload.get('errorMessage')}")
-        auth = {"token": payload["token"]}
-
+        token = str(payload["token"])
     qs = urllib.parse.urlencode({"pageNumber": 1, "zonesPerPage": 1000})
     req = urllib.request.Request(
         f"{base}/api/zones/list?{qs}",
-        headers={"Authorization": f"Bearer {auth['token']}"},
+        headers={"Authorization": f"Bearer {token}"},
     )
     with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
         payload = json.load(resp)
@@ -122,24 +145,12 @@ def technitium_zones(url: str, token: str = "", user: str = "", password: str = 
     return {str(z.get("name", "")).rstrip(".").lower() for z in zones if z.get("name")}
 
 
-def soa_serial(url: str, token: str, zone: str) -> int | None:
-    """The apex SOA serial for one zone, or None when it cannot be read."""
-    base = url.rstrip("/")
-    qs = urllib.parse.urlencode({"zone": zone, "type": "SOA", "listZone": True})
-    req = urllib.request.Request(
-        f"{base}/api/zones/records/get?{qs}",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-            payload = json.load(resp)
-    except (urllib.error.HTTPError, urllib.error.URLError):
+def soa_serial_from_records(records: object) -> int | None:
+    if not isinstance(records, list):
         return None
-    records = (payload.get("response") or {}).get("records") or []
     for record in records:
-        if str(record.get("type", "")).upper() == "SOA":
-            # SOA rdata: <mname> <rname> <serial> …
-            parts = str(record.get("data", "")).split()
+        if str((record or {}).get("type", "")).upper() == "SOA":
+            parts = str((record or {}).get("data", "")).split()
             if len(parts) >= 3 and parts[2].isdigit():
                 return int(parts[2])
     return None
@@ -149,7 +160,7 @@ def soa_serial(url: str, token: str, zone: str) -> int | None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Audit per-tenant Technitium providers against Cerulean's view.")
-    parser.add_argument("--deep", action="store_true", help="also compare apex SOA serials for shared zones")
+    parser.add_argument("--deep", action="store_true", help="also compare apex SOA serials (tenant provider vs platform)")
     parser.add_argument("--quiet", action="store_true", help="print only problems (cron-friendly)")
     parser.add_argument("--json", action="store_true", help="machine-readable report on stdout")
     args = parser.parse_args()
@@ -169,8 +180,7 @@ def main() -> int:
 
     api = Cerulean(base, token=token)
 
-    # Tenants with their registered providers and the zones Cerulean knows.
-    tenants = api.get("/api/tenants")
+    tenants = api.get("/api/service/tenants")
     if isinstance(tenants, dict):
         tenants = tenants.get("tenants") or tenants.get("results") or []
 
@@ -180,22 +190,20 @@ def main() -> int:
     for tenant in tenants:
         if not isinstance(tenant, dict):
             continue
-        tenant_id = tenant.get("id") or tenant.get("slug") or ""
-        tenant_name = tenant.get("name") or tenant.get("slug") or str(tenant_id)
-        # Header switch: the service API scopes per tenant.
-        api_scoped = Cerulean(base, token=token)
+        tenant_slug = str(tenant.get("slug") or tenant.get("id") or "")
+        tenant_name = tenant.get("name") or tenant_slug
 
-        providers = api_scoped.get("/api/dns/providers")
+        providers = api.get("/api/service/dns/providers", tenant=tenant_slug)
         if isinstance(providers, dict):
             providers = providers.get("providers") or []
-        rows = [p for p in providers if isinstance(p, dict) and (p.get("isDefault") or len(providers) == 1)]
-        if not rows:
-            # Tenant falls back to the platform Technitium — nothing to drift.
+        own = [p for p in providers if isinstance(p, dict) and p.get("isDefault")]
+        if not own:
             if not args.quiet:
                 print(f"{tenant_name}: no own provider (platform fallback) — ok")
             continue
 
-        domains = api_scoped.get("/api/domains")
+        # Zones Cerulean knows for this tenant.
+        domains = api.get("/api/service/domains", tenant=tenant_slug)
         if isinstance(domains, dict):
             domains = domains.get("domains") or domains.get("results") or []
         cerulean_zones = {
@@ -204,60 +212,70 @@ def main() -> int:
             if isinstance(d, dict) and (d.get("name") or d.get("zone"))
         }
 
-        for provider in rows:
+        for provider in own:
             name = provider.get("name") or "(unnamed)"
             url = provider.get("url") or ""
-            ptok = provider.get("apiToken") or ""
-            user = provider.get("user") or ""
-            password = provider.get("password") or ""
-            entry: dict = {"tenant": tenant_name, "provider": name, "url": url}
+            entry: dict = {"tenant": tenant_name, "provider": name, "url": url,
+                           "zonesOnCerulean": len(cerulean_zones)}
 
-            try:
-                tenant_zones = technitium_zones(url, ptok, user, password)
-                entry["reachable"] = True
-            except Exception as exc:  # noqa: BLE001 — one bad provider must not stop the audit
-                entry["reachable"] = False
-                entry["error"] = str(exc)
+            ok, detail = reachable(url) if url else (False, "no url")
+            entry["reachable"] = ok
+            if not ok:
+                entry["error"] = detail
                 problems += 1
                 report.append(entry)
                 if not args.quiet:
-                    print(f"{tenant_name} [{name}] {url}: UNREACHABLE — {exc}")
+                    print(f"{tenant_name} [{name}] {url}: UNREACHABLE — {detail}")
                 continue
 
-            missing_on_tenant = sorted(cerulean_zones - tenant_zones)
-            tenant_only = sorted(tenant_zones - cerulean_zones)
-            entry["zonesOnCerulean"] = len(cerulean_zones)
-            entry["zonesOnProvider"] = len(tenant_zones)
-            entry["missingOnTenant"] = missing_on_tenant
-            entry["tenantOnly"] = tenant_only
+            # Zone presence: prefer direct env credentials when provided.
+            provider_zones: set[str] | None = None
+            try:
+                provider_zones = direct_technitium_zones(url)
+            except Exception as exc:  # noqa: BLE001
+                entry["directCheckError"] = str(exc)
 
-            drift = bool(missing_on_tenant)
-            if args.deep and not drift:
+            missing_on_tenant: list[str] = []
+            if provider_zones is not None:
+                missing_on_tenant = sorted(cerulean_zones - provider_zones)
+                entry["zonesOnProvider"] = len(provider_zones)
+                entry["missingOnTenant"] = missing_on_tenant
+                entry["tenantOnly"] = sorted(provider_zones - cerulean_zones)
+            elif not args.quiet:
+                print(f"{tenant_name} [{name}]: zone-presence via direct provider credentials not "
+                      f"configured (set TECHNITIUM_URL/TOKEN to enable)")
+
+            if args.deep:
                 serial_drift = []
-                ptok_effective = ptok
-                if not ptok_effective and user and password:
-                    qs = urllib.parse.urlencode({"user": user, "pass": password})
+                for zone in sorted(cerulean_zones):
                     try:
-                        with urllib.request.urlopen(f"{url.rstrip('/')}/api/user/login?{qs}", timeout=TIMEOUT) as resp:
-                            ptok_effective = str(json.load(resp).get("token") or "")
-                    except Exception:  # noqa: BLE001
-                        ptok_effective = ""
-                for zone in sorted(cerulean_zones & tenant_zones):
-                    local = soa_serial(url, ptok_effective, zone)
-                    if local is None:
-                        continue
-                    serial_drift.append({"zone": zone, "providerSerial": local})
+                        tenant_rec = api.get(
+                            f"/api/service/dns/records?zone={urllib.parse.quote(zone)}",
+                            tenant=tenant_slug,
+                        )
+                        platform_rec = api.get(f"/api/service/dns/records?zone={urllib.parse.quote(zone)}")
+                    except SystemExit:
+                        raise
+                    t_serial = soa_serial_from_records(tenant_rec)
+                    p_serial = soa_serial_from_records(platform_rec)
+                    if t_serial is not None and p_serial is not None and t_serial != p_serial:
+                        serial_drift.append({"zone": zone, "providerSerial": t_serial, "platformSerial": p_serial})
                 if serial_drift:
                     entry["soa"] = serial_drift
 
-            if drift:
+            drifted = bool(missing_on_tenant) or bool(entry.get("soa"))
+            if drifted:
                 problems += 1
                 if not args.quiet:
-                    print(f"{tenant_name} [{name}] {url}: DRIFT — {len(missing_on_tenant)} zone(s) Cerulean knows are missing on the tenant's Technitium:")
+                    print(f"{tenant_name} [{name}] {url}: DRIFT — "
+                          f"{len(missing_on_tenant)} zone(s) missing on the tenant's Technitium, "
+                          f"{len(entry.get('soa', []))} SOA serial mismatch(es)")
                     for zone in missing_on_tenant[:20]:
                         print(f"    - {zone}")
+                    for s in entry.get("soa", [])[:20]:
+                        print(f"    - {s['zone']}: provider serial {s['providerSerial']} vs platform {s['platformSerial']}")
             elif not args.quiet:
-                print(f"{tenant_name} [{name}] {url}: ok ({entry['zonesOnProvider']} zones, Cerulean knows {entry['zonesOnCerulean']})")
+                print(f"{tenant_name} [{name}] {url}: ok ({detail}; Cerulean knows {len(cerulean_zones)} zone(s))")
             report.append(entry)
 
     if args.json:

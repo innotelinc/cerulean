@@ -1683,6 +1683,27 @@ router.get("/service/certificates/:id/material", serviceBridgeAuth(["certs", "ce
   res.json({ certificate: cert.certificate, key: cert.key });
 });
 
+// Read-only visibility for estate automation: which tenants registered their own
+// DNS provider, and which zones Cerulean tracks per tenant. No secrets are
+// returned — only connection shape (url, hasToken/hasUserPass), so auditors can
+// reach the provider themselves with credentials they already hold.
+router.get("/service/tenants", serviceBridgeAuth(["tenant", "tenant:read", "dns", "dns:read", "*"]), (_req, res) => {
+  res.json(db.listTenants().map((t) => ({ id: t.id, slug: t.slug, name: t.name, createdAt: t.created_at })));
+});
+
+router.get("/service/dns/providers", serviceBridgeAuth(["tenant", "tenant:read", "dns", "dns:read", "*"]), (req, res) => {
+  const rows = db.listDnsProviders(serviceTenantId(req)).map((p) => ({
+    id: p.id,
+    name: p.name,
+    kind: p.kind,
+    isDefault: p.is_default === 1,
+    url: p.url ?? (p.host ? `http://${p.host}:${p.port}` : null),
+    hasApiToken: Boolean(p.api_token),
+    hasUserPass: Boolean(p.user && p.password),
+  }));
+  res.json(rows);
+});
+
 router.get("/service/dns/records", serviceBridgeAuth(["dns", "dns:read", "domains", "*"]), asyncHandler(async (req, res) => {
   const zone = String(req.query.zone || "").trim().toLowerCase().replace(/\.$/, "");
   if (!zone) { res.status(400).json({ error: "?zone= is required" }); return; }
