@@ -46,6 +46,7 @@ Authentik group membership the same way Cerulean does.
 
 import json
 import os
+import re
 import sqlite3
 import sys
 import urllib.error
@@ -384,6 +385,22 @@ def main():
             ak.create("/core/groups/", {"name": slug, "is_superuser": False})
             print(f"  ✓ created tenant group '{slug}'")
 
+    # ── Paid-tier groups ────────────────────────────────────────────────
+    # Revenue flow: Magnate's Stripe webhook adds members on checkout and
+    # removes them on cancellation, so every consumer gate that checks the
+    # `groups` claim (Distro entitlements, Olympus quotas, Jellyfin LDAP)
+    # follows billing with no per-service wiring. Names come from
+    # PAID_GROUPS (space/comma separated); the plain group is always made,
+    # per-tier groups are only created when listed.
+    paid_env = env("PAID_GROUPS", "paid_users paid_pro")
+    paid_groups = [g for g in re.split(r"[\s,]+", paid_env) if g]
+    for group_name in paid_groups:
+        if ak.list(f"/core/groups/?name={urllib.parse.quote(group_name)}"):
+            print(f"  ✓ paid group '{group_name}' exists")
+        else:
+            ak.create("/core/groups/", {"name": group_name, "is_superuser": False})
+            print(f"  ✓ created paid group '{group_name}'")
+
     app_name = env_for("APP_NAME", app_slug.capitalize())
     print()
     print("Done. Sign in to Authentik once as an admin, then open")
@@ -394,6 +411,7 @@ def main():
     print("Users/groups are managed in Authentik; the provider is "
           f"'{app_name}'.")
     print(f"Add tenant administrators to '{platform_group}' to make them platform admins.")
+    print(f"Paid subscribers are managed by Magnate's billing webhook in: {' '.join(paid_groups)}.")
     return 0
 
 
