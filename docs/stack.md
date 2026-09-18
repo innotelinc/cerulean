@@ -128,3 +128,18 @@ See [vault-setup.md](vault-setup.md).
 ---
 
 *Cerulean · TrustOps (Technitium master orchestrator) · [Innotel Platform Stack](https://github.com/innotelinc/innotel-platform-stack)*
+
+### Paid-tier groups (2026-09-18)
+
+`scripts/authentik-setup.py` now creates **paid-tier Authentik groups**
+(`PAID_GROUPS`, default `paid_users paid_pro`) at bootstrap. Magnate's Stripe
+webhook is the member manager — checkout grants, cancellation/past-due
+revokes, return-to-active re-grants — so every consumer that reads the
+`groups` claim (Distro entitlements, Olympus quotas, Jellyfin's LDAP filter)
+follows revenue without per-service wiring.
+
+Magnate's Stripe keys now live in this Vault (`cerulean/magnate/stripe`),
+resolved at container start through the Zeus-style standalone resolver; the
+stack's `.env` carries only `vault://` refs. `magnate` was added to
+`VAULT_PRODUCT_TOKENS`, so the platform mints and renews its path-scoped
+token like every other product.
