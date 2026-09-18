@@ -120,11 +120,14 @@ services:
     restart: unless-stopped
     environment:
       OAUTH2_PROXY_PROVIDER: oidc
-      # Endpoints are explicit (no discovery): Authentik advertises its *base*
-      # URL as the issuer while the app-scoped endpoints live under
-      # /application/o/<slug>/, which go-oidc's discovery check would reject.
+      # Endpoints are explicit (no discovery). The issuer is the APP-SCOPED one,
+      # because that is the value Authentik puts in the id_token's `iss`:
+      # oauth2-proxy verifies `iss` against --oidc-issuer-url even with
+      # --skip-oidc-discovery, so the bare base here makes every callback die
+      # with `oidc: id token issued by a different provider` -> HTTP 500 on
+      # /oauth2/callback (reproduced on v7.8.2).
       OAUTH2_PROXY_SKIP_OIDC_DISCOVERY: "true"
-      OAUTH2_PROXY_OIDC_ISSUER_URL: ${SSO_AUTHENTIK_BASE:-https://auth.cerulean.innotel.us}/
+      OAUTH2_PROXY_OIDC_ISSUER_URL: ${SSO_AUTHENTIK_BASE:-https://auth.cerulean.innotel.us}/application/o/${SSO_APP_SLUG:-innotel-app-gateway}/
       OAUTH2_PROXY_LOGIN_URL: ${SSO_AUTHENTIK_BASE:-https://auth.cerulean.innotel.us}/application/o/authorize/
       OAUTH2_PROXY_REDEEM_URL: ${SSO_AUTHENTIK_BASE:-https://auth.cerulean.innotel.us}/application/o/token/
       OAUTH2_PROXY_PROFILE_URL: ${SSO_AUTHENTIK_BASE:-https://auth.cerulean.innotel.us}/application/o/userinfo/
@@ -174,7 +177,7 @@ services:
   authentik-server:
     mem_limit: 1500m
     memswap_limit: 1500m
-    image: ghcr.io/goauthentik/server:${AUTHENTIK_IMAGE_TAG:-2026.8.2}
+    image: ghcr.io/goauthentik/server:${AUTHENTIK_IMAGE_TAG:-2026.8.3}
     container_name: cerulean-authentik
     profiles: ["authentik"]
     restart: unless-stopped
@@ -204,7 +207,7 @@ services:
         condition: service_healthy
 
   authentik-worker:
-    image: ghcr.io/goauthentik/server:${AUTHENTIK_IMAGE_TAG:-2026.8.2}
+    image: ghcr.io/goauthentik/server:${AUTHENTIK_IMAGE_TAG:-2026.8.3}
     container_name: cerulean-authentik-worker
     profiles: ["authentik"]
     restart: unless-stopped
