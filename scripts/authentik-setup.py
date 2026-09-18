@@ -273,16 +273,62 @@ def main():
             ak.create("/propertymappings/provider/scope/", groups_mapping_body)["pk"]
         )
         print(f"  ✓ created scope mapping '{groups_mapping_name}'")
+    # ── Standard email mapping ──────────────────────────────────────────────
+    # Authentik's DEFAULT email mapping emits `email_verified: False`, and every
+    # OIDC relying party (oauth2-proxy, Vault, Grafana) rejects an unverified
+    # email — the callback fails with HTTP 500. The platform standard is one
+    # mapping that tells the truth: accounts here are created and verified in
+    # Authentik, so the email is verified. Pin ours everywhere and never the
+    # default, or a provider is left with two `email` mappings and one of them
+    # is wrong. `scripts/authentik-conform-providers.py` repairs existing ones.
+    email_mapping_name = "Innotel OAuth Mapping: OpenID 'email'"
+    email_mapping_expr = (
+        "return {\n"
+        '    "email": request.user.email,\n'
+        '    "email_verified": True,\n'
+        "}"
+    )
+    email_mapping = scope_mappings.get(email_mapping_name)
+    email_mapping_body = {
+        "name": email_mapping_name,
+        "scope_name": "email",
+        "description": "Email plus email_verified: true (the default emits False)",
+        "expression": email_mapping_expr,
+    }
+    if email_mapping:
+        ak.update(
+            f"/propertymappings/provider/scope/{email_mapping['pk']}/",
+            email_mapping_body,
+        )
+        mapping_pks.add(email_mapping["pk"])
+        print(f"  ✓ updated scope mapping '{email_mapping_name}'")
+    else:
+        mapping_pks.add(
+            ak.create("/propertymappings/provider/scope/", email_mapping_body)["pk"]
+        )
+        print(f"  ✓ created scope mapping '{email_mapping_name}'")
+
     # Keep the standard OpenID scopes and any mapping the provider already had.
+    # `email` is deliberately absent: the default is replaced by the mapping
+    # above, and pinning both would leave the provider with two `email` claims.
     for default_name in (
         "authentik default OAuth Mapping: OpenID 'openid'",
-        "authentik default OAuth Mapping: OpenID 'email'",
         "authentik default OAuth Mapping: OpenID 'profile'",
     ):
         if default_name in scope_mappings:
             mapping_pks.add(scope_mappings[default_name]["pk"])
     if provider:
         mapping_pks.update(provider.get("property_mappings") or [])
+    # ...but never the default `email` mapping. A provider provisioned before
+    # this standard carries it, and carrying it forward is exactly how one scope
+    # ended up with two mappings — the default reporting `email_verified: false`
+    # beside ours reporting true. Dropping it here is what makes a re-run
+    # converge instead of re-pinning the drift.
+    default_email_mapping = scope_mappings.get(
+        "authentik default OAuth Mapping: OpenID 'email'"
+    )
+    if default_email_mapping:
+        mapping_pks.discard(default_email_mapping["pk"])
 
     # ── Signing key ────────────────────────────────────────────────────
     # An OAuth2 provider with no signing key emits HS256 id_tokens keyed on
@@ -326,7 +372,15 @@ def main():
         "grant_types": ["authorization_code", "refresh_token"],
         "redirect_uris": redirect_uris,
         "sub_mode": "hashed_user_id",
-        "issuer_mode": "global",
+        # `per_provider`, always. Authentik's `global` mode publishes the bare
+        # base as `iss`, and every relying party on this platform is configured
+        # with the app-scoped issuer — so a provider on `global` refuses every
+        # token it issues and the browser sees HTTP 500 at the callback. This
+        # line being `global` is how ten providers drifted out of the standard
+        # and took the estate's sign-in down on 2026-09-18; the reasoning is in
+        # ips/docs/sign-in-posture.md, and
+        # `scripts/authentik-conform-providers.py` repairs what it wrote.
+        "issuer_mode": "per_provider",
         "include_claims_in_id_token": True,
         "property_mappings": sorted(mapping_pks),
     }
