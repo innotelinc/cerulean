@@ -399,9 +399,12 @@ docker compose --profile authentik up -d
 ./scripts/setup.sh --with-authentik   # generates client secret + provisions the provider
 ```
 
-The bundled image is `ghcr.io/goauthentik/server:${AUTHENTIK_IMAGE_TAG:-2026.8.1}`
+The bundled image is `ghcr.io/goauthentik/server:${AUTHENTIK_IMAGE_TAG:-2026.8.3}`
 (server + worker share the same tag). Set `AUTHENTIK_IMAGE_TAG` in `.env` to
-pin a different release.
+pin a different release. Bumping this moves the server, and every **outpost**
+that talks to it must move to the same tag — Monarch's `authentik-ldap` is one
+(`3-media/monarch/docker-compose.yml` and the `ips` manifest), and its
+`drift-check` fails the run while the two disagree.
 
 The OIDC provider and application are created automatically by
 `scripts/authentik-setup.py` (it logs in with `AUTHENTIK_ADMIN_USER` /
