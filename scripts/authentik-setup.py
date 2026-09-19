@@ -39,6 +39,9 @@ from ``AUTHENTIK_<SLUG-UPPER>_*`` variables instead — per app:
     AUTHENTIK_<SLUG>_CLIENT_SECRET    OIDC client secret (generate one)
     AUTHENTIK_<SLUG>_REDIRECT_URI     the app's OIDC callback URL (required)
     AUTHENTIK_<SLUG>_APP_NAME         display name (default: capitalized slug)
+    AUTHENTIK_<SLUG>_GROUPS           group names the app authorizes on — e.g.
+                                      OnTrak's `range-instructors` — created if
+                                      they do not exist (space/comma separated)
 
 Every provider shares the 'groups' scope mapping, so any app can authorize on
 Authentik group membership the same way Cerulean does.
@@ -114,6 +117,24 @@ class Authentik:
         if status not in (200, 204):
             raise RuntimeError(f"Authentik PUT {path} failed (HTTP {status}): {json.dumps(data)}")
         return data
+
+
+def ensure_group(ak, name, *, label="group"):
+    """Create a group if one of that name does not already exist.
+
+    Idempotent, like the rest of this script. Authentik dropped group slugs in
+    2025.x, so the name *is* the identity and the only thing to match on.
+    Returns whether it created one.
+    """
+    name = (name or "").strip()
+    if not name:
+        return False
+    if ak.list(f"/core/groups/?name={urllib.parse.quote(name)}"):
+        print(f"  ✓ {label} '{name}' exists")
+        return False
+    ak.create("/core/groups/", {"name": name, "is_superuser": False})
+    print(f"  ✓ created {label} '{name}'")
+    return True
 
 
 def known_tenant_slugs():
@@ -422,22 +443,12 @@ def main():
     # Tenant slugs are Authentik group names (Authentik dropped group slugs in
     # 2025.x) and platform admins are the members of this group; make sure it
     # exists so the tenant bootstrap is never locked out.
-    platform_group_body = {"name": platform_group, "is_superuser": False}
-    groups = ak.list(f"/core/groups/?name={urllib.parse.quote(platform_group)}")
-    if groups:
-        print(f"  ✓ platform group '{platform_group}' exists")
-    else:
-        ak.create("/core/groups/", platform_group_body)
-        print(f"  ✓ created platform group '{platform_group}'")
+    ensure_group(ak, platform_group, label="platform group")
 
     # ── Tenant groups ───────────────────────────────────────────────────
     # One group per tenant; the group name is the tenant's stable identity.
     for slug in known_tenant_slugs():
-        if ak.list(f"/core/groups/?name={urllib.parse.quote(slug)}"):
-            print(f"  ✓ tenant group '{slug}' exists")
-        else:
-            ak.create("/core/groups/", {"name": slug, "is_superuser": False})
-            print(f"  ✓ created tenant group '{slug}'")
+        ensure_group(ak, slug, label="tenant group")
 
     # ── Paid-tier groups ────────────────────────────────────────────────
     # Revenue flow: Magnate's Stripe webhook adds members on checkout and
@@ -449,11 +460,19 @@ def main():
     paid_env = env("PAID_GROUPS", "paid_users paid_pro")
     paid_groups = [g for g in re.split(r"[\s,]+", paid_env) if g]
     for group_name in paid_groups:
-        if ak.list(f"/core/groups/?name={urllib.parse.quote(group_name)}"):
-            print(f"  ✓ paid group '{group_name}' exists")
-        else:
-            ak.create("/core/groups/", {"name": group_name, "is_superuser": False})
-            print(f"  ✓ created paid group '{group_name}'")
+        ensure_group(ak, group_name, label="paid group")
+
+    # ── App groups ──────────────────────────────────────────────────────
+    # An app does not only authenticate: it may decide *what* a signed-in
+    # account may do from Authentik group membership, re-read on every sign-in.
+    # OnTrak promotes the members of its instructor group and can gate a whole
+    # range to one cohort, so the group has to exist before anyone can be put in
+    # it — provisioning the provider and leaving the group for someone to make
+    # by hand is how an app ends up with a role that cannot be granted.
+    # `AUTHENTIK_<SLUG>_GROUPS` is a space/comma separated list of names.
+    app_groups = [g for g in re.split(r"[\s,]+", env_for("GROUPS", "")) if g]
+    for group_name in app_groups:
+        ensure_group(ak, group_name, label="app group")
 
     app_name = env_for("APP_NAME", app_slug.capitalize())
     print()
@@ -466,6 +485,8 @@ def main():
           f"'{app_name}'.")
     print(f"Add tenant administrators to '{platform_group}' to make them platform admins.")
     print(f"Paid subscribers are managed by Magnate's billing webhook in: {' '.join(paid_groups)}.")
+    if app_groups:
+        print(f"{app_name} authorizes on the group(s): {' '.join(app_groups)} — add members there.")
     return 0
 
 
