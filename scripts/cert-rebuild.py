@@ -83,6 +83,31 @@ def cerulean_records():
     return out
 
 
+# The host fields NPM's update route accepts, taken from its own GET so nothing
+# is invented (and nothing is dropped).
+FIELDS = ("domain_names", "forward_scheme", "forward_host", "forward_port", "access_list_id",
+          "certificate_id", "ssl_forced", "caching_enabled", "block_exploits", "advanced_config",
+          "meta", "allow_websocket_upgrade", "http2_support", "locations", "hsts_enabled",
+          "hsts_subdomains", "trust_forwarded_proto", "enabled")
+
+
+def put_body(h, certificate_id):
+    """The full PUT body NPM accepts for a host, taken from its own GET.
+
+    `locations` comes back as `null` on a host that has none, and NPM's update
+    route rejects that with `data/locations must be array` — which is not a
+    detail of the host being updated: it aborts the whole run, so the hosts
+    after it are never reassigned and no superseded certificate is ever
+    deleted (measured on host 181, preview-smoke-preview.studio.olympus.
+    innotel.us, 2026-09-23). The field travels as an empty list instead.
+    """
+    body = {k: h[k] for k in FIELDS if k in h}
+    if not isinstance(body.get("locations"), list):
+        body["locations"] = []
+    body["certificate_id"] = certificate_id
+    return body
+
+
 def main():
     token = api("POST", "/api/tokens", body={
         "identity": env("NPM_EMAIL"), "secret": env("NPM_PASSWORD")})["token"]
@@ -164,16 +189,10 @@ def main():
         return
 
     by_id = {h["id"]: h for h in hosts}
-    fi = ("domain_names", "forward_scheme", "forward_host", "forward_port", "access_list_id",
-          "certificate_id", "ssl_forced", "caching_enabled", "block_exploits", "advanced_config",
-          "meta", "allow_websocket_upgrade", "http2_support", "locations", "hsts_enabled",
-          "hsts_subdomains", "trust_forwarded_proto", "enabled")
     done = 0
     for hid, host, old, new, why in moves:
         h = by_id[hid]
-        body = {k: h[k] for k in fi if k in h}
-        body["certificate_id"] = new
-        api("PUT", f"/api/nginx/proxy-hosts/{hid}", token, body)
+        api("PUT", f"/api/nginx/proxy-hosts/{hid}", token, put_body(h, new))
         done += 1
         if done % 20 == 0:
             print(f"  ...reassigned {done}/{len(moves)}")
@@ -184,9 +203,7 @@ def main():
     for cid in {cid for _, _, cid in uncovered if cid and cid not in survivors}:
         for h in hosts:
             if (h.get("certificate_id") or 0) == cid:
-                body = {k: h[k] for k in fi if k in h}
-                body["certificate_id"] = 0
-                api("PUT", f"/api/nginx/proxy-hosts/{h['id']}", token, body)
+                api("PUT", f"/api/nginx/proxy-hosts/{h['id']}", token, put_body(h, 0))
                 print(f"  detached cert {cid} from host {h['id']} {(h.get('domain_names') or [''])[0]}")
 
     for c in deletable:

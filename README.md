@@ -146,6 +146,7 @@ docker compose --profile npm up -d                           # bundled NPM Edge 
 | Guide | What it covers |
 | --- | --- |
 | [Device enrollment & mTLS](docs/device-enrollment.md) | Internal CA, CSR + SCEP/MDM enrollment, nginx auto-allow, Authentik passkeys |
+| [Certificates](docs/certificates.md) | How issuance reaches the edge, the audit and cleanup of duplicates, and the three names that cannot be issued until their delegation changes |
 | [First-time setup](#first-time-setup) | Technitium, server identity, nginx proxy manager, the proxy-host map |
 | [Using Cerulean](#using-cerulean) | Domains, certificates, DHCP, blocking, discovery, PKI — day to day |
 | [REST API](#rest-api) | Every endpoint, with examples |
