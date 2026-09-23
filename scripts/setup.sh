@@ -20,13 +20,15 @@ NO_START=0
 WITH_AUTHENTIK=0
 WITH_TECHNITIUM=0
 WITH_VAULT=0
+SKIP_DNS_PREFLIGHT=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-start) NO_START=1; shift ;;
     --with-authentik) WITH_AUTHENTIK=1; shift ;;
     --with-technitium) WITH_TECHNITIUM=1; shift ;;
     --with-vault) WITH_VAULT=1; shift ;;
-    *) fail "Unknown option: $1 (usage: ./scripts/setup.sh [--no-start] [--with-authentik] [--with-technitium] [--with-vault])" ;;
+    --skip-dns-preflight) SKIP_DNS_PREFLIGHT=1; shift ;;
+    *) fail "Unknown option: $1 (usage: ./scripts/setup.sh [--no-start] [--with-authentik] [--with-technitium] [--with-vault] [--skip-dns-preflight])" ;;
   esac
 done
 
@@ -156,6 +158,46 @@ bind_technitium_console() {
   fi
 }
 bind_technitium_console
+
+# ── 1b. DNS NOTIFY preflight — do not start a DNS plane that can only fail ───
+# A Primary zone told to notify its own name servers does exactly that on a
+# one-server estate: every NS the zone lists resolves back here, Technitium
+# refuses its own NOTIFY, and the console flags the zone `notifyFailed` — every
+# five minutes, forever, with no second server to ever satisfy it. Nothing in
+# this repo chooses a zone's notify mode; Technitium's own default for a new
+# Primary zone does. So the gate judges the live zones rather than trusting the
+# last reconcile run, and it judges them *before* the stack starts.
+#
+# The three answers are kept apart on purpose: 0 has nothing to say, 1 is a
+# finding and stops the run, and 2 (no token, server unreachable) warns — a host
+# running part of the stack is not a drifted host, and a gate that fails when it
+# cannot look is a gate people learn to pass with --skip-dns-preflight.
+judge_dns_notify() {
+  if [ "$SKIP_DNS_PREFLIGHT" = "1" ]; then
+    warn "DNS NOTIFY preflight skipped (--skip-dns-preflight)"
+    return 0
+  fi
+  local token rc=0 out=""
+  token="$(technitium_token 2>/dev/null || true)"
+  if [ -z "$token" ]; then
+    warn "DNS NOTIFY preflight skipped — no Technitium API token (set TECHNITIUM_TOKEN or TECHNITIUM_USER/PASSWORD)"
+    return 0
+  fi
+  out="$( cd "${CERULEAN_ROOT}" && \
+    TECHNITIUM_URL="${TECHNITIUM_URL:-http://172.17.0.1:5380}" TECHNITIUM_TOKEN="$token" \
+    python3 scripts/zone-notify-reconcile.py --preflight 2>&1 )" || rc=$?
+  case "$rc" in
+    0)
+      ok "${out:-DNS NOTIFY preflight: no zone is armed to notify only this server}" ;;
+    2)
+      warn "$out"
+      warn "DNS NOTIFY preflight could not run — continuing (the DNS plane may be remote)" ;;
+    *)
+      echo "$out" >&2
+      fail "a zone is armed to notify only this server — fix it first: ./scripts/zone-notify-reconcile.py --apply" ;;
+  esac
+}
+judge_dns_notify
 
 # ── 2. Install dependencies + build ──────────────────────────────────────────
 log "Installing dependencies (npm install)…"
