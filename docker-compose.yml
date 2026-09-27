@@ -150,7 +150,11 @@ services:
       # Server-side sessions, the platform-wide store this host already runs: the
       # gateways share ONE store so one sign-in covers them all.
       OAUTH2_PROXY_SESSION_STORE_TYPE: redis
-      OAUTH2_PROXY_REDIS_CONNECTION_URL: redis://:${SSO_SESSION_REDIS_PASSWORD:-}@cerulean-sso-sessions:6379/0
+      # SSO_SESSION_REDIS_URL carries the whole connection string so the shared
+      # store can be moved to the edge's own host (its canonical home) without
+      # every gateway here having to know. Default keeps the in-project service
+      # name for a self-contained deployment.
+      OAUTH2_PROXY_REDIS_CONNECTION_URL: ${SSO_SESSION_REDIS_URL:-redis://:${SSO_SESSION_REDIS_PASSWORD:-}@cerulean-sso-sessions:6379/0}
       OAUTH2_PROXY_PASS_ACCESS_TOKEN: "false"
       OAUTH2_PROXY_PASS_AUTHORIZATION_HEADER: "false"
       OAUTH2_PROXY_HTTP_ADDRESS: 0.0.0.0:4180
@@ -169,9 +173,9 @@ services:
     # SSO door, so there is nothing behind it for a loopback bind to protect.
     ports:
       - "${TECHNITIUM_SSO_PORT:-14015}:4180"
-    depends_on:
-      cerulean-sso-sessions:
-        condition: service_started
+    # No depends_on cerulean-sso-sessions: the session store lives with the NPM
+    # edge (its own compose), and this gateway may reach it over the LAN via
+    # SSO_SESSION_REDIS_URL instead of a project-local service name.
 
   # ── Authentik (OPT-IN: docker compose --profile authentik up -d) ────────
   authentik-server:
