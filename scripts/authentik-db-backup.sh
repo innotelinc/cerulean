@@ -95,6 +95,7 @@ carried_over() { # $1 = metric name, from the previous status file
 
 write_status() { # $1 = last_status (0/1)
   local last_status="$1"
+  local tmp_status="$STATUS_FILE.$$.tmp"
   # The failure paths run the trap before $BACKUP_DIR is created (a missing
   # container exits 2 first), and writing the failure has to survive that —
   # otherwise the operator sees a redirect error instead of why the dump
@@ -125,7 +126,16 @@ write_status() { # $1 = last_status (0/1)
       echo "cerulean_authentik_backup_remote_enabled 0"
     fi
     echo "cerulean_authentik_backup_mirror_offhost $MIRROR_OFFHOST"
-  } > "$STATUS_FILE"
+  } > "$tmp_status"
+  # Published by rename, not a truncating write. The file is read while the dump
+  # runs — by a Prometheus textfile collector and by authentik-backup-check.py —
+  # and a reader that lands mid-write would see a partial file: a scrape error
+  # for the collector, a false "no last_status" for the checker. The temp name
+  # does not end in `.prom`, so the collector ignores it either way.
+  if ! mv -f "$tmp_status" "$STATUS_FILE"; then
+    warn "could not publish $STATUS_FILE"
+    rm -f "$tmp_status"
+  fi
 }
 
 finish() {
