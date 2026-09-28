@@ -115,6 +115,35 @@ The reservations that carry services other hosts dial are the important ones:
 then moved keeps answering on the old one until the lease turns over, so the
 reservation is the first thing worth checking when "it worked yesterday".
 
+> **Pending (2026-09-27):** `.58` (the subscribe portal) is static inside its own
+> container but is **not yet in the router's Address Reservation table**, so the
+> DHCP pool could still hand `.58` to another device. Reserve it at
+> **Advanced → Setup → LAN Setup → Address Reservation** — IP `192.168.1.58`,
+> MAC `10:66:6A:A4:AB:48`. The router's REST (`/dniapi`) login is not scriptable
+> (see below), so this has to be a UI action.
+
+### Why the router API can't do this from a shell
+
+`https://192.168.1.1/dniapi/…` is live and unauthenticated calls answer
+`{ "code": 2, "msg": "unauth" }`, but every scripted login attempt is rejected:
+`POST /dniapi/login` returns lighttpd **400** for JSON, form-encoded and query
+bodies alike, and the daynapi Bearer token it would hand back has no equivalent
+that the router accepts. What *does* work is the app's **SOAP** interface:
+
+```
+POST https://192.168.1.1/soap/server_sa/
+SOAPAction: "urn:NETGEAR-ROUTER:service:DeviceConfig:1#SOAPLogin"
+<Username>admin</Username><Password>…</Password>
+→ ResponseCode 000, Set-Cookie: jwt_local=…
+```
+
+With that cookie, `DeviceInfo:1#GetInfo`, `GetAttachDevice2` and
+`GetSupportFeatureListXML` all answer `ResponseCode 000`, so router state is
+readable — but there is **no SOAP action for the DHCP reservation list**
+(candidates under `DeviceConfig`, `DeviceInfo`, `LANConfig`, `WANConfig` all 404),
+and the daynapi reservation path (`/dniapi/reservation`) needs the app's own
+token. Reservations therefore remain a UI-only change.
+
 ---
 
 ## Changing any of this
