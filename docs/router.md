@@ -93,9 +93,9 @@ survives a reboot:
 | IP | Name | IP | Name | IP | Name |
 |---|---|---|---|---|---|
 | `.3` | PM3 | `.35` | ANSIBLE | `.56` | MONARCH |
-| `.8` | SUBSCRIBE | `.38` | ONTRAK-GW | `.59` | ATHENIQ |
+| `.8` | SUBSCRIBE | `.38` | ONTRAK-GW (ret.) | `.59` | ATHENIQ |
 | `.9` | VOICE | `.40` | IRC | `.60` | ONYX |
-| `.11` | SIGN | `.42` | ONTRAK | `.61` | DISTRO |
+| `.11` | SIGN | `.42` | ONTRAK (ret.) | `.61` | DISTRO |
 | `.15` | MAIL | `.43` | VPN | `.63` | VIA |
 | `.16` | AUTH | `.44` | SIGNARA | `.70` | PI |
 | `.22` | TERMINAL | `.46` | DEVELOPMENT | `.71` | PROXY |
