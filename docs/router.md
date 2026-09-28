@@ -101,7 +101,7 @@ survives a reboot:
 | `.22` | TERMINAL | `.46` | DEVELOPMENT | `.71` | PROXY |
 | `.24` | SURFACE | `.47` | CAPSTONE | `.73` | VAULT |
 | `.28` | SLOTS | `.49` | ACME | `.80` | WWW |
-| `.30` | ZEUS | `.50` | OLYMPUS | `.90` | GIT (ret.) |
+| `.30` | ZEUS | `.50` | OLYMPUS | `.90` | ATLAS (git) |
 | `.33` | SLACK | `.51`–`.53` | I1–I3 | `.100` | ZIMAOS |
 | `.54`/`.55` | INCUS-MACBOOK / MACBOOK | `.106` | PEGAPROX | `.108` | PATCHMON |
 | `.57` | MAGNATE | `.58` | SUBSCRIBE | `.74` | — |
@@ -125,9 +125,11 @@ the lease turns over, so the reservation is the first thing worth checking when
 > so the pool cannot hand it to another device. The router's REST (`/dniapi`)
 > login is not scriptable (see below), so this has to be a UI action.
 >
-> `.90` (GIT) is stale: the i1 `git` container was retired 2026-09-27 and the
-> authoritative Gitea is `.46` `atlas-gitea`. Remove the `.90` reservation from
-> the same table.
+> `.90` (GIT) **stays reserved, but its MAC has moved**. The i1 `git` container
+> was retired 2026-09-27; the Gitea it fronted now runs in the **`atlas`
+> container on i2** (`.90`, Gitea 1.27.2 + convex; `git.innotel.us`,
+> `atlas.innotel.us`, `convex.innotel.us`). Update the reservation's MAC to
+> `10:66:6a:6b:dc:07`.
 
 ### Why the router API can't do this from a shell
 
