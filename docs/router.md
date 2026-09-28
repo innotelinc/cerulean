@@ -101,26 +101,33 @@ survives a reboot:
 | `.22` | TERMINAL | `.46` | DEVELOPMENT | `.71` | PROXY |
 | `.24` | SURFACE | `.47` | CAPSTONE | `.73` | VAULT |
 | `.28` | SLOTS | `.49` | ACME | `.80` | WWW |
-| `.30` | ZEUS | `.50` | OLYMPUS | `.90` | GIT |
+| `.30` | ZEUS | `.50` | OLYMPUS | `.90` | GIT (ret.) |
 | `.33` | SLACK | `.51`–`.53` | I1–I3 | `.100` | ZIMAOS |
 | `.54`/`.55` | INCUS-MACBOOK / MACBOOK | `.106` | PEGAPROX | `.108` | PATCHMON |
+| `.57` | MAGNATE | `.58` | SUBSCRIBE | `.74` | — |
 | `.110` | — | `.125` | DOCS | `.146` | CLOUD |
 | `.168` | AI | `.172` | — | `.201`/`.202` | Orbi-1 / Orbi-2 |
 
 The reservations that carry services other hosts dial are the important ones:
 `.71` (NPM, Authentik, Technitium, Vault), `.30` (Zeus/capstone telephony),
 `.44` (Signara), `.60` (Onyx), `.56` (Monarch media), `.46` (development), `.50`
-(Olympus), `.58` (the subscribe portal, given a static address 2026-09-27) and
-`.43` (VPN). A service configured against a *reserved* address and
-then moved keeps answering on the old one until the lease turns over, so the
-reservation is the first thing worth checking when "it worked yesterday".
+(Olympus), `.57` (Magnate, moved off `.46` on 2026-09-27), `.58` (the subscribe
+portal, given a static address 2026-09-27) and `.43` (VPN). A service configured
+against a *reserved* address and then moved keeps answering on the old one until
+the lease turns over, so the reservation is the first thing worth checking when
+"it worked yesterday".
 
-> **Pending (2026-09-27):** `.58` (the subscribe portal) is static inside its own
-> container but is **not yet in the router's Address Reservation table**, so the
-> DHCP pool could still hand `.58` to another device. Reserve it at
-> **Advanced → Setup → LAN Setup → Address Reservation** — IP `192.168.1.58`,
-> MAC `10:66:6A:A4:AB:48`. The router's REST (`/dniapi`) login is not scriptable
-> (see below), so this has to be a UI action.
+> **Note (2026-09-27):** `.58` (the subscribe portal) **has been assigned** —
+> it stays in the DHCP pool as a reservation, and `subscribe` is *not* to be
+> moved off it. `.57` (Magnate, moved off `.46` to the i3 `magnate` container)
+> is static inside its own container; reserve it at **Advanced → Setup → LAN
+> Setup → Address Reservation** — IP `192.168.1.57`, MAC `10:66:6a:ab:0e:ec`,
+> so the pool cannot hand it to another device. The router's REST (`/dniapi`)
+> login is not scriptable (see below), so this has to be a UI action.
+>
+> `.90` (GIT) is stale: the i1 `git` container was retired 2026-09-27 and the
+> authoritative Gitea is `.46` `atlas-gitea`. Remove the `.90` reservation from
+> the same table.
 
 ### Why the router API can't do this from a shell
 
