@@ -110,7 +110,8 @@ survives a reboot:
 The reservations that carry services other hosts dial are the important ones:
 `.71` (NPM, Authentik, Technitium, Vault), `.30` (Zeus/capstone telephony),
 `.44` (Signara), `.60` (Onyx), `.56` (Monarch media), `.46` (development), `.50`
-(Olympus) and `.43` (VPN). A service configured against a *reserved* address and
+(Olympus), `.58` (the subscribe portal, given a static address 2026-09-27) and
+`.43` (VPN). A service configured against a *reserved* address and
 then moved keeps answering on the old one until the lease turns over, so the
 reservation is the first thing worth checking when "it worked yesterday".
 
