@@ -11,6 +11,7 @@
 [![Release](https://github.com/innotelinc/cerulean/actions/workflows/release.yml/badge.svg)](https://github.com/innotelinc/cerulean/actions/workflows/release.yml)
 [![Latest release](https://img.shields.io/github/v/release/innotelinc/cerulean)](https://innotelinc.github.io/cerulean/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Theme: Unity](https://img.shields.io/badge/theme-Unity-6366f1)](https://github.com/innotelinc/innotel-platform-stack/blob/main/standards/unity/README.md)
 
 </div>
 
