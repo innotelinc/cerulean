@@ -134,7 +134,7 @@ docker compose --profile npm up -d                           # bundled NPM Edge 
                                  ▼              ▼
                     ┌─────────────────┐    ┌──────────────────────┐
                     │ Technitium DNS  │    │ nginx proxy manager  │
-                    │ :53 · :5380     │    │ 192.168.1.46:81      │
+                    │ :53 · :5380     │    │ 192.168.1.71:81      │
                     │ DHCP :67 · block│    └──────────────────────┘
                     └─────────────────┘               ▲
                            ▲                          │
@@ -215,7 +215,7 @@ address a **browser** can reach — not `cerulean-npm:81` (docker-internal) and 
 install time from `NPM_HOST_IP`, else this host's detected LAN IP, as
 `http://<host>:<NPM_ADMIN_PORT>`. Set it explicitly when a named edge fronts the
 admin UI — on this deployment the NPM admin UI is published on the LAN at
-`http://192.168.1.46:81` (set in `.env`) and named at the edge as
+`http://192.168.1.71:81` (set in `.env`) and named at the edge as
 `https://proxy.innotel.us`, which NPM serves from that same `:81`. That edge
 name is **Authentik-gated** (`auth_request` to `auth.innotel.us`), so the LAN
 address — not the public hostname — is what scripts must talk to. `NPM_BASE_URL`

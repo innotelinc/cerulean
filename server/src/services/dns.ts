@@ -6,7 +6,7 @@ import net from "node:net";
  * Resolve TXT records for `name` using a specific nameserver (not the system
  * resolver), so we can check an authoritative server directly.
  *
- * `server` may be an IP (e.g. 192.168.1.46, 172.22.0.2) or a Docker service
+ * `server` may be an IP (e.g. 192.168.1.74, 172.22.0.2) or a Docker service
  * hostname (e.g. cerulean-technitium). Hostnames are resolved via the
  * system resolver (which inside Docker returns the bridge IP). Custom ports
  * like "127.0.0.1#5353" are also accepted (resolver syntax).

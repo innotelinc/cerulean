@@ -4,7 +4,7 @@ Cerulean-issued wildcard certificate for a project's subdomains.
 
 Usage:
     cerulean-integration --hosts hosts.conf [--base-domain innotel.us] \
-        [--forward-host 192.168.1.46] [--dry-run] [--skip-certs]
+        [--forward-host 192.168.1.74] [--dry-run] [--skip-certs]
 
 Configuration (env vars, or a repo .env):
     CERULEAN_API_URL        e.g. http://localhost:3003 (default)
