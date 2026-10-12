@@ -105,7 +105,7 @@ Create a service key as platform admin: `POST /api/service/keys { name, scopes, 
 Bridge (Bearer `ceru_…`):
 
 - `GET /api/service/status` · `GET /api/service/crs/*` · `POST /api/service/crs/register`
-- `GET|POST /api/service/domains` · `GET|POST|DELETE /api/service/dns/records?zone=`
+- `GET|POST|DELETE /api/service/domains` · `GET|POST|DELETE /api/service/dns/records?zone=`
 - `GET|POST /api/service/certificates` · `GET /api/service/certificates/:id/material`
 - `GET /api/service/dhcp/*` · `GET /api/service/blocking/status` · `GET|POST /api/service/pki/*`
 

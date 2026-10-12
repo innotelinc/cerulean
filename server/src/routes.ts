@@ -1642,6 +1642,30 @@ router.post("/service/domains", serviceBridgeAuth(["domains:write", "domains", "
   res.status(201).json(domain);
 }));
 
+// Deleting a zone is the counterpart of creating one: a stack that registered a
+// name has to be able to hand it back, or the registration outlives the domain
+// it was for (the zone keeps answering, and nothing ever cleans it up). Refuses
+// the platform's own zones so a tenant key can never tear down the estate's own
+// names.
+router.delete("/service/domains", serviceBridgeAuth(["domains:write", "domains", "dns:write", "dns", "*"]), asyncHandler(async (req, res) => {
+  const name = String(req.body?.name ?? req.query?.name ?? "").trim().toLowerCase().replace(/\.$/, "");
+  if (!name) { res.status(400).json({ error: "name is required" }); return; }
+  const identity = serverIdentity.currentIdentity();
+  if (name === identity.apex || name === identity.labDomain) {
+    res.status(403).json({ error: `Zone ${name} is a platform zone and is never removed through the service bridge` });
+    return;
+  }
+  const tenantId = serviceTenantId(req);
+  const domain = db.getDomainByName(name, tenantId);
+  if (!domain) { res.status(404).json({ error: `Zone ${name} is not registered` }); return; }
+  const conn = providerConnectionForTenant(tenantId) as unknown as Record<string, unknown> | null;
+  try { await technitium.deleteZone(name, (conn ?? undefined) as never); }
+  catch (err) { db.addActivity("dns-zone-error", `Technitium delete zone ${name} failed (service)`, err instanceof Error ? err.message : String(err)); }
+  db.deleteDomain(domain.id, tenantId);
+  db.addActivity("domain-delete", `[service] Removed zone ${name}`);
+  res.json({ ok: true, domain: name });
+}));
+
 router.get("/service/certificates", serviceBridgeAuth(["certs", "certs:read", "*"]), (req, res) => {
   res.json(db.listCertificates(serviceTenantId(req)).map(certToJson));
 });

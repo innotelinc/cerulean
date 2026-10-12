@@ -244,6 +244,22 @@ export async function ensureZone(zone: string, conn?: Partial<TechnitiumConnecti
   await technitiumRequest(c, "/api/zones/create", { zone: z, type: "Primary" });
 }
 
+/**
+ * Delete a zone. Idempotent: a zone that is not there is already the goal, so a
+ * "not found" answer from Technitium is treated as success rather than an error.
+ */
+export async function deleteZone(zone: string, conn?: Partial<TechnitiumConnection & { apiToken: string; host: string; port: number }>): Promise<void> {
+  const c = effectiveConnection(conn);
+  const z = stripDot(zone);
+  try {
+    await technitiumRequest(c, "/api/zones/delete", { zone: z });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (/not found|no such zone|invalid zone/i.test(message)) return;
+    throw err;
+  }
+}
+
 export async function listZones(
   conn?: Partial<TechnitiumConnection & { apiToken: string; host: string; port: number }>,
 ): Promise<Array<{ name: string; type: string; disabled: boolean }>> {
