@@ -106,6 +106,14 @@ export interface Config {
     platformGroup: string;
   };
 
+  mail: {
+    /** Where the mail host's provisioning surface is, e.g. http://192.168.1.15:8091.
+     *  Empty (the default) means tenant mail provisioning is not configured: the
+     *  bridge says so rather than half-building a tenant. */
+    provisionUrl: string;
+    timeoutMs: number;
+  };
+
   pki: {
     caCommonName: string;
     caValidityDays: number;
@@ -286,6 +294,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       user: env.TECHNITIUM_USER || env.TECHNITIUM_ADMIN_USER || "admin",
       password: env.TECHNITIUM_PASSWORD || env.TECHNITIUM_ADMIN_PASSWORD || "",
       timeoutMs: Number(env.TECHNITIUM_TIMEOUT_MS || 15000),
+    },
+
+    mail: {
+      provisionUrl: (env.MAIL_PROVISION_URL || "").replace(/\/$/, ""),
+      timeoutMs: Number(env.MAIL_PROVISION_TIMEOUT_MS || 30000),
     },
 
     server: {

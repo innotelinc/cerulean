@@ -1543,8 +1543,11 @@ router.post("/service/keys", ...platformGuard, requirePlatform, (req, res) => {
   if (Array.isArray(rawScopes)) scopes = rawScopes.map(String).map((s) => s.trim().toLowerCase()).filter(Boolean);
   else if (typeof rawScopes === "string") scopes = rawScopes.split(",").map((s: string) => s.trim().toLowerCase()).filter(Boolean);
   if (scopes.length === 0) scopes = ["*"];
-  // Validate scopes
-  const allowedPrefixes = new Set(["*", "crs", "dns", "certs", "domains", "dhcp", "blocking", "pki", "npm", "status", "tenant"]);
+  // Validate scopes. `tenants` and `mail` are here because scopes are Cerulean's
+  // vocabulary: a key that provisions a tenant through the bridge carries the
+  // tenant scope *and* the mail host's scope for the hop Cerulean makes on its
+  // behalf, and neither can be minted anywhere but here.
+  const allowedPrefixes = new Set(["*", "crs", "dns", "certs", "domains", "dhcp", "blocking", "pki", "npm", "status", "tenant", "tenants", "mail"]);
   for (const sc of scopes) {
     const prefix = sc.split(":")[0];
     if (!allowedPrefixes.has(prefix) && sc !== "*") {
@@ -1603,6 +1606,19 @@ function serviceTenantId(req: import("express").Request): number {
   }
   return 1;
 }
+
+// What this key is, in Cerulean's own words.
+//
+// The estate's services keep no copy of who may call them: they hold a Cerulean
+// key, present it here, and act on the answer. One list of who may do what — the
+// one Cerulean keeps — so revoking a key is immediate everywhere and there is no
+// second copy to drift out of date. The keys a service mints for other services
+// carry the scopes they present here (and at /service/keys), which is why the
+// mail host can check a caller against Cerulean instead of trusting it.
+router.get("/service/whoami", serviceBridgeAuth([]), (req, res) => {
+  const row = (req as unknown as { serviceKey: import("./db").ServiceApiKeyRow }).serviceKey;
+  res.json(serviceAuth.serviceKeyToJson(row));
+});
 
 // Public service status: minimal, no tenant scope needed
 router.get("/service/status", serviceBridgeAuth(["status", "*"]), (_req, res) => {
@@ -1665,6 +1681,137 @@ router.delete("/service/domains", serviceBridgeAuth(["domains:write", "domains",
   db.addActivity("domain-delete", `[service] Removed zone ${name}`);
   res.json({ ok: true, domain: name });
 }));
+
+// ── Tenant provisioning — the estate's one write ────────────────────────────
+// A tenant is two planes that must agree: a name the resolver answers for, and
+// a mail domain with an identity and a mailbox behind it. Neither is reachable
+// directly — Cerulean owns the resolver and the identity — so this one request
+// is the whole integration. An application holds a single Cerulean key and asks
+// here; it needs no token of its own for the resolver or for the mail host.
+//
+// The mail half is built by the mail host, but on the caller's own authority:
+// Cerulean forwards the caller's key, and the mail host adjudicates that key
+// against Cerulean (`GET /service/whoami` above) rather than against a list of
+// its own. The key therefore has to carry `mail:provision` as well as a tenant
+// scope — scopes are Cerulean's vocabulary, minted at /service/keys.
+//
+// Idempotent end to end, because the caller is usually a billing webhook that
+// will retry: a second call finds the zone already registered and the tenant
+// already built, and answers 200 rather than 201. Nothing is created twice, and
+// the first account's password comes back only from the call that created it.
+router.post(
+  "/service/tenants",
+  serviceBridgeAuth(["tenants:write", "tenants", "tenant:write", "tenant", "*"]),
+  asyncHandler(async (req, res) => {
+    const domain = String(req.body?.domain || "").trim().toLowerCase().replace(/\.$/, "");
+    const email = String(req.body?.email || "").trim().toLowerCase();
+    if (!/^[a-z0-9.-]+$/.test(domain) || !domain.includes(".")) {
+      res.status(400).json({ error: "Invalid domain name" });
+      return;
+    }
+    if (!/^[^@\s]+@[^@\s]+$/.test(email) || !email.endsWith(`@${domain}`)) {
+      res.status(400).json({ error: `email must be an address at ${domain}` });
+      return;
+    }
+
+    const tenantId = serviceTenantId(req);
+
+    // 1. The zone. Registered here because Cerulean is the only principal allowed
+    //    to touch the resolver; a retry finds it and reports created:false.
+    const existing = db.getDomainByName(domain, tenantId);
+    let zoneCreated = false;
+    if (!existing) {
+      const conn = providerConnectionForTenant(tenantId) as unknown as Record<string, unknown> | null;
+      try {
+        await technitium.ensureZone(domain, (conn ?? undefined) as never);
+      } catch (err) {
+        db.addActivity(
+          "dns-zone-error",
+          `Technitium ensure zone ${domain} failed (service tenant)`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+      db.createDomain({ name: domain, tenantId });
+      zoneCreated = true;
+    }
+
+    // 2. The people behind the new domain need to be able to sign in to the
+    //    estate's consoles, so the tenant's own Authentik group is ensured too.
+    //    Best effort: a group that cannot be created is reported, never fatal.
+    const tenant = db.listTenants().find((t) => t.id === tenantId);
+    let warning: string | undefined;
+    if (tenant && authentikAdminConfigured()) {
+      try {
+        await ensureGroup(tenant.slug);
+      } catch (err) {
+        warning = `The tenant's Authentik group was not ensured: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+
+    // 3. The mail half. If the mail host is not configured we say so, with the
+    //    zone result, rather than half-building a tenant in silence.
+    if (!config.mail.provisionUrl) {
+      res.status(503).json({
+        error:
+          "Mail provisioning is not configured (MAIL_PROVISION_URL): the zone was registered but no mail domain was created",
+        tenant: tenant ? { id: tenant.id, slug: tenant.slug } : { id: tenantId },
+        domain: { name: domain, created: zoneCreated },
+      });
+      return;
+    }
+
+    let mailStatus = 0;
+    let mail: unknown = null;
+    try {
+      const response = await fetch(`${config.mail.provisionUrl}/api/service/provision`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          // The caller's own key travels, never a platform credential.
+          authorization: String(req.headers.authorization || ""),
+        },
+        body: JSON.stringify({
+          domain,
+          email,
+          ...(req.body?.name ? { name: String(req.body.name) } : {}),
+          ...(req.body?.groups ? { groups: req.body.groups } : {}),
+          ...(req.body?.description ? { description: String(req.body.description) } : {}),
+        }),
+        signal: AbortSignal.timeout(config.mail.timeoutMs),
+      });
+      mailStatus = response.status;
+      mail = await response.json().catch(() => null);
+      if (response.status >= 400) {
+        const detail =
+          mail && typeof mail === "object" && "error" in mail
+            ? String((mail as { error?: unknown }).error)
+            : `HTTP ${response.status}`;
+        res.status(502).json({
+          error: `The mail host refused the tenant: ${detail}`,
+          tenant: tenant ? { id: tenant.id, slug: tenant.slug } : { id: tenantId },
+          domain: { name: domain, created: zoneCreated },
+          mail,
+        });
+        return;
+      }
+    } catch (err) {
+      res.status(502).json({
+        error: `The mail host could not be reached: ${err instanceof Error ? err.message : String(err)}`,
+        tenant: tenant ? { id: tenant.id, slug: tenant.slug } : { id: tenantId },
+        domain: { name: domain, created: zoneCreated },
+      });
+      return;
+    }
+
+    db.addActivity("tenant-provision", `[service] Provisioned ${domain} with ${email}`);
+    res.status((zoneCreated || mailStatus === 201) ? 201 : 200).json({
+      tenant: tenant ? { id: tenant.id, slug: tenant.slug } : { id: tenantId },
+      domain: { name: domain, created: zoneCreated },
+      mail,
+      ...(warning ? { warning } : {}),
+    });
+  }),
+);
 
 router.get("/service/certificates", serviceBridgeAuth(["certs", "certs:read", "*"]), (req, res) => {
   res.json(db.listCertificates(serviceTenantId(req)).map(certToJson));
