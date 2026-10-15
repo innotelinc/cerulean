@@ -115,6 +115,21 @@ PROXY_HOSTS = [
         "websocket": True,
         "purpose": "Administration",
     },
+    # DayZero's published app. It runs inside the incus container `dayzero` on
+    # 192.168.1.52, which binds 127.0.0.1:8787 in-container — so the reachable
+    # upstream is that host's proxy device rather than the container's own
+    # address, and it is not this box, hence the explicit forward_host.
+    # Its certificate is Cerulean's (nice_name cerulean-blueprint.innotel.us);
+    # an update preserves whatever certificate_id the host already carries.
+    {
+        "name": "blueprint",
+        "domain": "blueprint.innotel.us",
+        "forward_host": "192.168.1.52",
+        "port": 8787,
+        "scheme": "http",
+        "websocket": True,
+        "purpose": "DayZero — type a name, walk away with a company",
+    },
 ]
 
 # ── .env + environment helpers ──────────────────────────────────────────────
@@ -388,11 +403,14 @@ def ensure_www_aliases(npm, existing_redirections, certs, technitium_url, do_dns
 
 
 def host_payload(entry, base_domain, forward_host, ssl_via_npm, letsencrypt_email):
-    domain = f"{entry['name']}.{base_domain}"
+    # An entry may name a fully-qualified host, and its own upstream, when the
+    # host is not `<name>.<base_domain>` or does not run on this box: the map
+    # is the estate's proxy-host inventory, not only Cerulean's subdomains.
+    domain = entry.get("domain") or f"{entry['name']}.{base_domain}"
     payload = {
         "domain_names": [domain],
         "forward_scheme": entry.get("scheme", "http"),
-        "forward_host": forward_host,
+        "forward_host": entry.get("forward_host", forward_host),
         "forward_port": int(entry["port"]),
         "certificate_id": "new" if ssl_via_npm else 0,
         "ssl_forced": bool(ssl_via_npm),

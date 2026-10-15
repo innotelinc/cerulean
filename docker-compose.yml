@@ -181,7 +181,7 @@ services:
   authentik-server:
     mem_limit: 1500m
     memswap_limit: 1500m
-    image: ghcr.io/goauthentik/server:${AUTHENTIK_IMAGE_TAG:-2026.8.3}
+    image: ghcr.io/goauthentik/server:${AUTHENTIK_IMAGE_TAG:-2026.8.4}
     container_name: cerulean-authentik
     profiles: ["authentik"]
     restart: unless-stopped
@@ -211,7 +211,7 @@ services:
         condition: service_healthy
 
   authentik-worker:
-    image: ghcr.io/goauthentik/server:${AUTHENTIK_IMAGE_TAG:-2026.8.3}
+    image: ghcr.io/goauthentik/server:${AUTHENTIK_IMAGE_TAG:-2026.8.4}
     container_name: cerulean-authentik-worker
     profiles: ["authentik"]
     restart: unless-stopped
