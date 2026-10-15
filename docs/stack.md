@@ -21,7 +21,7 @@ the canonical single-responsibility architecture.
 
 ## Provides
 
-- Trust + network services (certificates, DNS, DHCP, blocking, PKI) to Monarch, Zeus, Oasis, Signara, ONYX, Magnate, Capstone, and NPM Edge
+- Trust + network services (certificates, DNS, DHCP, blocking, PKI) to Monarch, Zeus, Oasis, Signara, ONYX, Magnate, Capstone, OnTrak, and NPM Edge
 - Plug-anywhere LAN operation (DHCP/DNS/blocking/certs) without internet
 
 ## Consumes
