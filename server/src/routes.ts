@@ -1813,6 +1813,215 @@ router.post(
   }),
 );
 
+/**
+ * Does the resolver still answer for this name?
+ *
+ * Read-only, and deliberately not tenant-scoped: Technitium has no idea what a
+ * tenant is, so this says whether the *name* is served, whoever registered it.
+ * That is the question a teardown is really asking — "has this name stopped
+ * answering?" — and an unreadable resolver answers "still served", because
+ * nothing should claim a removal it cannot see.
+ */
+async function zoneStillServed(
+  domain: string,
+  conn: Record<string, unknown> | null,
+): Promise<boolean> {
+  try {
+    const zones = await technitium.listZones((conn ?? undefined) as never);
+    return zones.some((zone) => String(zone.name ?? "").replace(/\.$/, "").toLowerCase() === domain);
+  } catch {
+    return true;
+  }
+}
+
+// ── Tenant teardown — the counterpart of the one above ──────────────────────
+// A provision has to be reversible, or a mistyped domain name and an abandoned
+// tenant both become permanent: the zone keeps answering, the mail domain keeps
+// its DKIM keys, and the identity stays behind, with nothing in the estate that
+// can undo it. The undo goes **through the same bridge** as the doing, so the
+// caller needs no second credential and the mail half is removed on its own
+// forwarded authority, exactly as it was created.
+//
+// Two halves, and it is explicit which are wanted: `email` removes that mailbox,
+// `removeDomain` removes the mail domain and the zone with it. A caller that
+// asks for neither is a mistake, not a teardown. The mail host refuses the
+// destructive cases it cannot recover from — a protected zone, or a domain that
+// still carries other people's mailboxes — and that refusal travels back here
+// intact rather than being flattened into a generic bridge failure.
+//
+// Idempotent like provisioning, because the callers are the same webhooks: a
+// retry finds the mailbox already gone (`removed: false`) and answers 200.
+// Nothing here reads or returns a secret.
+//
+// The zone half happens here rather than only inside the mail host so that the
+// operation is complete when this responds: a tenant whose mail domain was
+// already gone still gets its zone handed back.
+router.delete(
+  "/service/tenants",
+  serviceBridgeAuth(["tenants:write", "tenants", "tenant:write", "tenant", "*"]),
+  asyncHandler(async (req, res) => {
+    const domain = String(req.body?.domain ?? req.query?.domain ?? "").trim().toLowerCase().replace(/\.$/, "");
+    const email = String(req.body?.email ?? req.query?.email ?? "").trim().toLowerCase();
+    const removeDomain = req.body?.removeDomain === true || req.query?.removeDomain === "true";
+    if (!/^[a-z0-9.-]+$/.test(domain) || !domain.includes(".")) {
+      res.status(400).json({ error: "Invalid domain name" });
+      return;
+    }
+    if (email && !email.endsWith(`@${domain}`)) {
+      res.status(400).json({ error: `email must be an address at ${domain}` });
+      return;
+    }
+    if (!email && !removeDomain) {
+      res.status(400).json({ error: "Pass an email, removeDomain, or both — there is nothing to remove" });
+      return;
+    }
+
+    const ident = serverIdentity.currentIdentity();
+    if (domain === ident.apex || domain === ident.labDomain) {
+      res.status(403).json({ error: `Zone ${domain} is a platform zone and is never removed through the service bridge` });
+      return;
+    }
+
+    const tenantId = serviceTenantId(req);
+    const tenant = db.listTenants().find((t) => t.id === tenantId);
+    const envelope = () => ({ tenant: tenant ? { id: tenant.id, slug: tenant.slug } : { id: tenantId }, domain: { name: domain } });
+
+    if (!config.mail.provisionUrl) {
+      res.status(503).json({
+        ...envelope(),
+        error: "Mail provisioning is not configured (MAIL_PROVISION_URL): nothing was removed",
+      });
+      return;
+    }
+
+    let mail: Record<string, unknown> | null = null;
+    try {
+      const response = await fetch(`${config.mail.provisionUrl}/api/service/deprovision`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          // The caller's own key travels, never a platform credential — the mail
+          // host adjudicates it against Cerulean before removing anything.
+          authorization: String(req.headers.authorization || ""),
+        },
+        body: JSON.stringify({ domain, ...(email ? { email } : {}), removeDomain }),
+        signal: AbortSignal.timeout(config.mail.timeoutMs),
+      });
+      const payload = await response.json().catch(() => null);
+      mail = (payload && typeof payload === "object" ? payload : null) as Record<string, unknown> | null;
+      if (response.ok) {
+        // fall through to the zone half
+      } else if (response.status === 400 || response.status === 409) {
+        // The mail host's own refusal, passed through as what it is: a conflict
+        // the caller has to resolve, not a bridge that broke.
+        res.status(response.status === 400 ? 409 : response.status).json({
+          ...envelope(),
+          error: `The mail host refused the teardown: ${
+            mail && "error" in mail ? String((mail as { error?: unknown }).error) : `HTTP ${response.status}`
+          }`,
+          mail,
+        });
+        return;
+      } else if (response.status === 404) {
+        res.status(404).json({
+          ...envelope(),
+          error: `The mail host found nothing at ${domain} to remove`,
+          mail,
+        });
+        return;
+      } else {
+        res.status(502).json({
+          ...envelope(),
+          error: `The mail host refused the teardown: ${
+            mail && "error" in mail ? String((mail as { error?: unknown }).error) : `HTTP ${response.status}`
+          }`,
+          mail,
+        });
+        return;
+      }
+    } catch (err) {
+      res.status(502).json({
+        ...envelope(),
+        error: `The mail host could not be reached: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      return;
+    }
+
+    const accountRemoved = Boolean((mail?.account as Record<string, unknown> | null)?.removed);
+    const mailDomainRemoved = Boolean((mail?.domainRemoved as Record<string, unknown> | null)?.removed);
+
+    // The zone goes last, and only for the caller's own tenant: a name registered
+    // to somebody else is not this caller's to hand back. A zone already gone is
+    // reported, not failed — a retry should not be an error.
+    //
+    // Most of the time it is already gone by now, and that is not a failure: the
+    // mail host removes the zone as part of removing the mail domain (its
+    // `remove_domain` calls back into `DELETE /service/domains`), so an absent row
+    // means the name was handed back with the domain. Reporting that as "not
+    // removed" would call a finished teardown unfinished.
+    let zoneRemoved = false;
+    let zoneDetail: string | undefined;
+    let zoneError: string | undefined;
+    if (removeDomain) {
+      const conn = providerConnectionForTenant(tenantId) as unknown as Record<string, unknown> | null;
+      const registered = db.getDomainByName(domain, tenantId);
+      if (!registered) {
+        // No zone of this tenant's is registered — either because the mail host
+        // took it with the mail domain, or because this name was never ours to
+        // hand back. The resolver decides which, and only a name it no longer
+        // serves counts as handed back.
+        const served = await zoneStillServed(domain, conn);
+        if (served) {
+          zoneRemoved = false;
+          zoneDetail =
+            "No zone of this tenant's is registered, and the name is still served — it was not this teardown's to hand back.";
+        } else if (mailDomainRemoved) {
+          zoneRemoved = true;
+          zoneDetail = "The zone went with the mail domain, through the same bridge.";
+        } else {
+          // Nothing was registered and the resolver does not serve it: there was
+          // no zone here to hand back, and saying otherwise would let a repeat of
+          // this teardown report a second removal.
+          zoneRemoved = false;
+          zoneDetail = "No zone was registered for this name.";
+        }
+      } else {
+        try {
+          await technitium.deleteZone(domain, (conn ?? undefined) as never);
+          zoneRemoved = true;
+          zoneDetail = "Cerulean removed the zone it had registered.";
+          // The row only goes once the resolver has let the name go. Keeping it
+          // when the resolver refuses is what lets a retry try again, instead of
+          // reporting a success against a name that still answers.
+          db.deleteDomain(registered.id, tenantId);
+        } catch (err) {
+          zoneError = err instanceof Error ? err.message : String(err);
+          zoneDetail = "The zone is still registered, so the name still answers.";
+          db.addActivity("dns-zone-error", `Technitium delete zone ${domain} failed (service teardown)`, zoneError);
+        }
+      }
+    }
+
+    const removed = accountRemoved || mailDomainRemoved || zoneRemoved;
+    db.addActivity(
+      "tenant-deprovision",
+      `[service] Removed ${email || domain}${removeDomain ? " and its zone" : ""} (${removed ? "removed" : "nothing was there"})`,
+    );
+    res.json({
+      ...envelope(),
+      domain: {
+        name: domain,
+        zoneRemoved,
+        mailDomainRemoved,
+        removed,
+        ...(zoneDetail ? { zoneDetail } : {}),
+      },
+      mail,
+      ...(zoneError ? { warning: `The zone was not removed: ${zoneError}` } : {}),
+    });
+  }),
+);
+
 router.get("/service/certificates", serviceBridgeAuth(["certs", "certs:read", "*"]), (req, res) => {
   res.json(db.listCertificates(serviceTenantId(req)).map(certToJson));
 });

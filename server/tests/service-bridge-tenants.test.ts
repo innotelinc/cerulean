@@ -38,12 +38,16 @@ const state = vi.hoisted(() => ({
   tenants: [{ id: 1, slug: "innotel", name: "Innotel", created_at: "" }] as TenantRow[],
   domains: [] as DomainRow[],
   zonesEnsured: [] as string[],
+  zonesDeleted: [] as string[],
+  zoneDeleteFails: false,
+  zonesServed: [] as string[],
+  domainsDeleted: [] as number[],
   domainsCreated: [] as string[],
   activities: [] as string[],
   groupsEnsured: [] as string[],
   authentikConfigured: false,
   groupFailure: false,
-  mailCalls: [] as Array<{ authorization?: string; body: Record<string, unknown> }>,
+  mailCalls: [] as Array<{ path?: string; authorization?: string; body: Record<string, unknown> }>,
   mailStatus: 201,
   mailReply: null as unknown,
 }));
@@ -58,6 +62,10 @@ vi.mock("../src/db", () => {
     listTenants: () => state.tenants,
     getDomainByName: (name, tenantId) =>
       state.domains.find((d) => d.name === String(name) && (!tenantId || d.tenant_id === tenantId)),
+    deleteDomain: (id) => {
+      state.domainsDeleted.push(Number(id));
+      state.domains = state.domains.filter((d) => d.id !== Number(id));
+    },
     createDomain: (input) => {
       const value = (input || {}) as { name?: unknown; tenantId?: unknown };
       const row: DomainRow = {
@@ -93,8 +101,12 @@ vi.mock("../src/services/technitium", () => ({
     state.zonesEnsured.push(zone);
   },
   listZone: async () => [],
-  deleteZone: async () => undefined,
+  deleteZone: async (zone: string) => {
+    state.zonesDeleted.push(zone);
+    if (state.zoneDeleteFails) throw new Error("Technitium said no");
+  },
   addRecord: async () => undefined,
+  listZones: async () => state.zonesServed.map((name) => ({ name, type: "Primary", disabled: false })),
   deleteRecord: async () => undefined,
 }));
 
@@ -181,6 +193,7 @@ function startMailHost(): Promise<{ close: (cb?: () => void) => void }> {
   app.use(express.json());
   app.post("/api/service/provision", (req, res) => {
     state.mailCalls.push({
+      path: "/api/service/provision",
       authorization: req.headers.authorization,
       body: (req.body || {}) as Record<string, unknown>,
     });
@@ -190,6 +203,23 @@ function startMailHost(): Promise<{ close: (cb?: () => void) => void }> {
       .json(state.mailReply ?? { ok: status < 400, created: status === 201, password: status === 201 ? "one-time" : null });
   });
   const httpServer = app.listen(0, "127.0.0.1");
+  app.post("/api/service/deprovision", (req, res) => {
+    state.mailCalls.push({
+      path: "/api/service/deprovision",
+      authorization: req.headers.authorization,
+      body: (req.body || {}) as Record<string, unknown>,
+    });
+    const status = state.mailStatus;
+    res
+      .status(status)
+      .json(state.mailReply ?? {
+        ok: status < 400,
+        account: { email: req.body?.email, removed: status < 400 },
+        domainRemoved: req.body?.removeDomain
+          ? { domain: req.body?.domain, destroyed: true, removed: true }
+          : null,
+      });
+  });
   return new Promise((resolve) => {
     httpServer.once("listening", () => resolve(httpServer));
   });
@@ -217,6 +247,10 @@ beforeEach(() => {
   state.tenants = [{ id: 1, slug: "innotel", name: "Innotel", created_at: "" }];
   state.domains = [];
   state.zonesEnsured = [];
+  state.zonesDeleted = [];
+  state.zoneDeleteFails = false;
+  state.zonesServed = [];
+  state.domainsDeleted = [];
   state.domainsCreated = [];
   state.activities = [];
   state.groupsEnsured = [];
@@ -359,6 +393,278 @@ describe("service bridge — tenant provisioning", () => {
 
     expect(response.status).toBe(201);
     expect(String((response.payload as { warning?: string }).warning)).toContain("authentik said no");
+  });
+});
+
+describe("service bridge — tenant teardown", () => {
+  it("refuses a teardown with no key", async () => {
+    const response = await call("/service/tenants", undefined, "DELETE", {
+      domain: "acme.example",
+      email: "ops@acme.example",
+    });
+    expect(response.status).toBe(401);
+    expect(messageOf(response.payload)).toContain("service API key");
+  });
+
+  it("refuses a key that may provision mail but not tenants", async () => {
+    const token = installKey(["mail:provision"]);
+    const response = await call("/service/tenants", token, "DELETE", {
+      domain: "acme.example",
+      email: "ops@acme.example",
+    });
+    expect(response.status).toBe(403);
+    expect(messageOf(response.payload)).toContain("Insufficient scope");
+    expect(state.mailCalls).toEqual([]);
+  });
+
+  it("refuses a request that asks for nothing", async () => {
+    const token = installKey(["tenants:write", "mail:provision"]);
+    const response = await call("/service/tenants", token, "DELETE", { domain: "acme.example" });
+    expect(response.status).toBe(400);
+    expect(messageOf(response.payload)).toContain("nothing to remove");
+    // Nothing was asked for, so nothing was visited.
+    expect(state.mailCalls).toEqual([]);
+    expect(state.zonesDeleted).toEqual([]);
+  });
+
+  it("refuses a platform zone before anything is touched", async () => {
+    const token = installKey(["tenants:write", "mail:provision"]);
+    for (const platform of ["example.test", "lab.example.test"]) {
+      const response = await call("/service/tenants", token, "DELETE", {
+        domain: platform,
+        removeDomain: true,
+      });
+      expect(response.status).toBe(403);
+      expect(messageOf(response.payload)).toContain("platform zone");
+    }
+    expect(state.mailCalls).toEqual([]);
+  });
+
+  it("removes the mailbox on the caller's own key, and leaves the domain alone", async () => {
+    state.domains.push({ id: 101, name: "acme.example", tenant_id: 1, created_at: "" });
+    const token = installKey(["tenants:write", "mail:provision"]);
+    const response = await call("/service/tenants", token, "DELETE", {
+      domain: "acme.example",
+      email: "ops@acme.example",
+    });
+
+    expect(response.status).toBe(200);
+    expect(state.mailCalls).toHaveLength(1);
+    expect(state.mailCalls[0].path).toBe("/api/service/deprovision");
+    // The caller's key travels, exactly as it does for the provision.
+    expect(state.mailCalls[0].authorization).toBe(`Bearer ${token}`);
+    expect(state.mailCalls[0].body).toMatchObject({
+      domain: "acme.example",
+      email: "ops@acme.example",
+      removeDomain: false,
+    });
+    expect((response.payload as { domain?: { removed?: boolean } }).domain?.removed).toBe(true);
+    // The zone stays: only a mailbox was removed.
+    expect(state.zonesDeleted).toEqual([]);
+    expect(state.domainsDeleted).toEqual([]);
+    expect(state.activities).toContain("tenant-deprovision");
+  });
+
+  it("hands the zone back when the domain goes, so the name stops answering", async () => {
+    state.domains.push({ id: 101, name: "acme.example", tenant_id: 1, created_at: "" });
+    const token = installKey(["tenants:write", "mail:provision"]);
+    state.mailReply = {
+      account: { email: "ops@acme.example", removed: true },
+      domainRemoved: { domain: "acme.example", destroyed: true, removed: true },
+    };
+    const response = await call("/service/tenants", token, "DELETE", {
+      domain: "acme.example",
+      email: "ops@acme.example",
+      removeDomain: true,
+    });
+
+    expect(response.status).toBe(200);
+    const payload = response.payload as { domain?: { zoneRemoved?: boolean; removed?: boolean } };
+    expect(payload.domain?.zoneRemoved).toBe(true);
+    expect(payload.domain?.removed).toBe(true);
+    expect(state.zonesDeleted).toEqual(["acme.example"]);
+    expect(state.domainsDeleted).toEqual([101]);
+  });
+
+  it("never removes, and never claims, a zone registered to another tenant", async () => {
+    // The caller's own tenant is 1; this zone belongs to tenant 2, and the
+    // resolver still serves it — which is the only reason it is not "handed back".
+    state.domains.push({ id: 201, name: "acme.example", tenant_id: 2, created_at: "" });
+    state.zonesServed = ["acme.example"];
+    const token = installKey(["tenants:write", "mail:provision"], 1);
+    const response = await call("/service/tenants", token, "DELETE", {
+      domain: "acme.example",
+      removeDomain: true,
+    });
+
+    expect(response.status).toBe(200);
+    const payload = response.payload as { domain?: { zoneRemoved?: boolean; zoneDetail?: string } };
+    expect(payload.domain?.zoneRemoved).toBe(false);
+    expect(String(payload.domain?.zoneDetail)).toContain("still served");
+    expect(state.zonesDeleted).toEqual([]);
+    expect(state.domainsDeleted).toEqual([]);
+  });
+
+  it("passes the mail host's refusal through as a conflict, not a bridge failure", async () => {
+    state.mailStatus = 400;
+    state.mailReply = {
+      error:
+        "refusing to remove acme.example: 2 other account(s) still live on it (ops@acme.example, postmaster@acme.example)",
+    };
+    const token = installKey(["tenants:write", "mail:provision"]);
+    const response = await call("/service/tenants", token, "DELETE", {
+      domain: "acme.example",
+      email: "someone@acme.example",
+      removeDomain: true,
+    });
+
+    expect(response.status).toBe(409);
+    expect(messageOf(response.payload)).toContain("still live on it");
+    // A refusal must not leave the resolver half-torn-down.
+    expect(state.zonesDeleted).toEqual([]);
+    expect(state.domainsDeleted).toEqual([]);
+  });
+
+  it("answers 404 when the mail host has nothing to remove", async () => {
+    state.mailStatus = 404;
+    state.mailReply = { error: "ops@acme.example: no such user" };
+    const token = installKey(["tenants:write", "mail:provision"]);
+    const response = await call("/service/tenants", token, "DELETE", {
+      domain: "acme.example",
+      email: "ops@acme.example",
+    });
+
+    expect(response.status).toBe(404);
+    expect(state.zonesDeleted).toEqual([]);
+  });
+
+  it("reports an unreachable mail host rather than claiming a teardown", async () => {
+    state.mailStatus = 500;
+    state.mailReply = { error: "boom" };
+    const token = installKey(["tenants:write", "mail:provision"]);
+    const response = await call("/service/tenants", token, "DELETE", {
+      domain: "acme.example",
+      email: "ops@acme.example",
+    });
+
+    expect(response.status).toBe(502);
+  });
+
+  it("says the mail half is unconfigured rather than removing the zone alone", async () => {
+    config.mail.provisionUrl = "";
+    state.domains.push({ id: 101, name: "acme.example", tenant_id: 1, created_at: "" });
+    const token = installKey(["tenants:write", "mail:provision"]);
+    const response = await call("/service/tenants", token, "DELETE", {
+      domain: "acme.example",
+      email: "ops@acme.example",
+      removeDomain: true,
+    });
+
+    expect(response.status).toBe(503);
+    expect(messageOf(response.payload)).toContain("MAIL_PROVISION_URL");
+    expect(state.zonesDeleted).toEqual([]);
+  });
+
+  it("is idempotent: a retry of a finished teardown reports nothing was there", async () => {
+    const token = installKey(["tenants:write", "mail:provision"]);
+    state.mailReply = {
+      account: { email: "ops@acme.example", removed: false, detail: "no such mailbox" },
+      domainRemoved: { domain: "acme.example", removed: false, detail: "no such mail domain" },
+    };
+    const response = await call("/service/tenants", token, "DELETE", {
+      domain: "acme.example",
+      email: "ops@acme.example",
+      removeDomain: true,
+    });
+
+    expect(response.status).toBe(200);
+    expect((response.payload as { domain?: { removed?: boolean } }).domain?.removed).toBe(false);
+    expect(state.zonesDeleted).toEqual([]);
+  });
+
+  it("refuses an invalid domain and an account that is not at it", async () => {
+    const token = installKey(["tenants:write", "mail:provision"]);
+    const bad = await call("/service/tenants", token, "DELETE", { domain: "nodots", email: "a@nodots" });
+    expect(bad.status).toBe(400);
+    const elsewhere = await call("/service/tenants", token, "DELETE", {
+      domain: "acme.example",
+      email: "ops@elsewhere.example",
+    });
+    expect(elsewhere.status).toBe(400);
+    expect(messageOf(elsewhere.payload)).toContain("must be an address at acme.example");
+    expect(state.mailCalls).toEqual([]);
+  });
+});
+
+describe("service bridge — tenant teardown, the zone half", () => {
+  // Cerulean removes the zone as part of removing a mail domain (the mail host's
+  // remove_domain calls back into DELETE /service/domains), so by the time the
+  // outer request looks there is usually no row left. That is the zone being
+  // handed back, and reporting it as "not removed" would call a finished teardown
+  // unfinished — which is exactly the bug this pins down.
+  it("credits a zone that went with the mail domain instead of calling it missing", async () => {
+    const token = installKey(["tenants:write", "mail:provision"]);
+    state.mailReply = {
+      account: { email: "ops@acme.example", removed: true },
+      domainRemoved: { domain: "acme.example", destroyed: true, removed: true },
+    };
+    const response = await call("/service/tenants", token, "DELETE", {
+      domain: "acme.example",
+      email: "ops@acme.example",
+      removeDomain: true,
+    });
+
+    expect(response.status).toBe(200);
+    const payload = response.payload as { domain?: { zoneRemoved?: boolean; removed?: boolean; zoneDetail?: string } };
+    expect(payload.domain?.zoneRemoved).toBe(true);
+    expect(payload.domain?.removed).toBe(true);
+    expect(String(payload.domain?.zoneDetail)).toContain("went with the mail domain");
+    // Nothing was registered here, so nothing was deleted here either.
+    expect(state.zonesDeleted).toEqual([]);
+    expect(state.domainsDeleted).toEqual([]);
+  });
+
+  it("does not claim a zone that was never registered, and no mail domain either", async () => {
+    const token = installKey(["tenants:write", "mail:provision"]);
+    state.mailReply = {
+      account: { email: "ops@acme.example", removed: false, detail: "no such mailbox" },
+      domainRemoved: { domain: "acme.example", removed: false, detail: "no such mail domain" },
+    };
+    const response = await call("/service/tenants", token, "DELETE", {
+      domain: "acme.example",
+      email: "ops@acme.example",
+      removeDomain: true,
+    });
+
+    expect(response.status).toBe(200);
+    const payload = response.payload as { domain?: { zoneRemoved?: boolean; removed?: boolean; zoneDetail?: string } };
+    expect(payload.domain?.zoneRemoved).toBe(false);
+    expect(payload.domain?.removed).toBe(false);
+    expect(String(payload.domain?.zoneDetail)).toContain("No zone was registered");
+  });
+
+  it("keeps the registration when the resolver refuses, so a retry can try again", async () => {
+    state.domains.push({ id: 101, name: "acme.example", tenant_id: 1, created_at: "" });
+    state.zoneDeleteFails = true;
+    state.mailReply = {
+      account: { email: "ops@acme.example", removed: true },
+      domainRemoved: { domain: "acme.example", destroyed: true, removed: true },
+    };
+    const token = installKey(["tenants:write", "mail:provision"]);
+    const response = await call("/service/tenants", token, "DELETE", {
+      domain: "acme.example",
+      email: "ops@acme.example",
+      removeDomain: true,
+    });
+
+    expect(response.status).toBe(200);
+    const payload = response.payload as { domain?: { zoneRemoved?: boolean }; warning?: string };
+    expect(payload.domain?.zoneRemoved).toBe(false);
+    expect(String(payload.warning)).toContain("Technitium said no");
+    // The row has to survive, or the next attempt would find nothing to remove and
+    // report a success against a name that still answers.
+    expect(state.domainsDeleted).toEqual([]);
+    expect(state.zonesDeleted).toEqual(["acme.example"]);
   });
 });
 
