@@ -2,9 +2,9 @@
 
 # 🔵 Cerulean
 
-**Authentication, secrets & trust management — self-hosted.**
+**TrustOps — identity, secrets and certificates for the whole platform, self-hosted.**
 
-*One login for the whole platform — DNS, DHCP, certificates, ad-blocking, secrets, and identity in one place.*
+*One login for every service — DNS, DHCP, certificates, ad-blocking, secrets and identity in one place.*
 
 [![CI](https://github.com/innotelinc/cerulean/actions/workflows/ci.yml/badge.svg)](https://github.com/innotelinc/cerulean/actions/workflows/ci.yml)
 [![Conformity](https://github.com/innotelinc/cerulean/actions/workflows/conform.yml/badge.svg)](https://github.com/innotelinc/cerulean/actions/workflows/conform.yml)
@@ -28,15 +28,13 @@
 | Recovery after a host loss is manual | Cerulean stores DNS + PKI + secrets; re-provision a host and the trust plane is recoverable |
 | Box must work offline / anywhere | Master orchestrator: DHCP, DNS, 90-day wildcard (*.<serverId>.lab.innotel.us) and ad-blocking without internet |
 
-> **About Cerulean** — the self-hosted **authentication & trust stack** for the Innotel
-> platform: **Authentik** (single sign-on — every platform login goes through Cerulean),
-> **HashiCorp Vault** (secret management), certificate lifecycles and DNS automation written
-> straight into **Technitium DNS Server** via HTTP API (regular + wildcard Let's Encrypt via DNS-01),
-> an **internal PKI** with mTLS device enrollment, **DHCP** and **ad-blocking** from the same DNS,
-> discovery and health scoring, a secret vault,
-> and multi-tenant isolation — **self-sufficient** with a 90-day wildcard
-> (`*.<serverId>.lab.innotel.us` / `<serverId>.lab.innotel.us`) that works offline and
-> is upgraded to ACME when online. nginx proxy manager wired with zero clicks.
+> **About Cerulean** — the platform's **TrustOps** layer. **Authentik** is the single
+> sign-on every platform uses and **HashiCorp Vault** is the only place secrets live,
+> while **Technitium** serves DNS, DHCP and ad-blocking and Cerulean drives Let's Encrypt
+> certificates (regular and wildcard, DNS-01 over that same HTTP API) plus a 90-day PKI
+> wildcard that works with no internet. It also runs an internal CA for device mTLS,
+> provisions nginx proxy manager, audits certificate and DNS health, and scopes every
+> certificate, zone and secret per tenant.
 > **Landing page:** [innotelinc.github.io/cerulean](https://innotelinc.github.io/cerulean)
 
 ---
