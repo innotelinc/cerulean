@@ -141,3 +141,111 @@ describe("technitium invalid-token recovery", () => {
     ]);
   });
 });
+
+/**
+ * Record deletes, on the wire.
+ *
+ * Technitium matches a delete against the whole RDATA and validates it field by
+ * field, so a type whose delete payload does not carry those fields is accepted by
+ * the bridge and refused by Technitium. SRV was exactly that: it had no delete
+ * branch, so every SRV delete failed with `Parameter 'priority' missing` and the
+ * records stayed in the zone — the last six of a retired domain, left behind
+ * because there was no way to remove them. Priority 0 also has to survive the
+ * query-string builder, which drops empty values.
+ */
+describe("technitium record deletes", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  function installRecordingFetch() {
+    const calls: URL[] = [];
+    vi.stubGlobal("fetch", async (url: string | URL) => {
+      calls.push(new URL(String(url)));
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        text: async () => JSON.stringify({ status: "ok" }),
+        json: async () => ({ status: "ok" }),
+      } as unknown as Response;
+    });
+    return calls;
+  }
+
+  it("sends a SRV delete with every field of its RDATA, priority 0 included", async () => {
+    const calls = installRecordingFetch();
+    const { deleteRecord } = await service();
+
+    await deleteRecord(
+      { zone: "innotel.us", type: "SRV", name: "_autodiscover._tcp", value: "0 5 443 autodiscover.innotel.us" },
+      CONN,
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].pathname).toBe("/api/zones/records/delete");
+    const q = calls[0].searchParams;
+    expect(q.get("domain")).toBe("_autodiscover._tcp.innotel.us");
+    expect(q.get("type")).toBe("SRV");
+    expect(q.get("priority")).toBe("0");
+    expect(q.get("weight")).toBe("5");
+    expect(q.get("port")).toBe("443");
+    expect(q.get("target")).toBe("autodiscover.innotel.us");
+    expect(q.get("text")).toBeNull();
+  });
+
+  it("refuses a SRV delete that does not carry the full RDATA", async () => {
+    const calls = installRecordingFetch();
+    const { deleteRecord } = await service();
+
+    await expect(
+      deleteRecord({ zone: "innotel.us", type: "SRV", name: "_autodiscover._tcp", value: "autodiscover.innotel.us" }, CONN),
+    ).rejects.toThrow(/priority weight port target/);
+    // Nothing was sent: guessing the missing fields would delete a different record.
+    expect(calls).toHaveLength(0);
+  });
+
+  it("sends CAA and PTR deletes under the names Technitium validates", async () => {
+    const calls = installRecordingFetch();
+    const { deleteRecord } = await service();
+
+    await deleteRecord(
+      { zone: "innotel.us", type: "CAA", name: "@", value: '0 issue "letsencrypt.org"' },
+      CONN,
+    );
+    await deleteRecord({ zone: "1.1.168.192.in-addr.arpa", type: "PTR", name: "10", value: "host.innotel.us" }, CONN);
+
+    const caa = calls[0].searchParams;
+    expect(caa.get("flags")).toBe("0");
+    expect(caa.get("tag")).toBe("issue");
+    expect(caa.get("value")).toBe("letsencrypt.org");
+    expect(caa.get("text")).toBeNull();
+
+    const ptr = calls[1].searchParams;
+    expect(ptr.get("ptrName")).toBe("host.innotel.us");
+    expect(ptr.get("text")).toBeNull();
+  });
+
+  it("refuses a CAA delete that does not carry flags, tag and value", async () => {
+    const calls = installRecordingFetch();
+    const { deleteRecord } = await service();
+
+    await expect(
+      deleteRecord({ zone: "innotel.us", type: "CAA", name: "@", value: "letsencrypt.org" }, CONN),
+    ).rejects.toThrow(/flags tag value/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("still deletes MX by preference and exchange", async () => {
+    const calls = installRecordingFetch();
+    const { deleteRecord } = await service();
+
+    await deleteRecord({ zone: "innotel.us", type: "MX", name: "@", value: "10 mail.innotel.us" }, CONN);
+
+    const q = calls[0].searchParams;
+    expect(q.get("type")).toBe("MX");
+    expect(q.get("preference")).toBe("10");
+    expect(q.get("exchange")).toBe("mail.innotel.us");
+  });
+});

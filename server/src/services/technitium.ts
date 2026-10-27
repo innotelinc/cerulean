@@ -321,6 +321,31 @@ function recordValueForDelete(type: string, value?: string): Record<string, stri
     return { exchange: value };
   }
   if (t === "NS") return { nameServer: value };
+  if (t === "SRV") {
+    // A delete is matched on the whole RDATA, not just the target: Technitium
+    // validates priority, weight and port first and answers `Parameter
+    // 'priority' missing` otherwise. The listed value is the same
+    // "priority weight port target" shape add takes.
+    const parts = value.trim().split(/\s+/);
+    if (parts.length < 4) {
+      // Guessing the missing fields would match a different record (or none) and
+      // report success, so refuse the input instead.
+      throw new Error(`SRV delete needs the full "priority weight port target" value, got "${value}"`);
+    }
+    return { priority: Number(parts[0]), weight: Number(parts[1]), port: Number(parts[2]), target: parts[3] };
+  }
+  if (t === "CAA") {
+    // Same "flags tag value" shape add takes, quotes optional.
+    const cm = value.match(/^\s*(\d+)\s+(\S+)\s+"?(.+?)"?\s*$/);
+    if (!cm) {
+      throw new Error(`CAA delete needs "flags tag value", got "${value}"`);
+    }
+    return { flags: Number(cm[1]), tag: cm[2], value: cm[3] };
+  }
+  if (t === "PTR") {
+    // Sent as `text` before, which Technitium rejects for PTR (`ptrName` missing).
+    return { ptrName: value };
+  }
   return { text: value };
 }
 
