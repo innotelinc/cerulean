@@ -17,7 +17,7 @@
 #
 # Usage:
 #   authentik-update.sh [--dry-run] [--no-deploy] [--no-push] [--no-outpost]
-#                       [--root DIR] [--version X.Y.Z]
+#                       [--notify-only] [--root DIR] [--version X.Y.Z]
 #
 # Environment:
 #   ESTATE_ROOT               checkout root holding 1-primary/ and ips/
@@ -44,6 +44,10 @@
 #                             image before that is alerted on (default 21600s)
 #   OUTPOST_ALERT_COOLDOWN    seconds between repeated outpost-behind alerts
 #                             (default 21600)
+#   CERULEAN_GIT_DIR          a real cerulean checkout this host may push from;
+#                             deploy-side edits are mirrored into it and committed
+#                             there, so what runs and what the repo records match
+#   STACK_GIT_DIR             the same, for the platform-stack checkout
 #   AUTHENTIK_UPDATE_LOCK     lock file (default /run/lock/authentik-update.lock)
 #   GITHUB_TOKEN              raises the GitHub API rate limit (optional)
 #
@@ -53,7 +57,9 @@
 #   install -Dm644 authentik-update.service /etc/systemd/system/authentik-update.service
 #   install -Dm644 authentik-update-failed.service /etc/systemd/system/authentik-update-failed.service
 #   install -Dm644 authentik-update.timer   /etc/systemd/system/authentik-update.timer
-#   systemctl daemon-reload && systemctl enable --now authentik-update.timer
+#   install -Dm644 authentik-update-announce.service /etc/systemd/system/authentik-update-announce.service
+#   install -Dm644 authentik-update-announce.timer   /etc/systemd/system/authentik-update-announce.timer
+#   systemctl daemon-reload && systemctl enable --now authentik-update.timer authentik-update-announce.timer
 #
 # Alerting is configured in /etc/innotel/authentik-update.env (ALERT_EMAIL_TO
 # and/or ALERT_WEBHOOK_URL). Without either, a failure is only in the journal.
@@ -84,7 +90,10 @@ ALERT_TO="${ALERT_EMAIL_TO:-}"
 ALERT_WEBHOOK="${ALERT_WEBHOOK_URL:-}"
 STATE_DIR="${AUTHENTIK_UPDATE_STATE:-/var/lib/innotel/authentik-update}"
 IMAGE_GRACE="${AUTHENTIK_IMAGE_GRACE:-21600}"
+CERULEAN_GIT_DIR="${CERULEAN_GIT_DIR:-}"
+STACK_GIT_DIR="${STACK_GIT_DIR:-}"
 OUTPOST=true
+NOTIFY_ONLY=false
 mkdir -p "$STATE_DIR" 2>/dev/null || STATE_DIR="${TMPDIR:-/tmp}"
 
 API="https://api.github.com/repos/goauthentik/authentik/releases/latest"
@@ -146,6 +155,7 @@ while [ $# -gt 0 ]; do
     --no-deploy) DEPLOY=false ;;
     --no-push) PUSH=false ;;
     --no-outpost) OUTPOST=false ;;
+    --notify-only) NOTIFY_ONLY=true ;;
     --root)
       [ $# -ge 2 ] || die 2 "--root needs a directory"
       ROOT=$2
@@ -447,6 +457,46 @@ enter_outpost() {
   return 0
 }
 
+# ── Announcement ─────────────────────────────────────────────────────────────
+# The apply run is 06:00. This is the same resolution, earlier, with nothing
+# pulled and nothing restarted: a release that landed overnight is reported
+# before the window opens, so it can be held by hand while the estate is quiet.
+
+release_published() {  # version → its published date, "" when it cannot be read
+  local body
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    body=$(curl -fsS --max-time 20 -H "Authorization: Bearer $GITHUB_TOKEN" \
+      "https://api.github.com/repos/goauthentik/authentik/releases/tags/version/$1" 2>/dev/null || true)
+  else
+    body=$(curl -fsS --max-time 20 \
+      "https://api.github.com/repos/goauthentik/authentik/releases/tags/version/$1" 2>/dev/null || true)
+  fi
+  printf '%s\n' "$body" |
+    sed -nE 's/.*"published_at"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -1
+}
+
+announce() {  # current, latest
+  local current=$1 latest=$2 marker published
+  if [ "$latest" = "$current" ]; then
+    log "authentik $current is current; nothing to announce"
+    return 0
+  fi
+  if ! newer_than "$latest" "$current"; then
+    log "authentik $latest is not newer than the running $current; nothing to announce"
+    return 0
+  fi
+  marker="$STATE_DIR/announced-$latest"
+  if [ -f "$marker" ]; then
+    log "authentik $latest was already announced; the 06:00 run applies it"
+    return 0
+  fi
+  published=$(release_published "$latest")
+  alert "Authentik $latest is published${published:+ ($published)}" \
+    "$(hostname) runs authentik $current. The next apply run — 06:00 — will pull $latest, restart the server and worker, and move the Jellyfin LDAP outpost. Preview with --dry-run; hold it by pinning AUTHENTIK_IMAGE_TAG in the cerulean .env."
+  printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$marker" 2>/dev/null || true
+  log "announced authentik $latest${published:+ (published $published)}; the 06:00 run applies it"
+}
+
 latest=$(latest_release)
 [[ "$latest" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
   die 1 "could not resolve a stable Authentik release (got '$latest')"
@@ -458,6 +508,12 @@ pinned=$(pin_in_compose "$COMPOSE")
 # is actually deployed.
 current=$(pin_in_env "$APP_ENV")
 [ -n "$current" ] || current=$pinned
+
+# Announcement resolves and reports only: no pull, no recreate, no commit.
+if [ "$NOTIFY_ONLY" = true ]; then
+  announce "$current" "$latest"
+  exit 0
+fi
 
 if [ "$latest" = "$current" ] && [ "$pinned" = "$current" ]; then
   log "authentik $current is current"
@@ -488,6 +544,15 @@ fi
 # so an unrelated dashboard or doc edit neither blocks an update nor rides along
 # in its commit.
 watch_files=("$COMPOSE" "$README" "$GROUP_PRIMARY" "$MONARCH_COMPOSE" "$GROUP_MEDIA")
+# The pin also has to move in the checkouts this host can push from; they are
+# edited directly when the deploy copy has no such file (the group composes on a
+# host that only runs one group).
+if [ -n "$CERULEAN_GIT_DIR" ]; then
+  watch_files+=("$CERULEAN_GIT_DIR/docker-compose.yml" "$CERULEAN_GIT_DIR/README.md")
+fi
+if [ -n "$STACK_GIT_DIR" ]; then
+  watch_files+=("$STACK_GIT_DIR/groups/1-primary.yml" "$STACK_GIT_DIR/groups/3-media.yml")
+fi
 for repo in "$CERULEAN_DIR" "$STACK_DIR" "$MONARCH_DIR"; do
   [ -d "$repo/.git" ] || continue
   ours=()
@@ -583,6 +648,14 @@ bump_outpost_pin "$MONARCH_COMPOSE"
 bump_outpost_pin "$GROUP_MEDIA"
 bump_env_pin "$APP_ENV"
 bump_env_pin "$STACK_ENV"
+if [ -n "$CERULEAN_GIT_DIR" ]; then
+  bump_server_pin "$CERULEAN_GIT_DIR/docker-compose.yml"
+  bump_server_pin "$CERULEAN_GIT_DIR/README.md"
+fi
+if [ -n "$STACK_GIT_DIR" ]; then
+  bump_server_pin "$STACK_GIT_DIR/groups/1-primary.yml"
+  bump_outpost_pin "$STACK_GIT_DIR/groups/3-media.yml"
+fi
 
 if [ "${#edited[@]}" -eq 0 ]; then
   die 1 "nothing carried the pin — $COMPOSE has no tag to move and no group file matched"
@@ -748,16 +821,67 @@ OUTPOST_FAILED=false
 enter_outpost || OUTPOST_FAILED=true
 
 # ── Commit and push the pins ─────────────────────────────────────────────────
+# Commit from a real checkout when this host has one: the deploy copy is not a
+# git repo, so without this the pins that are actually running are edited and
+# never reach the repos, and the two drift the moment the next release lands.
+sync_to_checkout() {  # checkout, source root, files… → the paths to commit
+  local checkout=$1 root=$2 f rel dst
+  shift 2
+  if [ "$checkout" = "$root" ] || [ ! -d "$checkout/.git" ]; then
+    printf '%s\n' "$@"
+    return 0
+  fi
+  # Fast-forward only: a checkout carrying local work is left alone, and the
+  # commit below reports it rather than this script resolving someone's diff.
+  git -C "$checkout" pull --ff-only --quiet 2>/dev/null ||
+    warn "$checkout is not a fast-forward of its upstream; committing onto what is there"
+  for f in "$@"; do
+    rel=${f#"$root"/}
+    dst="$checkout/$rel"
+    mkdir -p "$(dirname "$dst")"
+    cp -a "$f" "$dst"
+    printf '%s\n' "$dst"
+  done
+}
+
 cerulean_files=()
 stack_files=()
 monarch_files=()
 for f in "${edited[@]}"; do
   case "$f" in
-    "$CERULEAN_DIR"/*) cerulean_files+=("$f") ;;
-    "$STACK_DIR"/*) stack_files+=("$f") ;;
+    "$CERULEAN_DIR"/*|"$CERULEAN_GIT_DIR"/*) cerulean_files+=("$f") ;;
+    "$STACK_DIR"/*|"$STACK_GIT_DIR"/*) stack_files+=("$f") ;;
     "$MONARCH_DIR"/*) monarch_files+=("$f") ;;
   esac
 done
+
+split_by_root() {  # root, checkout, files… → mirrored checkout paths, then kept ones
+  local root=$1 checkout=$2 f
+  local -a deploy_side=() kept=()
+  shift 2
+  for f in "$@"; do
+    case "$f" in
+      "$root"/*) deploy_side+=("$f") ;;
+      "$checkout"/*) kept+=("$f") ;;
+    esac
+  done
+  if [ "${#deploy_side[@]}" -gt 0 ]; then
+    sync_to_checkout "$checkout" "$root" "${deploy_side[@]}"
+  fi
+  [ "${#kept[@]}" -gt 0 ] && printf '%s\n' "${kept[@]}"
+  return 0
+}
+
+cerulean_repo="$CERULEAN_DIR"
+if [ -n "$CERULEAN_GIT_DIR" ] && [ -d "$CERULEAN_GIT_DIR/.git" ]; then
+  cerulean_repo="$CERULEAN_GIT_DIR"
+  mapfile -t cerulean_files < <(split_by_root "$CERULEAN_DIR" "$CERULEAN_GIT_DIR" ${cerulean_files[@]+"${cerulean_files[@]}"})
+fi
+stack_repo="$STACK_DIR"
+if [ -n "$STACK_GIT_DIR" ] && [ -d "$STACK_GIT_DIR/.git" ]; then
+  stack_repo="$STACK_GIT_DIR"
+  mapfile -t stack_files < <(split_by_root "$STACK_DIR" "$STACK_GIT_DIR" ${stack_files[@]+"${stack_files[@]}"})
+fi
 
 commit_and_push() {  # repo, message, files...
   local repo=$1 msg=$2 branch
@@ -765,9 +889,10 @@ commit_and_push() {  # repo, message, files...
   local staged=false f
   [ -d "$repo/.git" ] || return 0
   for f in "$@"; do
+    rel=${f#"$repo"/}
     # Only tracked files: a local .env override or a .bak must not be committed.
-    git -C "$repo" ls-files --error-unmatch -- "$f" >/dev/null 2>&1 || continue
-    git -C "$repo" add -- "$f"
+    git -C "$repo" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1 || continue
+    git -C "$repo" add -- "$rel"
     staged=true
   done
   if [ "$staged" = false ] || git -C "$repo" diff --cached --quiet; then
@@ -798,14 +923,14 @@ cerulean_msg="Move Authentik to $latest
 
 $latest is the newest published release and its image pulls, so the server and
 its worker move together — they share one tag."
-commit_and_push "$CERULEAN_DIR" "$cerulean_msg" "${cerulean_files[@]}"
+commit_and_push "$cerulean_repo" "$cerulean_msg" "${cerulean_files[@]}"
 
 stack_msg="Pin Authentik $latest in the group composes
 
 The pin moved in the member repos; these files carry it. A tag-only bump is
 byte-for-byte what gen-group-compose.py produces, so no regeneration is needed."
 if [ "${#stack_files[@]}" -gt 0 ]; then
-  commit_and_push "$STACK_DIR" "$stack_msg" "${stack_files[@]}"
+  commit_and_push "$stack_repo" "$stack_msg" "${stack_files[@]}"
 fi
 
 monarch_msg="Move the LDAP outpost to $latest
@@ -824,6 +949,7 @@ if [ "$DRY_RUN" = true ]; then
 fi
 
 drop_backups
+rm -f "$STATE_DIR/announced-$latest"
 log "authentik $latest applied"
 
 # The server is up and the pins are committed, but a Jellyfin login that binds
