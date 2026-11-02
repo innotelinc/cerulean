@@ -378,7 +378,7 @@ outpost_container() {  # name of the LDAP outpost container, "" when there is no
 }
 
 outpost_tag() {  # the tag the outpost actually runs, "" when it cannot be read
-  local c img
+  local c img=""
   c=$(outpost_container)
   if [ -n "$c" ]; then
     img=$(docker inspect -f '{{.Config.Image}}' "$c" 2>/dev/null || true)
