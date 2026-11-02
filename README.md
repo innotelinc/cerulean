@@ -400,7 +400,7 @@ docker compose --profile authentik up -d
 ./scripts/setup.sh --with-authentik   # generates client secret + provisions the provider
 ```
 
-The bundled image is `ghcr.io/goauthentik/server:${AUTHENTIK_IMAGE_TAG:-2026.8.3}`
+The bundled image is `ghcr.io/goauthentik/server:${AUTHENTIK_IMAGE_TAG:-2026.8.5}`
 (server + worker share the same tag). Set `AUTHENTIK_IMAGE_TAG` in `.env` to
 pin a different release. Bumping this moves the server, and every **outpost**
 that talks to it must move to the same tag — Monarch's `authentik-ldap` is one
