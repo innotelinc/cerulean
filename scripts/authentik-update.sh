@@ -47,7 +47,7 @@
 #   AUTHENTIK_UPDATE_LOCK     lock file (default /run/lock/authentik-update.lock)
 #   GITHUB_TOKEN              raises the GitHub API rate limit (optional)
 #
-# Install (timer every 15 minutes):
+# Install (timer: once a day at 06:00):
 #   install -Dm755 authentik-update.sh /opt/innotel/authentik-update/authentik-update.sh
 #   install -Dm755 authentik-update-alert.sh /opt/innotel/authentik-update/authentik-update-alert.sh
 #   install -Dm644 authentik-update.service /etc/systemd/system/authentik-update.service
@@ -428,7 +428,7 @@ enter_outpost() {
     fi
     # 3 is the outpost saying it has no such container, 255 is ssh itself. Both
     # leave the server healthy and the outpost behind, and both are reported
-    # once per cooldown rather than on every fifteen-minute tick.
+    # once per cooldown rather than on every tick.
     if [ "$rc" -eq 3 ]; then
       alert_outpost "Authentik $latest is live but no LDAP outpost was found on $OUTPOST_HOST" \
         "Nothing there runs a goauthentik/ldap container; if the outpost moved, repoint AUTHENTIK_OUTPOST_HOST."
