@@ -16,8 +16,8 @@
 # half-applied. A failed recreate restores the files and the old containers.
 #
 # Usage:
-#   authentik-update.sh [--dry-run] [--no-deploy] [--no-push] [--root DIR]
-#                       [--version X.Y.Z]
+#   authentik-update.sh [--dry-run] [--no-deploy] [--no-push] [--no-outpost]
+#                       [--root DIR] [--version X.Y.Z]
 #
 # Environment:
 #   ESTATE_ROOT               checkout root holding 1-primary/ and ips/
@@ -32,14 +32,31 @@
 #                             ships no healthcheck
 #                             (default http://127.0.0.1:9000/-/health/live/)
 #   AUTHENTIK_HEALTH_TIMEOUT  seconds to wait for healthy (default 600)
+#   AUTHENTIK_OUTPOST_HOST    where the LDAP outpost runs when it is not on this
+#                             host, as user@address — reached over ssh with a
+#                             key, or with SSHPASS and sshpass installed
+#   AUTHENTIK_OUTPOST_NAME    the outpost container (default authentik-ldap)
+#   ALERT_EMAIL_TO            mailbox a failed update is mailed to (sendmail)
+#   ALERT_WEBHOOK_URL         JSON webhook a failed update is POSTed to
+#   AUTHENTIK_UPDATE_STATE    alert/state directory
+#                             (default /var/lib/innotel/authentik-update)
+#   AUTHENTIK_IMAGE_GRACE     how long a released release may lack a pullable
+#                             image before that is alerted on (default 21600s)
+#   OUTPOST_ALERT_COOLDOWN    seconds between repeated outpost-behind alerts
+#                             (default 21600)
 #   AUTHENTIK_UPDATE_LOCK     lock file (default /run/lock/authentik-update.lock)
 #   GITHUB_TOKEN              raises the GitHub API rate limit (optional)
 #
 # Install (timer every 15 minutes):
 #   install -Dm755 authentik-update.sh /opt/innotel/authentik-update/authentik-update.sh
+#   install -Dm755 authentik-update-alert.sh /opt/innotel/authentik-update/authentik-update-alert.sh
 #   install -Dm644 authentik-update.service /etc/systemd/system/authentik-update.service
+#   install -Dm644 authentik-update-failed.service /etc/systemd/system/authentik-update-failed.service
 #   install -Dm644 authentik-update.timer   /etc/systemd/system/authentik-update.timer
 #   systemctl daemon-reload && systemctl enable --now authentik-update.timer
+#
+# Alerting is configured in /etc/innotel/authentik-update.env (ALERT_EMAIL_TO
+# and/or ALERT_WEBHOOK_URL). Without either, a failure is only in the journal.
 #
 # Exit: 0 current or updated · 1 update or deploy failed · 2 precondition.
 set -euo pipefail
@@ -61,6 +78,15 @@ HEALTH_URL="${AUTHENTIK_HEALTH_URL:-http://127.0.0.1:9000/-/health/live/}"
 HEALTH_TIMEOUT="${AUTHENTIK_HEALTH_TIMEOUT:-600}"
 LOCK="${AUTHENTIK_UPDATE_LOCK:-/run/lock/authentik-update.lock}"
 
+OUTPOST_HOST="${AUTHENTIK_OUTPOST_HOST:-}"
+OUTPOST_NAME="${AUTHENTIK_OUTPOST_NAME:-authentik-ldap}"
+ALERT_TO="${ALERT_EMAIL_TO:-}"
+ALERT_WEBHOOK="${ALERT_WEBHOOK_URL:-}"
+STATE_DIR="${AUTHENTIK_UPDATE_STATE:-/var/lib/innotel/authentik-update}"
+IMAGE_GRACE="${AUTHENTIK_IMAGE_GRACE:-21600}"
+OUTPOST=true
+mkdir -p "$STATE_DIR" 2>/dev/null || STATE_DIR="${TMPDIR:-/tmp}"
+
 API="https://api.github.com/repos/goauthentik/authentik/releases/latest"
 IMAGE="ghcr.io/goauthentik/server"
 SERVER_CONTAINERS=(cerulean-authentik cerulean-authentik-server authentik-server)
@@ -73,7 +99,41 @@ REQUESTED_VERSION=""
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 warn() { printf '%s WARNING: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
-die() { local code=$1; shift; printf '%s ERROR: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; exit "$code"; }
+
+# A failure that nobody hears about is the same as no update: this identity
+# plane is the estate's only door, and a run that rolled back or never applied
+# has to reach a person. Best effort on purpose — a broken alert channel must
+# not turn into a second failure that hides the first.
+alert() {  # subject, body
+  local subject=$1 body=$2 payload host
+  host=$(hostname -f 2>/dev/null || hostname)
+  printf '%s\n' "$body" | sed 's/^/  /' >&2
+  printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$subject" >>"$STATE_DIR/last-alert" 2>/dev/null || true
+  if [ -n "$ALERT_TO" ] && [ -x /usr/sbin/sendmail ]; then
+    printf 'To: %s\nSubject: %s\nFrom: authentik-update@%s\nAuto-Submitted: auto-generated\n\n%s\n' \
+      "$ALERT_TO" "$subject" "$host" "$body" |
+      /usr/sbin/sendmail -t || warn "could not hand the alert to sendmail — it is only in the journal"
+  fi
+  if [ -n "$ALERT_WEBHOOK" ]; then
+    payload=$(printf '%s' "$subject — $body" | tr '\n' ' ' | sed 's/\\/\\\\/g; s/"/\\"/g')
+    curl -fsS --max-time 15 -X POST -H 'Content-Type: application/json' \
+      -d "{\"text\":\"$payload\"}" "$ALERT_WEBHOOK" >/dev/null ||
+      warn "the alert webhook refused the POST — it is only in the journal"
+  fi
+  if [ -z "$ALERT_TO" ] && [ -z "$ALERT_WEBHOOK" ]; then
+    warn "nothing receives this alert (ALERT_EMAIL_TO / ALERT_WEBHOOK_URL unset); it is only in the journal"
+  fi
+}
+
+die() {
+  local code=$1 msg
+  shift
+  msg=$(printf '%s ERROR: %s' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*")
+  printf '%s\n' "$msg" >&2
+  # Exit 2 is a precondition this host can fix; exit 1 is a failed update.
+  if [ "$code" -eq 1 ]; then alert "Authentik update failed on $(hostname)" "$msg"; fi
+  exit "$code"
+}
 
 usage() {
   sed -n '2,43p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -85,6 +145,7 @@ while [ $# -gt 0 ]; do
     --dry-run) DRY_RUN=true ;;
     --no-deploy) DEPLOY=false ;;
     --no-push) PUSH=false ;;
+    --no-outpost) OUTPOST=false ;;
     --root)
       [ $# -ge 2 ] || die 2 "--root needs a directory"
       ROOT=$2
@@ -232,8 +293,23 @@ if [ "$DRY_RUN" = true ]; then
 elif [ "$DEPLOY" = false ]; then
   log "authentik $current -> $latest (--no-deploy: the pin moves, nothing is pulled or recreated)"
 else
-  image_available "$IMAGE:$latest" ||
-    die 1 "authentik $latest is released but $IMAGE:$latest is not pullable yet; the next run will take it"
+  if ! image_available "$IMAGE:$latest"; then
+    # A release exists on GitHub a little before its image is pushed to ghcr.
+    # That is normal for an hour and suspicious after several, so the wait is
+    # silent inside the grace window and an alert afterwards — a release that
+    # never gets an image leaves the estate pinned and silent otherwise.
+    now=$(date +%s)
+    seen="$STATE_DIR/unpullable-$latest"
+    [ -f "$seen" ] || printf '%s\n' "$now" >"$seen"
+    first=$(cat "$seen" 2>/dev/null || printf '%s' "$now")
+    waited=$((now - first))
+    if [ "$waited" -lt "$IMAGE_GRACE" ]; then
+      log "authentik $latest is released but $IMAGE:$latest is not built yet; retrying (${waited}s of the ${IMAGE_GRACE}s tolerated)"
+      exit 0
+    fi
+    die 1 "authentik $latest has been released for ${waited}s and $IMAGE:$latest is still not pullable; the estate stays on $current"
+  fi
+  rm -f "$STATE_DIR/unpullable-$latest"
   log "pulling $IMAGE:$latest"
   docker pull "$IMAGE:$latest" >/dev/null ||
     die 1 "could not pull $IMAGE:$latest; leaving the pin at $current"
@@ -448,6 +524,194 @@ else
   log "authentik $latest is healthy"
 fi
 
+# ── The LDAP outpost: the Jellyfin login gate ────────────────────────────────
+# The `jellyfin-ldap` provider is served by an outpost container, and an outpost
+# is a client of the server: it has to run the server's version line or Jellyfin
+# binds fail and the estate's drift check fails the run. It usually lives on
+# another host (Monarch), so this recreates a local one, or reaches the host
+# named by AUTHENTIK_OUTPOST_HOST and does the same there. The pin was already
+# moved above in both compose files that declare it.
+
+outpost_listening() {  # container → the LDAP listener is bound (3389 = 0xD3D)
+  docker exec "$1" sh -c 'grep -qi ":0D3D" /proc/net/tcp /proc/net/tcp6 2>/dev/null' >/dev/null 2>&1
+}
+
+wait_outpost() {  # container, seconds
+  local c=$1 deadline=$((SECONDS + ${2:-180})) state
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    state=$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo missing)
+    if [ "$state" = running ] && outpost_listening "$c"; then return 0; fi
+    sleep 3
+  done
+  return 1
+}
+
+recreate_local_outpost() {  # container
+  local c=$1 project workdir files svc f
+  local -a cmd=(docker compose)
+  project=$(label_of "$c" com.docker.compose.project)
+  workdir=$(label_of "$c" com.docker.compose.project.working_dir)
+  files=$(label_of "$c" com.docker.compose.project.config_files)
+  svc=$(label_of "$c" com.docker.compose.service)
+  if [ -n "$project" ] && [ "$project" != "<no value>" ]; then cmd+=(--project-name "$project"); fi
+  if [ -n "$workdir" ] && [ "$workdir" != "<no value>" ]; then cmd+=(--project-directory "$workdir"); fi
+  if [ -n "$files" ] && [ "$files" != "<no value>" ]; then
+    for f in $(printf '%s' "$files" | tr ',' ' '); do
+      cmd+=(-f "$f")
+      # Move the pin where this container was started from too, so the next
+      # `compose up` on this host does not put the previous tag back.
+      [ -f "$f" ] || continue
+      grep -q 'goauthentik/ldap:[0-9]' "$f" || continue
+      cp -a "$f" "$f.outpost-bak" 2>/dev/null || true
+      sed -i -E "s#(goauthentik/ldap:)[0-9][0-9.]+#\1${latest}#g" "$f"
+    done
+  fi
+  if [ -n "$workdir" ] && [ "$workdir" != "<no value>" ] && [ -f "$workdir/.env" ]; then
+    cmd+=(--env-file "$workdir/.env")
+  fi
+  cmd+=(--profile authentik)
+  "${cmd[@]}" up -d --no-deps "$svc" >/dev/null
+}
+
+# The same recreation, run on the host that owns the outpost. Sent over ssh as a
+# script on stdin: the remote needs no copy of this file, only docker compose,
+# which it already uses to run the container.
+REMOTE_OUTPOST=$(cat <<'REMOTE'
+set -eu
+version=$1
+name=$2
+c=""
+for n in "$name" cerulean-authentik-ldap authentik-ldap-outpost; do
+  if docker inspect "$n" >/dev/null 2>&1; then c=$n; break; fi
+done
+if [ -z "$c" ]; then
+  c=$(docker ps -a --format '{{.Names}} {{.Image}}' | awk '/goauthentik\/ldap/ {print $1; exit}')
+fi
+if [ -z "$c" ]; then
+  echo "no goauthentik/ldap container on $(hostname)"
+  exit 3
+fi
+lab() { docker inspect -f "{{index .Config.Labels \"$1\"}}" "$c" 2>/dev/null || true; }
+project=$(lab com.docker.compose.project)
+workdir=$(lab com.docker.compose.project.working_dir)
+files=$(lab com.docker.compose.project.config_files)
+svc=$(lab com.docker.compose.service)
+set -- docker compose
+if [ -n "$project" ] && [ "$project" != "<no value>" ]; then set -- "$@" --project-name "$project"; fi
+if [ -n "$workdir" ] && [ "$workdir" != "<no value>" ]; then set -- "$@" --project-directory "$workdir"; fi
+if [ -n "$files" ] && [ "$files" != "<no value>" ]; then
+  for f in $(printf '%s' "$files" | tr ',' ' '); do set -- "$@" -f "$f"; done
+fi
+if [ -n "$workdir" ] && [ "$workdir" != "<no value>" ] && [ -f "$workdir/.env" ]; then
+  set -- "$@" --env-file "$workdir/.env"
+fi
+# Move the pin where the container was started from too, so a later `compose up`
+# on that host does not put the old tag back.
+if [ -n "$files" ] && [ "$files" != "<no value>" ]; then
+  for f in $(printf '%s' "$files" | tr ',' ' '); do
+    [ -f "$f" ] || continue
+    cp -a "$f" "$f.outpost-bak" 2>/dev/null || true
+    sed -i -E "s#(goauthentik/ldap:)[0-9][0-9.]+#\1${version}#g" "$f"
+  done
+fi
+"$@" --profile authentik up -d --no-deps "$svc" >/dev/null
+i=0
+while [ "$i" -lt 60 ]; do
+  st=$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo missing)
+  if [ "$st" = running ] && docker exec "$c" sh -c 'grep -qi ":0D3D" /proc/net/tcp /proc/net/tcp6 2>/dev/null'; then
+    echo "serving $(docker inspect -f '{{.Config.Image}}' "$c")"
+    exit 0
+  fi
+  i=$((i + 1))
+  sleep 3
+done
+echo "did not come up (state=$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo missing))"
+docker logs --tail 20 "$c" 2>&1 || true
+exit 1
+REMOTE
+)
+
+ssh_to() {  # target, remote command — stdin is the remote script
+  if [ -n "${SSHPASS:-}" ] && command -v sshpass >/dev/null 2>&1; then
+    sshpass -e ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$1" "$2"
+  else
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$1" "$2"
+  fi
+}
+
+alert_outpost() {  # subject, body — the outpost lags on purpose sometimes, so once per cooldown
+  local marker="$STATE_DIR/outpost-alert" now last cooldown
+  cooldown="${OUTPOST_ALERT_COOLDOWN:-21600}"
+  now=$(date +%s)
+  last=$(sed -n '1p' "$marker" 2>/dev/null || true)
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  if [ $((now - last)) -lt "$cooldown" ]; then
+    warn "the LDAP outpost is still behind $latest; already reported $((now - last))s ago (cooldown ${cooldown}s)"
+    return 0
+  fi
+  printf '%s\n' "$now" >"$marker" 2>/dev/null || true
+  alert "$1" "$2"
+}
+
+enter_outpost() {
+  local outpost_c rc
+  if [ "$OUTPOST" = false ]; then
+    log "not touching the LDAP outpost (--no-outpost)"
+    return 0
+  fi
+  if [ "$DRY_RUN" = true ] || [ "$DEPLOY" = false ]; then
+    log "not recreating the LDAP outpost (--dry-run/--no-deploy)"
+    return 0
+  fi
+  outpost_c=$(find_container "$OUTPOST_NAME" cerulean-authentik-ldap authentik-ldap-outpost 2>/dev/null || true)
+  if [ -z "$outpost_c" ]; then
+    outpost_c=$(docker ps -a --format '{{.Names}} {{.Image}}' 2>/dev/null |
+      awk '/goauthentik\/ldap/ {print $1; exit}')
+  fi
+  if [ -n "$outpost_c" ]; then
+    log "recreating the LDAP outpost $outpost_c"
+    if recreate_local_outpost "$outpost_c" && wait_outpost "$outpost_c"; then
+      rm -f "$STATE_DIR/outpost-alert"
+      log "the LDAP outpost $outpost_c is serving $latest"
+      return 0
+    fi
+    alert "Authentik $latest is live but its LDAP outpost did not start on $(hostname)" \
+      "Jellyfin's LDAP-Auth binds through $outpost_c; until it serves 3389 every media login fails with LDAP 49."
+    return 1
+  fi
+  if [ -n "$OUTPOST_HOST" ]; then
+    log "recreating the LDAP outpost on $OUTPOST_HOST"
+    rc=0
+    printf '%s\n' "$REMOTE_OUTPOST" | ssh_to "$OUTPOST_HOST" "bash -s -- '$latest' '$OUTPOST_NAME'" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      rm -f "$STATE_DIR/outpost-alert"
+      log "the LDAP outpost on $OUTPOST_HOST is serving $latest"
+      return 0
+    fi
+    # 3 is the outpost saying it has no such container, 255 is ssh itself. Both
+    # leave the server healthy and the outpost behind, and both are reported
+    # once per cooldown rather than on every fifteen-minute tick.
+    if [ "$rc" -eq 3 ]; then
+      alert_outpost "Authentik $latest is live but no LDAP outpost was found on $OUTPOST_HOST" \
+        "Nothing there runs a goauthentik/ldap container; if the outpost moved, repoint AUTHENTIK_OUTPOST_HOST."
+      return 0
+    fi
+    if [ "$rc" -eq 255 ] || [ "$rc" -eq 127 ]; then
+      alert_outpost "Authentik $latest is live but $OUTPOST_HOST could not be reached to move its LDAP outpost" \
+        "ssh exited $rc. Jellyfin binds through that outpost and it is still on the previous release: give this host key access (or SSHPASS plus sshpass) to $OUTPOST_HOST."
+      return 0
+    fi
+    alert_outpost "Authentik $latest is live but its LDAP outpost on $OUTPOST_HOST did not start" \
+      "It was recreated and did not serve 3389, so Jellyfin LDAP-Auth binds fail until it does."
+    return 1
+  fi
+  log "no LDAP outpost on this host and no AUTHENTIK_OUTPOST_HOST set; the pin moved, nothing to recreate"
+  return 0
+}
+
+OUTPOST_FAILED=false
+enter_outpost || OUTPOST_FAILED=true
+
 # ── Commit and push the pins ─────────────────────────────────────────────────
 cerulean_files=()
 stack_files=()
@@ -526,3 +790,10 @@ fi
 
 drop_backups
 log "authentik $latest applied"
+
+# The server is up and the pins are committed, but a Jellyfin login that binds
+# through a stale outpost is still a broken login — say so in the exit status.
+if [ "$OUTPOST_FAILED" = true ]; then
+  warn "authentik $latest is applied, but its LDAP outpost did not move — alert sent"
+  exit 1
+fi
