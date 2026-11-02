@@ -237,6 +237,216 @@ image_available() {  # image:tag → can this host actually pull it
   [ "$code" = 200 ]
 }
 
+# ── The LDAP outpost: the Jellyfin login gate ────────────────────────────────
+# The `jellyfin-ldap` provider is served by an outpost container, and an outpost
+# is a client of the server: it has to run the server's version line or Jellyfin
+# binds fail and the estate's drift check fails the run. It usually lives on
+# another host (Monarch), so this recreates a local one, or reaches the host
+# named by AUTHENTIK_OUTPOST_HOST and does the same there. The pin was already
+# moved above in both compose files that declare it.
+
+outpost_listening() {  # container → the LDAP listener is bound (3389 = 0xD3D)
+  docker exec "$1" sh -c 'grep -qi ":0D3D" /proc/net/tcp /proc/net/tcp6 2>/dev/null' >/dev/null 2>&1
+}
+
+wait_outpost() {  # container, seconds
+  local c=$1 deadline=$((SECONDS + ${2:-180})) state
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    state=$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo missing)
+    if [ "$state" = running ] && outpost_listening "$c"; then return 0; fi
+    sleep 3
+  done
+  return 1
+}
+
+recreate_local_outpost() {  # container
+  local c=$1 project workdir files svc f
+  local -a cmd=(docker compose)
+  project=$(label_of "$c" com.docker.compose.project)
+  workdir=$(label_of "$c" com.docker.compose.project.working_dir)
+  files=$(label_of "$c" com.docker.compose.project.config_files)
+  svc=$(label_of "$c" com.docker.compose.service)
+  if [ -n "$project" ] && [ "$project" != "<no value>" ]; then cmd+=(--project-name "$project"); fi
+  if [ -n "$workdir" ] && [ "$workdir" != "<no value>" ]; then cmd+=(--project-directory "$workdir"); fi
+  if [ -n "$files" ] && [ "$files" != "<no value>" ]; then
+    for f in $(printf '%s' "$files" | tr ',' ' '); do
+      cmd+=(-f "$f")
+      # Move the pin where this container was started from too, so the next
+      # `compose up` on this host does not put the previous tag back.
+      [ -f "$f" ] || continue
+      grep -q 'goauthentik/ldap:[0-9]' "$f" || continue
+      cp -a "$f" "$f.outpost-bak" 2>/dev/null || true
+      sed -i -E "s#(goauthentik/ldap:)[0-9][0-9.]+#\1${latest}#g" "$f"
+    done
+  fi
+  if [ -n "$workdir" ] && [ "$workdir" != "<no value>" ] && [ -f "$workdir/.env" ]; then
+    cmd+=(--env-file "$workdir/.env")
+  fi
+  cmd+=(--profile authentik)
+  "${cmd[@]}" up -d --no-deps "$svc" >/dev/null
+}
+
+# The same recreation, run on the host that owns the outpost. Sent over ssh as a
+# script on stdin: the remote needs no copy of this file, only docker compose,
+# which it already uses to run the container.
+REMOTE_OUTPOST=$(cat <<'REMOTE'
+set -eu
+version=$1
+name=$2
+c=""
+for n in "$name" cerulean-authentik-ldap authentik-ldap-outpost; do
+  if docker inspect "$n" >/dev/null 2>&1; then c=$n; break; fi
+done
+if [ -z "$c" ]; then
+  c=$(docker ps -a --format '{{.Names}} {{.Image}}' | awk '/goauthentik\/ldap/ {print $1; exit}')
+fi
+if [ -z "$c" ]; then
+  echo "no goauthentik/ldap container on $(hostname)"
+  exit 3
+fi
+lab() { docker inspect -f "{{index .Config.Labels \"$1\"}}" "$c" 2>/dev/null || true; }
+project=$(lab com.docker.compose.project)
+workdir=$(lab com.docker.compose.project.working_dir)
+files=$(lab com.docker.compose.project.config_files)
+svc=$(lab com.docker.compose.service)
+set -- docker compose
+if [ -n "$project" ] && [ "$project" != "<no value>" ]; then set -- "$@" --project-name "$project"; fi
+if [ -n "$workdir" ] && [ "$workdir" != "<no value>" ]; then set -- "$@" --project-directory "$workdir"; fi
+if [ -n "$files" ] && [ "$files" != "<no value>" ]; then
+  for f in $(printf '%s' "$files" | tr ',' ' '); do set -- "$@" -f "$f"; done
+fi
+if [ -n "$workdir" ] && [ "$workdir" != "<no value>" ] && [ -f "$workdir/.env" ]; then
+  set -- "$@" --env-file "$workdir/.env"
+fi
+# Move the pin where the container was started from too, so a later `compose up`
+# on that host does not put the old tag back.
+if [ -n "$files" ] && [ "$files" != "<no value>" ]; then
+  for f in $(printf '%s' "$files" | tr ',' ' '); do
+    [ -f "$f" ] || continue
+    cp -a "$f" "$f.outpost-bak" 2>/dev/null || true
+    sed -i -E "s#(goauthentik/ldap:)[0-9][0-9.]+#\1${version}#g" "$f"
+  done
+fi
+"$@" --profile authentik up -d --no-deps "$svc" >/dev/null
+i=0
+while [ "$i" -lt 60 ]; do
+  st=$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo missing)
+  if [ "$st" = running ] && docker exec "$c" sh -c 'grep -qi ":0D3D" /proc/net/tcp /proc/net/tcp6 2>/dev/null'; then
+    echo "serving $(docker inspect -f '{{.Config.Image}}' "$c")"
+    exit 0
+  fi
+  i=$((i + 1))
+  sleep 3
+done
+echo "did not come up (state=$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo missing))"
+docker logs --tail 20 "$c" 2>&1 || true
+exit 1
+REMOTE
+)
+
+ssh_to() {  # target, remote command — stdin is the remote script
+  if [ -n "${SSHPASS:-}" ] && command -v sshpass >/dev/null 2>&1; then
+    sshpass -e ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$1" "$2"
+  else
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$1" "$2"
+  fi
+}
+
+# Deliberately not find_container: this runs before the server-side helpers are
+# defined, because the "server is current" branch asks about the outpost too.
+# Shared with the server/worker recreation below, and needed before it.
+label_of() { docker inspect -f "{{index .Config.Labels \"$2\"}}" "$1" 2>/dev/null || true; }
+
+outpost_container() {  # name of the LDAP outpost container, "" when there is none
+  local n c
+  for n in "$OUTPOST_NAME" cerulean-authentik-ldap authentik-ldap-outpost; do
+    if docker inspect "$n" >/dev/null 2>&1; then printf '%s' "$n"; return 0; fi
+  done
+  c=$(docker ps -a --format '{{.Names}} {{.Image}}' 2>/dev/null |
+    awk '/goauthentik\/ldap/ {print $1; exit}')
+  printf '%s' "$c"
+}
+
+outpost_tag() {  # the tag the outpost actually runs, "" when it cannot be read
+  local c img
+  c=$(outpost_container)
+  if [ -n "$c" ]; then
+    img=$(docker inspect -f '{{.Config.Image}}' "$c" 2>/dev/null || true)
+  elif [ -n "$OUTPOST_HOST" ]; then
+    img=$(printf '%s\n' "docker inspect -f '{{.Config.Image}}' '$OUTPOST_NAME' 2>/dev/null || docker ps -a --format '{{.Image}}' | grep goauthentik/ldap | head -1" |
+      ssh_to "$OUTPOST_HOST" 'bash -s' 2>/dev/null | tr -d '\r' | head -1)
+  fi
+  case "$img" in
+    *:*) printf '%s' "${img##*:}" ;;
+  esac
+}
+
+alert_outpost() {  # subject, body — the outpost lags on purpose sometimes, so once per cooldown
+  local marker="$STATE_DIR/outpost-alert" now last cooldown
+  cooldown="${OUTPOST_ALERT_COOLDOWN:-21600}"
+  now=$(date +%s)
+  last=$(sed -n '1p' "$marker" 2>/dev/null || true)
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  if [ $((now - last)) -lt "$cooldown" ]; then
+    warn "the LDAP outpost is still behind $latest; already reported $((now - last))s ago (cooldown ${cooldown}s)"
+    return 0
+  fi
+  printf '%s\n' "$now" >"$marker" 2>/dev/null || true
+  alert "$1" "$2"
+}
+
+enter_outpost() {
+  local outpost_c rc
+  if [ "$OUTPOST" = false ]; then
+    log "not touching the LDAP outpost (--no-outpost)"
+    return 0
+  fi
+  if [ "$DRY_RUN" = true ] || [ "$DEPLOY" = false ]; then
+    log "not recreating the LDAP outpost (--dry-run/--no-deploy)"
+    return 0
+  fi
+  outpost_c=$(outpost_container)
+  if [ -n "$outpost_c" ]; then
+    log "recreating the LDAP outpost $outpost_c"
+    if recreate_local_outpost "$outpost_c" && wait_outpost "$outpost_c"; then
+      rm -f "$STATE_DIR/outpost-alert"
+      log "the LDAP outpost $outpost_c is serving $latest"
+      return 0
+    fi
+    alert "Authentik $latest is live but its LDAP outpost did not start on $(hostname)" \
+      "Jellyfin's LDAP-Auth binds through $outpost_c; until it serves 3389 every media login fails with LDAP 49."
+    return 1
+  fi
+  if [ -n "$OUTPOST_HOST" ]; then
+    log "recreating the LDAP outpost on $OUTPOST_HOST"
+    rc=0
+    printf '%s\n' "$REMOTE_OUTPOST" | ssh_to "$OUTPOST_HOST" "bash -s -- '$latest' '$OUTPOST_NAME'" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      rm -f "$STATE_DIR/outpost-alert"
+      log "the LDAP outpost on $OUTPOST_HOST is serving $latest"
+      return 0
+    fi
+    # 3 is the outpost saying it has no such container, 255 is ssh itself. Both
+    # leave the server healthy and the outpost behind, and both are reported
+    # once per cooldown rather than on every fifteen-minute tick.
+    if [ "$rc" -eq 3 ]; then
+      alert_outpost "Authentik $latest is live but no LDAP outpost was found on $OUTPOST_HOST" \
+        "Nothing there runs a goauthentik/ldap container; if the outpost moved, repoint AUTHENTIK_OUTPOST_HOST."
+      return 0
+    fi
+    if [ "$rc" -eq 255 ] || [ "$rc" -eq 127 ]; then
+      alert_outpost "Authentik $latest is live but $OUTPOST_HOST could not be reached to move its LDAP outpost" \
+        "ssh exited $rc. Jellyfin binds through that outpost and it is still on the previous release: give this host key access (or SSHPASS plus sshpass) to $OUTPOST_HOST."
+      return 0
+    fi
+    alert_outpost "Authentik $latest is live but its LDAP outpost on $OUTPOST_HOST did not start" \
+      "It was recreated and did not serve 3389, so Jellyfin LDAP-Auth binds fail until it does."
+    return 1
+  fi
+  log "no LDAP outpost on this host and no AUTHENTIK_OUTPOST_HOST set; the pin moved, nothing to recreate"
+  return 0
+}
+
 latest=$(latest_release)
 [[ "$latest" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
   die 1 "could not resolve a stable Authentik release (got '$latest')"
@@ -251,6 +461,17 @@ current=$(pin_in_env "$APP_ENV")
 
 if [ "$latest" = "$current" ] && [ "$pinned" = "$current" ]; then
   log "authentik $current is current"
+  # The server can be current while the outpost that depends on it is not — the
+  # state a run leaves when it could not reach that host, or when the outpost was
+  # recreated by hand from the previous tag. Reconcile it here so the Jellyfin
+  # gate also catches up on the tick after its host becomes reachable.
+  if [ "$OUTPOST" = true ] && [ "$DEPLOY" = true ] && [ "$DRY_RUN" = false ]; then
+    outpost_now=$(outpost_tag || true)
+    if [ -n "$outpost_now" ] && [ "$outpost_now" != "$current" ]; then
+      log "the LDAP outpost runs $outpost_now while the server runs $current; moving it"
+      enter_outpost || exit 1
+    fi
+  fi
   exit 0
 fi
 if ! newer_than "$latest" "$current"; then
@@ -389,7 +610,6 @@ find_container() {
   return 1
 }
 
-label_of() { docker inspect -f "{{index .Config.Labels \"$2\"}}" "$1" 2>/dev/null || true; }
 
 RECREATE_CMD=()
 RECREATE_SERVICES=()
@@ -523,191 +743,6 @@ else
   fi
   log "authentik $latest is healthy"
 fi
-
-# ── The LDAP outpost: the Jellyfin login gate ────────────────────────────────
-# The `jellyfin-ldap` provider is served by an outpost container, and an outpost
-# is a client of the server: it has to run the server's version line or Jellyfin
-# binds fail and the estate's drift check fails the run. It usually lives on
-# another host (Monarch), so this recreates a local one, or reaches the host
-# named by AUTHENTIK_OUTPOST_HOST and does the same there. The pin was already
-# moved above in both compose files that declare it.
-
-outpost_listening() {  # container → the LDAP listener is bound (3389 = 0xD3D)
-  docker exec "$1" sh -c 'grep -qi ":0D3D" /proc/net/tcp /proc/net/tcp6 2>/dev/null' >/dev/null 2>&1
-}
-
-wait_outpost() {  # container, seconds
-  local c=$1 deadline=$((SECONDS + ${2:-180})) state
-  while [ "$SECONDS" -lt "$deadline" ]; do
-    state=$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo missing)
-    if [ "$state" = running ] && outpost_listening "$c"; then return 0; fi
-    sleep 3
-  done
-  return 1
-}
-
-recreate_local_outpost() {  # container
-  local c=$1 project workdir files svc f
-  local -a cmd=(docker compose)
-  project=$(label_of "$c" com.docker.compose.project)
-  workdir=$(label_of "$c" com.docker.compose.project.working_dir)
-  files=$(label_of "$c" com.docker.compose.project.config_files)
-  svc=$(label_of "$c" com.docker.compose.service)
-  if [ -n "$project" ] && [ "$project" != "<no value>" ]; then cmd+=(--project-name "$project"); fi
-  if [ -n "$workdir" ] && [ "$workdir" != "<no value>" ]; then cmd+=(--project-directory "$workdir"); fi
-  if [ -n "$files" ] && [ "$files" != "<no value>" ]; then
-    for f in $(printf '%s' "$files" | tr ',' ' '); do
-      cmd+=(-f "$f")
-      # Move the pin where this container was started from too, so the next
-      # `compose up` on this host does not put the previous tag back.
-      [ -f "$f" ] || continue
-      grep -q 'goauthentik/ldap:[0-9]' "$f" || continue
-      cp -a "$f" "$f.outpost-bak" 2>/dev/null || true
-      sed -i -E "s#(goauthentik/ldap:)[0-9][0-9.]+#\1${latest}#g" "$f"
-    done
-  fi
-  if [ -n "$workdir" ] && [ "$workdir" != "<no value>" ] && [ -f "$workdir/.env" ]; then
-    cmd+=(--env-file "$workdir/.env")
-  fi
-  cmd+=(--profile authentik)
-  "${cmd[@]}" up -d --no-deps "$svc" >/dev/null
-}
-
-# The same recreation, run on the host that owns the outpost. Sent over ssh as a
-# script on stdin: the remote needs no copy of this file, only docker compose,
-# which it already uses to run the container.
-REMOTE_OUTPOST=$(cat <<'REMOTE'
-set -eu
-version=$1
-name=$2
-c=""
-for n in "$name" cerulean-authentik-ldap authentik-ldap-outpost; do
-  if docker inspect "$n" >/dev/null 2>&1; then c=$n; break; fi
-done
-if [ -z "$c" ]; then
-  c=$(docker ps -a --format '{{.Names}} {{.Image}}' | awk '/goauthentik\/ldap/ {print $1; exit}')
-fi
-if [ -z "$c" ]; then
-  echo "no goauthentik/ldap container on $(hostname)"
-  exit 3
-fi
-lab() { docker inspect -f "{{index .Config.Labels \"$1\"}}" "$c" 2>/dev/null || true; }
-project=$(lab com.docker.compose.project)
-workdir=$(lab com.docker.compose.project.working_dir)
-files=$(lab com.docker.compose.project.config_files)
-svc=$(lab com.docker.compose.service)
-set -- docker compose
-if [ -n "$project" ] && [ "$project" != "<no value>" ]; then set -- "$@" --project-name "$project"; fi
-if [ -n "$workdir" ] && [ "$workdir" != "<no value>" ]; then set -- "$@" --project-directory "$workdir"; fi
-if [ -n "$files" ] && [ "$files" != "<no value>" ]; then
-  for f in $(printf '%s' "$files" | tr ',' ' '); do set -- "$@" -f "$f"; done
-fi
-if [ -n "$workdir" ] && [ "$workdir" != "<no value>" ] && [ -f "$workdir/.env" ]; then
-  set -- "$@" --env-file "$workdir/.env"
-fi
-# Move the pin where the container was started from too, so a later `compose up`
-# on that host does not put the old tag back.
-if [ -n "$files" ] && [ "$files" != "<no value>" ]; then
-  for f in $(printf '%s' "$files" | tr ',' ' '); do
-    [ -f "$f" ] || continue
-    cp -a "$f" "$f.outpost-bak" 2>/dev/null || true
-    sed -i -E "s#(goauthentik/ldap:)[0-9][0-9.]+#\1${version}#g" "$f"
-  done
-fi
-"$@" --profile authentik up -d --no-deps "$svc" >/dev/null
-i=0
-while [ "$i" -lt 60 ]; do
-  st=$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo missing)
-  if [ "$st" = running ] && docker exec "$c" sh -c 'grep -qi ":0D3D" /proc/net/tcp /proc/net/tcp6 2>/dev/null'; then
-    echo "serving $(docker inspect -f '{{.Config.Image}}' "$c")"
-    exit 0
-  fi
-  i=$((i + 1))
-  sleep 3
-done
-echo "did not come up (state=$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo missing))"
-docker logs --tail 20 "$c" 2>&1 || true
-exit 1
-REMOTE
-)
-
-ssh_to() {  # target, remote command — stdin is the remote script
-  if [ -n "${SSHPASS:-}" ] && command -v sshpass >/dev/null 2>&1; then
-    sshpass -e ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$1" "$2"
-  else
-    ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$1" "$2"
-  fi
-}
-
-alert_outpost() {  # subject, body — the outpost lags on purpose sometimes, so once per cooldown
-  local marker="$STATE_DIR/outpost-alert" now last cooldown
-  cooldown="${OUTPOST_ALERT_COOLDOWN:-21600}"
-  now=$(date +%s)
-  last=$(sed -n '1p' "$marker" 2>/dev/null || true)
-  case "$last" in ''|*[!0-9]*) last=0 ;; esac
-  if [ $((now - last)) -lt "$cooldown" ]; then
-    warn "the LDAP outpost is still behind $latest; already reported $((now - last))s ago (cooldown ${cooldown}s)"
-    return 0
-  fi
-  printf '%s\n' "$now" >"$marker" 2>/dev/null || true
-  alert "$1" "$2"
-}
-
-enter_outpost() {
-  local outpost_c rc
-  if [ "$OUTPOST" = false ]; then
-    log "not touching the LDAP outpost (--no-outpost)"
-    return 0
-  fi
-  if [ "$DRY_RUN" = true ] || [ "$DEPLOY" = false ]; then
-    log "not recreating the LDAP outpost (--dry-run/--no-deploy)"
-    return 0
-  fi
-  outpost_c=$(find_container "$OUTPOST_NAME" cerulean-authentik-ldap authentik-ldap-outpost 2>/dev/null || true)
-  if [ -z "$outpost_c" ]; then
-    outpost_c=$(docker ps -a --format '{{.Names}} {{.Image}}' 2>/dev/null |
-      awk '/goauthentik\/ldap/ {print $1; exit}')
-  fi
-  if [ -n "$outpost_c" ]; then
-    log "recreating the LDAP outpost $outpost_c"
-    if recreate_local_outpost "$outpost_c" && wait_outpost "$outpost_c"; then
-      rm -f "$STATE_DIR/outpost-alert"
-      log "the LDAP outpost $outpost_c is serving $latest"
-      return 0
-    fi
-    alert "Authentik $latest is live but its LDAP outpost did not start on $(hostname)" \
-      "Jellyfin's LDAP-Auth binds through $outpost_c; until it serves 3389 every media login fails with LDAP 49."
-    return 1
-  fi
-  if [ -n "$OUTPOST_HOST" ]; then
-    log "recreating the LDAP outpost on $OUTPOST_HOST"
-    rc=0
-    printf '%s\n' "$REMOTE_OUTPOST" | ssh_to "$OUTPOST_HOST" "bash -s -- '$latest' '$OUTPOST_NAME'" || rc=$?
-    if [ "$rc" -eq 0 ]; then
-      rm -f "$STATE_DIR/outpost-alert"
-      log "the LDAP outpost on $OUTPOST_HOST is serving $latest"
-      return 0
-    fi
-    # 3 is the outpost saying it has no such container, 255 is ssh itself. Both
-    # leave the server healthy and the outpost behind, and both are reported
-    # once per cooldown rather than on every fifteen-minute tick.
-    if [ "$rc" -eq 3 ]; then
-      alert_outpost "Authentik $latest is live but no LDAP outpost was found on $OUTPOST_HOST" \
-        "Nothing there runs a goauthentik/ldap container; if the outpost moved, repoint AUTHENTIK_OUTPOST_HOST."
-      return 0
-    fi
-    if [ "$rc" -eq 255 ] || [ "$rc" -eq 127 ]; then
-      alert_outpost "Authentik $latest is live but $OUTPOST_HOST could not be reached to move its LDAP outpost" \
-        "ssh exited $rc. Jellyfin binds through that outpost and it is still on the previous release: give this host key access (or SSHPASS plus sshpass) to $OUTPOST_HOST."
-      return 0
-    fi
-    alert_outpost "Authentik $latest is live but its LDAP outpost on $OUTPOST_HOST did not start" \
-      "It was recreated and did not serve 3389, so Jellyfin LDAP-Auth binds fail until it does."
-    return 1
-  fi
-  log "no LDAP outpost on this host and no AUTHENTIK_OUTPOST_HOST set; the pin moved, nothing to recreate"
-  return 0
-}
 
 OUTPOST_FAILED=false
 enter_outpost || OUTPOST_FAILED=true
