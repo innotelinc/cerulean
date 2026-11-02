@@ -28,8 +28,9 @@
 #                             (default $ESTATE_ROOT/ips)
 #   MONARCH_DIR               monarch checkout, when this host has one
 #                             (default $ESTATE_ROOT/3-media/monarch)
-#   AUTHENTIK_HEALTH_URL      server readiness probe
-#                             (default http://127.0.0.1:9000/health/live/)
+#   AUTHENTIK_HEALTH_URL      server readiness probe, used only when the image
+#                             ships no healthcheck
+#                             (default http://127.0.0.1:9000/-/health/live/)
 #   AUTHENTIK_HEALTH_TIMEOUT  seconds to wait for healthy (default 600)
 #   AUTHENTIK_UPDATE_LOCK     lock file (default /run/lock/authentik-update.lock)
 #   GITHUB_TOKEN              raises the GitHub API rate limit (optional)
@@ -56,7 +57,7 @@ GROUP_PRIMARY="$STACK_DIR/groups/1-primary.yml"
 GROUP_MEDIA="$STACK_DIR/groups/3-media.yml"
 MONARCH_COMPOSE="$MONARCH_DIR/docker-compose.yml"
 
-HEALTH_URL="${AUTHENTIK_HEALTH_URL:-http://127.0.0.1:9000/health/live/}"
+HEALTH_URL="${AUTHENTIK_HEALTH_URL:-http://127.0.0.1:9000/-/health/live/}"
 HEALTH_TIMEOUT="${AUTHENTIK_HEALTH_TIMEOUT:-600}"
 LOCK="${AUTHENTIK_UPDATE_LOCK:-/run/lock/authentik-update.lock}"
 
@@ -201,14 +202,27 @@ if ! newer_than "$latest" "$current"; then
 fi
 
 # Refuse before touching anything: a bump folded into someone's uncommitted work
-# is a commit nobody asked for. Untracked files are fine — only tracked changes
-# would be swept into the bump commit.
+# is a commit nobody asked for. Only the files this script edits are considered,
+# so an unrelated dashboard or doc edit neither blocks an update nor rides along
+# in its commit.
+watch_files=("$COMPOSE" "$README" "$GROUP_PRIMARY" "$MONARCH_COMPOSE" "$GROUP_MEDIA")
 for repo in "$CERULEAN_DIR" "$STACK_DIR" "$MONARCH_DIR"; do
   [ -d "$repo/.git" ] || continue
-  dirty=$(git -C "$repo" status --porcelain --untracked-files=no)
+  ours=()
+  for f in "${watch_files[@]}"; do
+    case "$f" in
+      "$repo"/*)
+        if git -C "$repo" ls-files --error-unmatch -- "$f" >/dev/null 2>&1; then
+          ours+=("$f")
+        fi
+        ;;
+    esac
+  done
+  [ "${#ours[@]}" -gt 0 ] || continue
+  dirty=$(git -C "$repo" status --porcelain --untracked-files=no -- "${ours[@]}")
   if [ -n "$dirty" ]; then
     printf '%s\n' "$dirty" >&2
-    die 2 "$repo has uncommitted changes; refusing to fold a version bump into them (commit or stash them, then rerun)"
+    die 2 "$repo has uncommitted changes in the files this bump edits; commit or stash them, then rerun"
   fi
 done
 
@@ -262,7 +276,7 @@ bump_env_pin() {  # an .env override would otherwise keep running the old image
   if [ "$before" != "$(cat "$file")" ]; then edited+=("$file"); fi
 }
 
-for candidate in "$COMPOSE" "$README" "$GROUP_PRIMARY" "$MONARCH_COMPOSE" "$GROUP_MEDIA" "$APP_ENV" "$STACK_ENV"; do
+for candidate in "${watch_files[@]}" "$APP_ENV" "$STACK_ENV"; do
   backup "$candidate"
 done
 bump_server_pin "$COMPOSE"
@@ -340,7 +354,17 @@ build_recreate_cmd() {  # server container, worker container
   else
     RECREATE_CMD+=(-f "$COMPOSE")
   fi
-  if [ -f "$STACK_ENV" ]; then RECREATE_CMD+=(--env-file "$STACK_ENV"); fi
+  # Interpolate from the file the project was created with: its own directory's
+  # .env. Handing Compose a different --env-file re-resolves secrets and hosts,
+  # which is how an "update" turns into an outage. The stack's .env is the right
+  # choice only when the compose file actually lives in the stack.
+  if [ -n "$workdir" ] && [ "$workdir" != "<no value>" ] && [ -f "$workdir/.env" ]; then
+    RECREATE_CMD+=(--env-file "$workdir/.env")
+  elif [ -f "$STACK_ENV" ]; then
+    case "$files" in
+      "$STACK_DIR"/*) RECREATE_CMD+=(--env-file "$STACK_ENV") ;;
+    esac
+  fi
   # The Authentik services are profile-gated in both compose files.
   RECREATE_CMD+=(--profile authentik)
   RECREATE_SERVICES=("$svc_server" "$svc_worker")
@@ -350,10 +374,16 @@ recreate() {
   "${RECREATE_CMD[@]}" up -d --no-deps "${RECREATE_SERVICES[@]}"
 }
 
-wait_healthy() {  # worker container (may be empty)
-  local worker_c=$1 deadline=$((SECONDS + HEALTH_TIMEOUT)) code="" state="" waited=0
+wait_healthy() {  # server container, worker container (may be empty)
+  local server_c=$1 worker_c=$2 deadline=$((SECONDS + HEALTH_TIMEOUT))
+  local code="" state="" health="" waited=0
   while [ "$SECONDS" -lt "$deadline" ]; do
-    code=$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$HEALTH_URL" 2>/dev/null || true)
+    # The image ships its own probe (`ak healthcheck`), so Docker's verdict is
+    # the authoritative one; the HTTP probe covers an image without a
+    # healthcheck. Note the path: this release answers /-/health/live/, while
+    # /health/live/ is a 404 — waiting on the wrong one fails a good upgrade.
+    health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+      "$server_c" 2>/dev/null || echo missing)
     state=running
     if [ -n "$worker_c" ]; then
       state=$(docker inspect -f '{{.State.Status}}' "$worker_c" 2>/dev/null || echo missing)
@@ -362,12 +392,18 @@ wait_healthy() {  # worker container (may be empty)
         return 1
       fi
     fi
-    if { [ "$code" = 200 ] || [ "$code" = 204 ]; } && [ "$state" = running ]; then
+    if [ "$health" = healthy ] && [ "$state" = running ]; then
       return 0
+    fi
+    if [ "$health" = none ]; then
+      code=$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$HEALTH_URL" 2>/dev/null || true)
+      if { [ "$code" = 200 ] || [ "$code" = 204 ]; } && [ "$state" = running ]; then
+        return 0
+      fi
     fi
     waited=$((waited + 5))
     if [ $((waited % 60)) -eq 0 ]; then
-      log "waiting for authentik $latest (health=${code:-none} worker=$state, ${waited}s)"
+      log "waiting for authentik $latest (server=$health${code:+, http=$code} worker=$state, ${waited}s)"
     fi
     sleep 5
   done
@@ -405,7 +441,7 @@ else
     rollback
     die 1 "recreating authentik $latest failed; rolled back to $current"
   fi
-  if ! wait_healthy "$worker_c"; then
+  if ! wait_healthy "$server_c" "$worker_c"; then
     rollback
     die 1 "authentik $latest did not become healthy; rolled back to $current"
   fi
@@ -455,7 +491,7 @@ commit_and_push() {  # repo, message, files...
   if git -C "$repo" push -q origin "HEAD:$branch"; then
     log "pushed $branch in $repo"
   else
-    die 1 "push failed in $repo; the commit is local — push it by hand or fix the remote"
+    die 1 "push failed in $repo; the pin is applied and committed locally — pull --rebase and push by hand (a later run sees the pin already current and will not retry the push)"
   fi
 }
 
